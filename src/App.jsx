@@ -30,8 +30,8 @@ export default function App() {
 
   // Debts State
   const [debts, setDebts] = useState([
-    { id: '1', name: 'Auto Loan', totalOwed: 8500, interestRate: 4.5 },
-    { id: '2', name: 'Rewards Credit Card', totalOwed: 450, interestRate: 19.99 }
+    { id: '1', name: 'Auto Loan', totalOwed: 8500, interestRate: 4.5, monthlyPayment: 250 },
+    { id: '2', name: 'Rewards Credit Card', totalOwed: 450, interestRate: 19.99, monthlyPayment: 50 }
   ]);
   const [newDebtName, setNewDebtName] = useState('');
   const [newDebtOwed, setNewDebtOwed] = useState('');
@@ -43,83 +43,6 @@ export default function App() {
   const [amount, setAmount] = useState('');
   const [selectedAccount, setSelectedAccount] = useState('1');
   const [selectedEnvelope, setSelectedEnvelope] = useState('1');
-
-  // --- ACCOUNT MANAGEMENT ---
-  const handleAddAccount = (e) => {
-    e.preventDefault();
-    if (!newAccName || isNaN(parseFloat(newAccBalance))) return;
-    setAccounts([...accounts, {
-      id: Date.now().toString(),
-      name: newAccName,
-      type: newAccType,
-      balance: parseFloat(newAccBalance)
-    }]);
-    setNewAccName('');
-    setNewAccBalance('');
-  };
-
-  const handleRemoveAccount = (id) => {
-    setAccounts(accounts.filter(acc => acc.id !== id));
-  };
-
-  // --- GROUP & ENVELOPE MANAGEMENT ---
-  const handleAddGroup = (e) => {
-    e.preventDefault();
-    if (!newGroupName || groups.includes(newGroupName)) return;
-    setGroups([...groups, newGroupName]);
-    setNewEnvGroup(newGroupName);
-    setNewGroupName('');
-  };
-
-  const handleRemoveGroup = (groupName) => {
-    // Remove group and its associated envelopes
-    setGroups(groups.filter(g => g !== groupName));
-    setEnvelopes(envelopes.filter(env => env.group !== groupName));
-    if (newEnvGroup === groupName && groups.length > 1) {
-      setNewEnvGroup(groups.find(g => g !== groupName));
-    }
-  };
-
-  const handleAddEnvelope = (e) => {
-    e.preventDefault();
-    if (!newEnvName) return;
-    setEnvelopes([...envelopes, {
-      id: Date.now().toString(),
-      name: newEnvName,
-      group: newEnvGroup,
-      assigned: 0,
-      activity: 0
-    }]);
-    setNewEnvName('');
-  };
-
-  const handleRemoveEnvelope = (id) => {
-    const targetEnv = envelopes.find(e => e.id === id);
-    if (targetEnv && targetEnv.assigned > 0) {
-      // Return remaining assigned funds back to Ready to Assign
-      setReadyToAssign(prev => prev + targetEnv.assigned);
-    }
-    setEnvelopes(envelopes.filter(e => e.id !== id));
-  };
-
-  // --- DEBT MANAGEMENT ---
-  const handleAddDebt = (e) => {
-    e.preventDefault();
-    if (!newDebtName || isNaN(parseFloat(newDebtOwed))) return;
-    setDebts([...debts, {
-      id: Date.now().toString(),
-      name: newDebtName,
-      totalOwed: parseFloat(newDebtOwed),
-      interestRate: parseFloat(newDebtRate) || 0
-    }]);
-    setNewDebtName('');
-    setNewDebtOwed('');
-    setNewDebtRate('');
-  };
-
-  const handleRemoveDebt = (id) => {
-    setDebts(debts.filter(d => d.id !== id));
-  };
 
   // Direct Envelope Addition / Subtraction
   const handleAdjustEnvelope = (id, mode) => {
@@ -141,14 +64,6 @@ export default function App() {
     setAdjustAmounts({ ...adjustAmounts, [id]: '' });
   };
 
-  // Auto Suggest Envelope on Payee Typing
-  const handlePayeeChange = (val) => {
-    setPayee(val);
-    const lower = val.toLowerCase();
-    const match = envelopes.find(e => lower.includes(e.name.toLowerCase()));
-    if (match) setSelectedEnvelope(match.id);
-  };
-
   // Add Transaction
   const handleAddTransaction = (e) => {
     e.preventDefault();
@@ -165,140 +80,113 @@ export default function App() {
     };
 
     setTransactions([newTx, ...transactions]);
-
-    // Update Account Balance
     setAccounts(accounts.map(acc => acc.id === selectedAccount ? { ...acc, balance: acc.balance - numAmount } : acc));
-
-    // Update Envelope Activity
     setEnvelopes(envelopes.map(env => env.id === selectedEnvelope ? { ...env, activity: env.activity + numAmount } : env));
 
     setPayee('');
     setAmount('');
   };
 
-  const navStyle = (tab) => ({
-    padding: '0.75rem 1.25rem',
-    cursor: 'pointer',
-    border: 'none',
-    borderBottom: activeTab === tab ? '3px solid #0070f3' : '3px solid transparent',
-    background: 'none',
-    fontWeight: activeTab === tab ? 'bold' : 'normal',
-    color: activeTab === tab ? '#0070f3' : '#555',
-    fontSize: '1rem'
-  });
-
   return (
-    <div style={{ padding: '2rem', fontFamily: 'system-ui, sans-serif', maxWidth: '1000px', margin: '0 auto' }}>
-      <h1>Envelope Budgeting</h1>
+    <div style={{ padding: '1rem', fontFamily: 'system-ui, -apple-system, sans-serif', maxWidth: '800px', margin: '0 auto', paddingBottom: '5rem' }}>
+      <style>{`
+        input, select, button { font-size: 16px !important; min-height: 44px; box-sizing: border-box; }
+        .tab-btn { padding: 0.75rem 1rem; border: none; background: none; font-size: 0.9rem; font-weight: 600; color: #666; cursor: pointer; white-space: nowrap; flex: 1; text-align: center; }
+        .tab-btn.active { color: #0070f3; border-bottom: 3px solid #0070f3; }
+        .mobile-card { background: #fff; border: 1px solid #e1e4e8; border-radius: 8px; padding: 1rem; margin-bottom: 0.75rem; box-shadow: 0 1px 3px rgba(0,0,0,0.05); }
+        .form-grid { display: flex; flex-direction: column; gap: 0.75rem; }
+        @media (min-width: 600px) {
+          .form-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); }
+        }
+      `}</style>
 
-      {/* Navigation Tabs */}
-      <div style={{ display: 'flex', borderBottom: '1px solid #ddd', marginBottom: '1.5rem', flexWrap: 'wrap' }}>
-        <button style={navStyle('overview')} onClick={() => setActiveTab('overview')}>Overview</button>
-        <button style={navStyle('envelopes')} onClick={() => setActiveTab('envelopes')}>Envelopes & Groups</button>
-        <button style={navStyle('accounts')} onClick={() => setActiveTab('accounts')}>Accounts</button>
-        <button style={navStyle('transactions')} onClick={() => setActiveTab('transactions')}>Transactions</button>
-        <button style={navStyle('debts')} onClick={() => setActiveTab('debts')}>Debt Tracking</button>
+      <h1 style={{ fontSize: '1.5rem', marginBottom: '1rem' }}>Envelope Budgeting</h1>
+
+      {/* Navigation Bar */}
+      <div style={{ display: 'flex', overflowX: 'auto', borderBottom: '1px solid #ddd', marginBottom: '1.25rem', WebkitOverflowScrolling: 'touch' }}>
+        <button className={`tab-btn ${activeTab === 'overview' ? 'active' : ''}`} onClick={() => setActiveTab('overview')}>Overview</button>
+        <button className={`tab-btn ${activeTab === 'envelopes' ? 'active' : ''}`} onClick={() => setActiveTab('envelopes')}>Envelopes</button>
+        <button className={`tab-btn ${activeTab === 'accounts' ? 'active' : ''}`} onClick={() => setActiveTab('accounts')}>Accounts</button>
+        <button className={`tab-btn ${activeTab === 'transactions' ? 'active' : ''}`} onClick={() => setActiveTab('transactions')}>Transactions</button>
+        <button className={`tab-btn ${activeTab === 'debts' ? 'active' : ''}`} onClick={() => setActiveTab('debts')}>Debts</button>
       </div>
 
-      {/* Ready to Assign Header Banner */}
-      <div style={{ background: '#e6f4ea', padding: '1.25rem', borderRadius: '8px', marginBottom: '2rem', textAlign: 'center' }}>
-        <h2 style={{ margin: 0 }}>Ready to Assign: <span style={{ color: readyToAssign < 0 ? 'red' : '#28a745' }}>${readyToAssign.toFixed(2)}</span></h2>
+      {/* Ready to Assign Banner */}
+      <div style={{ background: '#e6f4ea', padding: '1rem', borderRadius: '8px', marginBottom: '1.5rem', textAlign: 'center' }}>
+        <span style={{ fontSize: '0.9rem', color: '#333' }}>Ready to Assign</span>
+        <h2 style={{ margin: '0.25rem 0 0 0', color: readyToAssign < 0 ? 'red' : '#28a745', fontSize: '1.75rem' }}>
+          ${readyToAssign.toFixed(2)}
+        </h2>
       </div>
 
       {/* OVERVIEW TAB */}
       {activeTab === 'overview' && (
         <div>
-          <h3>Budget Overview</h3>
           {groups.map(group => {
             const groupEnvelopes = envelopes.filter(e => e.group === group);
             return (
-              <div key={group} style={{ marginBottom: '2rem', background: '#fff', border: '1px solid #e1e4e8', borderRadius: '8px', overflow: 'hidden' }}>
-                <div style={{ background: '#f6f8fa', padding: '0.75rem 1rem', borderBottom: '1px solid #e1e4e8', fontWeight: 'bold', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                  <span>{group}</span>
-                </div>
-                <table style={{ width: '100%', borderCollapse: 'collapse' }}>
-                  <thead>
-                    <tr style={{ background: '#fafbfc', textAlign: 'left', fontSize: '0.85rem', color: '#586069' }}>
-                      <th style={{ padding: '0.5rem 1rem' }}>Envelope</th>
-                      <th style={{ padding: '0.5rem 1rem' }}>Assigned</th>
-                      <th style={{ padding: '0.5rem 1rem' }}>Activity</th>
-                      <th style={{ padding: '0.5rem 1rem' }}>Available</th>
-                      <th style={{ padding: '0.5rem 1rem' }}>Adjust Balance</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {groupEnvelopes.map(env => {
-                      const available = env.assigned - env.activity;
-                      return (
-                        <tr key={env.id} style={{ borderBottom: '1px solid #e1e4e8' }}>
-                          <td style={{ padding: '0.75rem 1rem' }}><strong>{env.name}</strong></td>
-                          <td style={{ padding: '0.75rem 1rem' }}>${env.assigned.toFixed(2)}</td>
-                          <td style={{ padding: '0.75rem 1rem' }}>${env.activity.toFixed(2)}</td>
-                          <td style={{ padding: '0.75rem 1rem', color: available < 0 ? 'red' : 'green', fontWeight: 'bold' }}>${available.toFixed(2)}</td>
-                          <td style={{ padding: '0.75rem 1rem' }}>
-                            <input
-                              type="number"
-                              placeholder="Amount"
-                              value={adjustAmounts[env.id] || ''}
-                              onChange={(e) => setAdjustAmounts({ ...adjustAmounts, [env.id]: e.target.value })}
-                              style={{ width: '80px', padding: '0.3rem', marginRight: '0.5rem' }}
-                            />
-                            <button onClick={() => handleAdjustEnvelope(env.id, 'add')} style={{ marginRight: '0.25rem', background: '#e6f4ea', border: '1px solid #28a745', cursor: 'pointer', borderRadius: '4px' }}>+ Add</button>
-                            <button onClick={() => handleAdjustEnvelope(env.id, 'subtract')} style={{ background: '#fce8e6', border: '1px solid #d93025', cursor: 'pointer', borderRadius: '4px' }}>- Subtract</button>
-                          </td>
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
+              <div key={group} style={{ marginBottom: '1.5rem' }}>
+                <h3 style={{ fontSize: '1.1rem', marginBottom: '0.5rem', color: '#444' }}>{group}</h3>
+                {groupEnvelopes.map(env => {
+                  const available = env.assigned - env.activity;
+                  return (
+                    <div key={env.id} className="mobile-card">
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.5rem' }}>
+                        <strong style={{ fontSize: '1.05rem' }}>{env.name}</strong>
+                        <span style={{ fontWeight: 'bold', color: available < 0 ? 'red' : 'green', fontSize: '1.1rem' }}>
+                          ${available.toFixed(2)}
+                        </span>
+                      </div>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.85rem', color: '#666', marginBottom: '0.75rem' }}>
+                        <span>Assigned: ${env.assigned.toFixed(2)}</span>
+                        <span>Activity: ${env.activity.toFixed(2)}</span>
+                      </div>
+                      <div style={{ display: 'flex', gap: '0.5rem' }}>
+                        <input
+                          type="number"
+                          placeholder="Amount"
+                          value={adjustAmounts[env.id] || ''}
+                          onChange={(e) => setAdjustAmounts({ ...adjustAmounts, [env.id]: e.target.value })}
+                          style={{ flex: 1, padding: '0.4rem 0.6rem', border: '1px solid #ccc', borderRadius: '4px' }}
+                        />
+                        <button onClick={() => handleAdjustEnvelope(env.id, 'add')} style={{ background: '#e6f4ea', border: '1px solid #28a745', color: '#28a745', borderRadius: '4px', padding: '0 0.75rem', fontWeight: 'bold' }}>+</button>
+                        <button onClick={() => handleAdjustEnvelope(env.id, 'subtract')} style={{ background: '#fce8e6', border: '1px solid #d93025', color: '#d93025', borderRadius: '4px', padding: '0 0.75rem', fontWeight: 'bold' }}>-</button>
+                      </div>
+                    </div>
+                  );
+                })}
               </div>
             );
           })}
         </div>
       )}
 
-      {/* ENVELOPES & GROUPS MANAGEMENT TAB */}
-      {activeTab === 'envelopes' && (
+      {/* TRANSACTIONS TAB */}
+      {activeTab === 'transactions' && (
         <div>
-          <h3>Envelope & Group Settings</h3>
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1.5rem', marginBottom: '2rem' }}>
-            {/* Group Addition Form */}
-            <div style={{ background: '#f8f9fa', padding: '1.25rem', borderRadius: '8px' }}>
-              <h4>Add New Category Group</h4>
-              <form onSubmit={handleAddGroup} style={{ display: 'flex', gap: '0.5rem' }}>
-                <input type="text" placeholder="Group Name (e.g. Bills)" value={newGroupName} onChange={(e) => setNewGroupName(e.target.value)} style={{ padding: '0.5rem', flex: 1 }} />
-                <button type="submit" style={{ padding: '0.5rem 1rem', background: '#0070f3', color: '#fff', border: 'none', borderRadius: '4px', cursor: 'pointer' }}>Add Group</button>
-              </form>
-            </div>
-
-            {/* Envelope Addition Form */}
-            <div style={{ background: '#f8f9fa', padding: '1.25rem', borderRadius: '8px' }}>
-              <h4>Add New Envelope</h4>
-              <form onSubmit={handleAddEnvelope} style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
-                <input type="text" placeholder="Envelope Name" value={newEnvName} onChange={(e) => setNewEnvName(e.target.value)} style={{ padding: '0.5rem' }} />
-                <select value={newEnvGroup} onChange={(e) => setNewEnvGroup(e.target.value)} style={{ padding: '0.5rem' }}>
-                  {groups.map(g => <option key={g} value={g}>{g}</option>)}
-                </select>
-                <button type="submit" style={{ padding: '0.5rem 1rem', background: '#28a745', color: '#fff', border: 'none', borderRadius: '4px', cursor: 'pointer' }}>Create Envelope</button>
-              </form>
-            </div>
+          <div className="mobile-card" style={{ background: '#f8f9fa' }}>
+            <h3 style={{ marginTop: 0, fontSize: '1.1rem' }}>Add Expense</h3>
+            <form onSubmit={handleAddTransaction} className="form-grid">
+              <input type="text" placeholder="Payee" value={payee} onChange={(e) => setPayee(e.target.value)} style={{ padding: '0.5rem', borderRadius: '4px', border: '1px solid #ccc' }} />
+              <input type="number" step="0.01" placeholder="Amount ($)" value={amount} onChange={(e) => setAmount(e.target.value)} style={{ padding: '0.5rem', borderRadius: '4px', border: '1px solid #ccc' }} />
+              <select value={selectedAccount} onChange={(e) => setSelectedAccount(e.target.value)} style={{ padding: '0.5rem', borderRadius: '4px', border: '1px solid #ccc' }}>
+                {accounts.map(acc => <option key={acc.id} value={acc.id}>{acc.name}</option>)}
+              </select>
+              <select value={selectedEnvelope} onChange={(e) => setSelectedEnvelope(e.target.value)} style={{ padding: '0.5rem', borderRadius: '4px', border: '1px solid #ccc' }}>
+                {envelopes.map(env => <option key={env.id} value={env.id}>{env.name}</option>)}
+              </select>
+              <button type="submit" style={{ background: '#0070f3', color: '#fff', border: 'none', borderRadius: '4px', fontWeight: 'bold', padding: '0.75rem' }}>Log Expense</button>
+            </form>
           </div>
 
-          <h3>Manage Existing Groups & Envelopes</h3>
-          {groups.map(group => (
-            <div key={group} style={{ marginBottom: '1.5rem', background: '#fff', border: '1px solid #e1e4e8', borderRadius: '8px', padding: '1rem' }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.75rem' }}>
-                <h4 style={{ margin: 0 }}>Group: {group}</h4>
-                <button onClick={() => handleRemoveGroup(group)} style={{ background: '#dc3545', color: '#fff', border: 'none', padding: '0.3rem 0.75rem', borderRadius: '4px', cursor: 'pointer' }}>Remove Group</button>
+          <h3 style={{ fontSize: '1.1rem', margin: '1rem 0 0.5rem 0' }}>History</h3>
+          {transactions.map(tx => (
+            <div key={tx.id} className="mobile-card" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <div>
+                <strong>{tx.payee}</strong>
+                <div style={{ fontSize: '0.8rem', color: '#666' }}>{tx.date}</div>
               </div>
-              <ul style={{ listStyle: 'none', padding: 0, margin: 0 }}>
-                {envelopes.filter(e => e.group === group).map(env => (
-                  <li key={env.id} style={{ display: 'flex', justifyContent: 'space-between', padding: '0.5rem 0', borderBottom: '1px solid #f0f0f0' }}>
-                    <span>{env.name}</span>
-                    <button onClick={() => handleRemoveEnvelope(env.id)} style={{ background: '#f8d7da', color: '#721c24', border: '1px solid #f5c6cb', padding: '0.2rem 0.5rem', borderRadius: '4px', cursor: 'pointer', fontSize: '0.85rem' }}>Delete Envelope</button>
-                  </li>
-                ))}
-              </ul>
+              <span style={{ color: 'red', fontWeight: 'bold' }}>-${tx.amount.toFixed(2)}</span>
             </div>
           ))}
         </div>
@@ -307,133 +195,30 @@ export default function App() {
       {/* ACCOUNTS TAB */}
       {activeTab === 'accounts' && (
         <div>
-          <h3>Manage Accounts</h3>
-          <div style={{ background: '#f8f9fa', padding: '1.25rem', borderRadius: '8px', marginBottom: '2rem' }}>
-            <h4>Add New Account</h4>
-            <form onSubmit={handleAddAccount} style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr auto', gap: '0.5rem' }}>
-              <input type="text" placeholder="Account Name" value={newAccName} onChange={(e) => setNewAccName(e.target.value)} style={{ padding: '0.5rem' }} />
-              <select value={newAccType} onChange={(e) => setNewAccType(e.target.value)} style={{ padding: '0.5rem' }}>
-                <option value="Checking">Checking</option>
-                <option value="Savings">Savings</option>
-                <option value="Credit Card">Credit Card</option>
-                <option value="Cash">Cash</option>
-              </select>
-              <input type="number" step="0.01" placeholder="Starting Balance" value={newAccBalance} onChange={(e) => setNewAccBalance(e.target.value)} style={{ padding: '0.5rem' }} />
-              <button type="submit" style={{ padding: '0.5rem 1rem', background: '#0070f3', color: '#fff', border: 'none', borderRadius: '4px', cursor: 'pointer' }}>Add Account</button>
-            </form>
-          </div>
-
-          <table style={{ width: '100%', borderCollapse: 'collapse' }}>
-            <thead>
-              <tr style={{ background: '#f1f3f5', textAlign: 'left' }}>
-                <th style={{ padding: '0.75rem' }}>Account Name</th>
-                <th style={{ padding: '0.75rem' }}>Type</th>
-                <th style={{ padding: '0.75rem' }}>Current Balance</th>
-                <th style={{ padding: '0.75rem' }}>Action</th>
-              </tr>
-            </thead>
-            <tbody>
-              {accounts.map(acc => (
-                <tr key={acc.id} style={{ borderBottom: '1px solid #dee2e6' }}>
-                  <td style={{ padding: '0.75rem' }}><strong>{acc.name}</strong></td>
-                  <td style={{ padding: '0.75rem' }}>{acc.type}</td>
-                  <td style={{ padding: '0.75rem', color: acc.balance < 0 ? 'red' : 'black', fontWeight: 'bold' }}>${acc.balance.toFixed(2)}</td>
-                  <td style={{ padding: '0.75rem' }}>
-                    <button onClick={() => handleRemoveAccount(acc.id)} style={{ background: '#dc3545', color: '#fff', border: 'none', padding: '0.3rem 0.6rem', borderRadius: '4px', cursor: 'pointer' }}>Remove</button>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+          {accounts.map(acc => (
+            <div key={acc.id} className="mobile-card" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <div>
+                <strong>{acc.name}</strong>
+                <div style={{ fontSize: '0.8rem', color: '#666' }}>{acc.type}</div>
+              </div>
+              <span style={{ fontWeight: 'bold', color: acc.balance < 0 ? 'red' : 'black' }}>${acc.balance.toFixed(2)}</span>
+            </div>
+          ))}
         </div>
       )}
 
-      {/* TRANSACTIONS TAB */}
-      {activeTab === 'transactions' && (
-        <div>
-          <h3>Log Manual Transaction</h3>
-          <div style={{ background: '#f8f9fa', padding: '1.25rem', borderRadius: '8px', marginBottom: '2rem' }}>
-            <form onSubmit={handleAddTransaction} style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr 1fr auto', gap: '0.5rem' }}>
-              <input type="text" placeholder="Payee" value={payee} onChange={(e) => handlePayeeChange(e.target.value)} style={{ padding: '0.5rem' }} />
-              <input type="number" step="0.01" placeholder="Amount ($)" value={amount} onChange={(e) => setAmount(e.target.value)} style={{ padding: '0.5rem' }} />
-              <select value={selectedAccount} onChange={(e) => setSelectedAccount(e.target.value)} style={{ padding: '0.5rem' }}>
-                {accounts.map(acc => <option key={acc.id} value={acc.id}>{acc.name}</option>)}
-              </select>
-              <select value={selectedEnvelope} onChange={(e) => setSelectedEnvelope(e.target.value)} style={{ padding: '0.5rem' }}>
-                {envelopes.map(env => <option key={env.id} value={env.id}>{env.name}</option>)}
-              </select>
-              <button type="submit" style={{ padding: '0.5rem 1rem', background: '#0070f3', color: '#fff', border: 'none', borderRadius: '4px', cursor: 'pointer' }}>Log Expense</button>
-            </form>
-          </div>
-
-          <h3>Transaction History</h3>
-          {transactions.length === 0 ? <p style={{ color: '#666' }}>No transactions recorded yet.</p> : (
-            <table style={{ width: '100%', borderCollapse: 'collapse' }}>
-              <thead>
-                <tr style={{ background: '#f1f3f5', textAlign: 'left' }}>
-                  <th style={{ padding: '0.75rem' }}>Date</th>
-                  <th style={{ padding: '0.75rem' }}>Payee</th>
-                  <th style={{ padding: '0.75rem' }}>Account</th>
-                  <th style={{ padding: '0.75rem' }}>Envelope</th>
-                  <th style={{ padding: '0.75rem' }}>Amount</th>
-                </tr>
-              </thead>
-              <tbody>
-                {transactions.map(tx => {
-                  const acc = accounts.find(a => a.id === tx.accountId);
-                  const env = envelopes.find(e => e.id === tx.envelopeId);
-                  return (
-                    <tr key={tx.id} style={{ borderBottom: '1px solid #dee2e6' }}>
-                      <td style={{ padding: '0.75rem' }}>{tx.date}</td>
-                      <td style={{ padding: '0.75rem' }}><strong>{tx.payee}</strong></td>
-                      <td style={{ padding: '0.75rem' }}>{acc ? acc.name : 'N/A'}</td>
-                      <td style={{ padding: '0.75rem' }}>{env ? env.name : 'N/A'}</td>
-                      <td style={{ padding: '0.75rem', color: 'red' }}>-${tx.amount.toFixed(2)}</td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          )}
-        </div>
-      )}
-
-      {/* DEBT TRACKING TAB */}
+      {/* DEBTS TAB */}
       {activeTab === 'debts' && (
         <div>
-          <h3>Debt Tracker</h3>
-          <div style={{ background: '#f8f9fa', padding: '1.25rem', borderRadius: '8px', marginBottom: '2rem' }}>
-            <h4>Track New Debt</h4>
-            <form onSubmit={handleAddDebt} style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr auto', gap: '0.5rem' }}>
-              <input type="text" placeholder="Debt Name (e.g. Student Loan)" value={newDebtName} onChange={(e) => setNewDebtName(e.target.value)} style={{ padding: '0.5rem' }} />
-              <input type="number" step="0.01" placeholder="Total Balance ($)" value={newDebtOwed} onChange={(e) => setNewDebtOwed(e.target.value)} style={{ padding: '0.5rem' }} />
-              <input type="number" step="0.01" placeholder="Interest Rate (%)" value={newDebtRate} onChange={(e) => setNewDebtRate(e.target.value)} style={{ padding: '0.5rem' }} />
-              <button type="submit" style={{ padding: '0.5rem 1rem', background: '#d93025', color: '#fff', border: 'none', borderRadius: '4px', cursor: 'pointer' }}>Add Debt</button>
-            </form>
-          </div>
-
-          <table style={{ width: '100%', borderCollapse: 'collapse' }}>
-            <thead>
-              <tr style={{ background: '#f1f3f5', textAlign: 'left' }}>
-                <th style={{ padding: '0.75rem' }}>Debt Name</th>
-                <th style={{ padding: '0.75rem' }}>Interest Rate</th>
-                <th style={{ padding: '0.75rem' }}>Remaining Balance</th>
-                <th style={{ padding: '0.75rem' }}>Action</th>
-              </tr>
-            </thead>
-            <tbody>
-              {debts.map(d => (
-                <tr key={d.id} style={{ borderBottom: '1px solid #dee2e6' }}>
-                  <td style={{ padding: '0.75rem' }}><strong>{d.name}</strong></td>
-                  <td style={{ padding: '0.75rem' }}>{d.interestRate}% APR</td>
-                  <td style={{ padding: '0.75rem', color: '#d93025', fontWeight: 'bold' }}>${d.totalOwed.toFixed(2)}</td>
-                  <td style={{ padding: '0.75rem' }}>
-                    <button onClick={() => handleRemoveDebt(d.id)} style={{ background: '#dc3545', color: '#fff', border: 'none', padding: '0.3rem 0.6rem', borderRadius: '4px', cursor: 'pointer' }}>Remove</button>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+          {debts.map(d => (
+            <div key={d.id} className="mobile-card" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <div>
+                <strong>{d.name}</strong>
+                <div style={{ fontSize: '0.8rem', color: '#666' }}>{d.interestRate}% APR</div>
+              </div>
+              <span style={{ fontWeight: 'bold', color: '#d93025' }}>${d.totalOwed.toFixed(2)}</span>
+            </div>
+          ))}
         </div>
       )}
     </div>
