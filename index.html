@@ -2,15 +2,25 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <meta name="theme-color" content="#121212" />
-    <title>Budget Cloud</title>
+    <!-- Viewport optimization for mobile devices preventing unwanted zoom on input focus -->
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+    <meta name="theme-color" content="#0070f3" />
+    <title>Envelope Budgeting App</title>
     <style>
-      html, body {
+      * {
+        box-sizing: border-box;
+        -webkit-tap-highlight-color: transparent;
+      }
+      body {
         margin: 0;
         padding: 0;
-        background-color: #121212;
-        color: #e0e0e0;
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+        background-color: #f4f6f8;
+        color: #1a1a1a;
+        -webkit-font-smoothing: antialiased;
+      }
+      input, select, button {
+        font-family: inherit;
       }
     </style>
   </head>
