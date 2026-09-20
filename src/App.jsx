@@ -8,19 +8,38 @@ export default function App() {
     { id: '3', name: 'Credit Card Payment', assigned: 100, activity: 50 }
   ]);
 
+  const [newEnvelopeName, setNewEnvelopeName] = useState('');
   const [payee, setPayee] = useState('');
   const [amount, setAmount] = useState('');
   const [selectedEnvelope, setSelectedEnvelope] = useState('1');
   const [transactions, setTransactions] = useState([]);
+
+  // Add New Envelope
+  const handleAddEnvelope = (e) => {
+    e.preventDefault();
+    if (!newEnvelopeName.trim()) return;
+
+    const newEnv = {
+      id: Date.now().toString(),
+      name: newEnvelopeName.trim(),
+      assigned: 0,
+      activity: 0
+    };
+
+    setEnvelopes([...envelopes, newEnv]);
+    setNewEnvelopeName('');
+  };
 
   // Auto-suggest envelope based on repeating payees
   const handlePayeeChange = (val) => {
     setPayee(val);
     const lower = val.toLowerCase();
     if (lower.includes('walmart') || lower.includes('trader') || lower.includes('safeway')) {
-      setSelectedEnvelope('1'); // Groceries
+      const groc = envelopes.find(e => e.name.toLowerCase().includes('grocery') || e.name.toLowerCase().includes('groceries'));
+      if (groc) setSelectedEnvelope(groc.id);
     } else if (lower.includes('landlord') || lower.includes('rent')) {
-      setSelectedEnvelope('2'); // Rent
+      const rent = envelopes.find(e => e.name.toLowerCase().includes('rent'));
+      if (rent) setSelectedEnvelope(rent.id);
     }
   };
 
@@ -74,6 +93,23 @@ export default function App() {
       {/* Ready to Assign Header */}
       <div style={{ background: '#e6f4ea', padding: '1.5rem', borderRadius: '8px', marginBottom: '2rem', textAlign: 'center' }}>
         <h2>Ready to Assign: <span style={{ color: readyToAssign < 0 ? 'red' : 'green' }}>${readyToAssign.toFixed(2)}</span></h2>
+      </div>
+
+      {/* Add New Envelope Form */}
+      <div style={{ background: '#f8f9fa', padding: '1rem 1.5rem', borderRadius: '8px', marginBottom: '1.5rem' }}>
+        <h3>Create New Envelope</h3>
+        <form onSubmit={handleAddEnvelope} style={{ display: 'flex', gap: '1rem' }}>
+          <input
+            type="text"
+            placeholder="Envelope Name (e.g. Dining Out, Utilities)"
+            value={newEnvelopeName}
+            onChange={(e) => setNewEnvelopeName(e.target.value)}
+            style={{ padding: '0.5rem', flex: 1 }}
+          />
+          <button type="submit" style={{ padding: '0.5rem 1rem', background: '#28a745', color: '#fff', border: 'none', borderRadius: '4px', cursor: 'pointer' }}>
+            + Add Envelope
+          </button>
+        </form>
       </div>
 
       {/* Manual Transaction Input Form */}
