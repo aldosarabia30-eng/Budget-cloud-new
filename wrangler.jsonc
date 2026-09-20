@@ -5,7 +5,7 @@
     {
       "binding": "DB",
       "database_name": "envelope-db",
-      "database_id": "YOUR_DATABASE_ID_FROM_CLOUDFLARE"
+      "database_id": "f93de913-8863-4603-83b4-8c53b6ef1e96"
     }
   ]
 }
