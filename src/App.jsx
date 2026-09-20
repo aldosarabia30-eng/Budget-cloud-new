@@ -182,7 +182,7 @@ export default function App() {
 
   const netCashFlow = totalIncome - totalExpenses;
 
-  const currentYearMonth = new Date().toISOString().slice(0, 7);
+  const currentYearMonth = new Date().toISOString().slice(0, 7); // 'YYYY-MM'
   const uniqueMonths = Array.from(new Set(transactions.map(tx => tx.date.slice(0, 7))));
   const monthCount = uniqueMonths.length || 1;
   const avgCashFlowPerMonth = netCashFlow / monthCount;
