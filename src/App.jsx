@@ -1,8 +1,8 @@
 import React, { useState } from 'react';
 
 export default function App() {
-  const [activeTab, setActiveTab] = useState('transactions');
-  const [reportSubTab, setReportSubTab] = useState('month'); // 'week' | 'month' | 'year'
+  const [activeTab, setActiveTab] = useState('overview');
+  const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const [readyToAssign, setReadyToAssign] = useState(1250.00);
 
   // Accounts State
@@ -38,21 +38,27 @@ export default function App() {
   const [newDebtOwed, setNewDebtOwed] = useState('');
   const [newDebtRate, setNewDebtRate] = useState('');
 
-  // Transactions State with editable date
-  const todayStr = new Date().toISOString().split('T')[0];
+  // Transactions State
   const [transactions, setTransactions] = useState([
-    { id: 'tx-1', payee: 'Employer Co', amount: 3000, type: 'income', accountId: '1', envelopeId: '1', date: todayStr },
-    { id: 'tx-2', payee: 'Supermarket', amount: 150, type: 'expense', accountId: '1', envelopeId: '1', date: todayStr },
-    { id: 'tx-3', payee: 'Property Mgmt', amount: 1200, type: 'expense', accountId: '1', envelopeId: '2', date: todayStr }
+    { id: 'tx-1', payee: 'Employer Co', amount: 3000, type: 'income', accountId: '1', envelopeId: '1', date: new Date().toISOString().split('T')[0] },
+    { id: 'tx-2', payee: 'Supermarket', amount: 150, type: 'expense', accountId: '1', envelopeId: '1', date: new Date().toISOString().split('T')[0] },
+    { id: 'tx-3', payee: 'Property Mgmt', amount: 1200, type: 'expense', accountId: '1', envelopeId: '2', date: new Date().toISOString().split('T')[0] }
   ]);
   const [payee, setPayee] = useState('');
   const [amount, setAmount] = useState('');
-  const [txDate, setTxDate] = useState(todayStr);
   const [txType, setTxType] = useState('expense');
   const [selectedAccount, setSelectedAccount] = useState('1');
   const [selectedEnvelope, setSelectedEnvelope] = useState('1');
 
+  // Reports timeframe side-tab state
+  const [reportTimeframe, setReportTimeframe] = useState('month');
+
   // --- HANDLERS ---
+  const handleNavClick = (tabKey) => {
+    setActiveTab(tabKey);
+    setIsSidebarOpen(false);
+  };
+
   const handleAddAccount = (e) => {
     e.preventDefault();
     const bal = parseFloat(newAccBalance);
@@ -157,7 +163,7 @@ export default function App() {
       type: txType,
       accountId: selectedAccount,
       envelopeId: selectedEnvelope,
-      date: txDate || todayStr
+      date: new Date().toISOString().split('T')[0]
     };
 
     setTransactions([newTx, ...transactions]);
@@ -174,124 +180,101 @@ export default function App() {
     setAmount('');
   };
 
-  // --- REPORT CALCULATIONS BASED ON DATE ---
-  const now = new Date();
+  // --- REPORT CALCULATIONS ---
+  const totalIncome = transactions
+    .filter(tx => tx.type === 'income')
+    .reduce((sum, tx) => sum + tx.amount, 0);
 
-  // Week Filter (last 7 days)
-  const sevenDaysAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
-  const weekTxs = transactions.filter(tx => new Date(tx.date) >= sevenDaysAgo);
+  const totalExpenses = transactions
+    .filter(tx => tx.type !== 'income')
+    .reduce((sum, tx) => sum + tx.amount, 0);
 
-  // Month Filter (current YYYY-MM)
-  const currentMonthStr = now.toISOString().slice(0, 7);
-  const monthTxs = transactions.filter(tx => tx.date && tx.date.startsWith(currentMonthStr));
+  const netCashFlow = totalIncome - totalExpenses;
 
-  // Year Filter (current YYYY)
-  const currentYearStr = now.getFullYear().toString();
-  const yearTxs = transactions.filter(tx => tx.date && tx.date.startsWith(currentYearStr));
+  const currentYearMonth = new Date().toISOString().slice(0, 7);
+  const uniqueMonths = Array.from(new Set(transactions.map(tx => tx.date.slice(0, 7))));
+  const monthCount = uniqueMonths.length || 1;
+  const avgCashFlowPerMonth = netCashFlow / monthCount;
 
-  const getMetrics = (txList) => {
-    const inc = txList.filter(t => t.type === 'income').reduce((s, t) => s + t.amount, 0);
-    const exp = txList.filter(t => t.type !== 'income').reduce((s, t) => s + t.amount, 0);
-    return { income: inc, expenses: exp, net: inc - exp, count: txList.length };
-  };
+  const thisMonthTransactions = transactions.filter(tx => tx.date.startsWith(currentYearMonth));
+  const thisMonthIncome = thisMonthTransactions
+    .filter(tx => tx.type === 'income')
+    .reduce((sum, tx) => sum + tx.amount, 0);
 
-  const weekMetrics = getMetrics(weekTxs);
-  const monthMetrics = getMetrics(monthTxs);
-  const yearMetrics = getMetrics(yearTxs);
+  const thisMonthExpenses = thisMonthTransactions
+    .filter(tx => tx.type !== 'income')
+    .reduce((sum, tx) => sum + tx.amount, 0);
+
+  const thisMonthNet = thisMonthIncome - thisMonthExpenses;
 
   return (
-    <div style={{ backgroundColor: '#121212', color: '#e0e0e0', minHeight: '100vh', fontFamily: 'system-ui, -apple-system, sans-serif' }}>
-      <div style={{ padding: '1rem', maxWidth: '800px', margin: '0 auto', paddingBottom: '5rem' }}>
-        <style>{`
-          input, select, button {
-            font-size: 16px !important;
-            min-height: 44px;
-            box-sizing: border-box;
-            background-color: #2a2a2a;
-            color: #e0e0e0;
-            border: 1px solid #444;
-            border-radius: 4px;
-          }
-          input::placeholder { color: #888; }
-          .tab-btn {
-            padding: 0.75rem 1rem;
-            border: none;
-            background: none;
-            font-size: 0.9rem;
-            font-weight: 600;
-            color: #888;
-            cursor: pointer;
-            white-space: nowrap;
-            flex: 1;
-            text-align: center;
-          }
-          .tab-btn.active {
-            color: #388e3c;
-            border-bottom: 3px solid #388e3c;
-          }
-          .mobile-card {
-            background: #1e1e1e;
-            border: 1px solid #333;
-            border-radius: 8px;
-            padding: 1rem;
-            margin-bottom: 0.75rem;
-            box-shadow: 0 2px 4px rgba(0,0,0,0.4);
-          }
-          .form-grid { display: flex; flex-direction: column; gap: 0.75rem; }
-          .btn-danger {
-            background: #3b1919;
-            border: 1px solid #d93025;
-            color: #ff6b6b;
-            border-radius: 4px;
-            padding: 0.4rem 0.75rem;
-            font-weight: bold;
-            cursor: pointer;
-          }
-          .btn-primary {
-            background: #0070f3;
-            border: none;
-            color: #fff;
-            border-radius: 4px;
-            font-weight: bold;
-            padding: 0.5rem 1rem;
-            cursor: pointer;
-          }
-          .side-tab-btn {
-            padding: 0.6rem 1rem;
-            border: none;
-            background: #1e1e1e;
-            color: #aaa;
-            font-weight: 600;
-            text-align: left;
-            cursor: pointer;
-            border-radius: 6px;
-            transition: all 0.2s ease;
-          }
-          .side-tab-btn:hover { background: #2a2a2a; color: #fff; }
-          .side-tab-btn.active {
-            background: #0070f3;
-            color: #ffffff;
-          }
-          @media (min-width: 600px) {
-            .form-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); }
-          }
-        `}</style>
+    <div style={{ fontFamily: 'system-ui, -apple-system, sans-serif', backgroundColor: '#121212', color: '#e0e0e0', minHeight: '100vh' }}>
+      <style>{`
+        input, select, button { font-size: 16px !important; min-height: 44px; box-sizing: border-box; background-color: #2a2a2a; color: #ffffff; border: 1px solid #444; border-radius: 4px; }
+        input::placeholder { color: #888; }
+        .mobile-card { background: #1e1e1e; border: 1px solid #333; border-radius: 8px; padding: 1rem; margin-bottom: 0.75rem; box-shadow: 0 1px 3px rgba(0,0,0,0.3); }
+        .form-grid { display: flex; flex-direction: column; gap: 0.75rem; }
+        .btn-danger { background: #3a1c1c; border: 1px solid #d93025; color: #ff6b6b; border-radius: 4px; padding: 0.4rem 0.75rem; font-weight: bold; cursor: pointer; }
+        .btn-primary { background: #0070f3; border: none; color: #fff; border-radius: 4px; font-weight: bold; padding: 0.5rem 1rem; cursor: pointer; }
+        .stat-card { background: #1e1e1e; border: 1px solid #333; border-radius: 8px; padding: 1rem; text-align: center; }
+        .sidebar-btn { display: block; width: 100%; text-align: left; padding: 0.85rem 1.25rem; background: none; border: none; color: #ccc; font-size: 1rem; font-weight: 600; cursor: pointer; border-left: 4px solid transparent; }
+        .sidebar-btn.active { color: #4caf50; background: #252525; border-left-color: #4caf50; }
+        .subtab-btn { padding: 0.5rem 0.75rem; border: 1px solid #444; background: #2a2a2a; color: #aaa; border-radius: 4px; cursor: pointer; text-align: center; }
+        .subtab-btn.active { background: #0070f3; color: #fff; border-color: #0070f3; font-weight: bold; }
+        @media (min-width: 600px) {
+          .form-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); }
+        }
+      `}</style>
 
-        <h1 style={{ fontSize: '1.5rem', marginBottom: '1rem', color: '#fff' }}>Envelope Budgeting</h1>
+      {/* Header Bar with Toggle */}
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '0.75rem 1rem', background: '#1e1e1e', borderBottom: '1px solid #333', position: 'sticky', top: 0, zIndex: 100 }}>
+        <button onClick={() => setIsSidebarOpen(!isSidebarOpen)} style={{ background: 'none', border: 'none', color: '#fff', fontSize: '1.5rem', cursor: 'pointer', display: 'flex', alignItems: 'center' }}>
+          ☰
+        </button>
+        <h1 style={{ fontSize: '1.25rem', margin: 0, color: '#ffffff' }}>Envelope Budgeting</h1>
+        <div style={{ width: '24px' }}></div>
+      </div>
 
-        {/* Top Navigation Bar */}
-        <div style={{ display: 'flex', overflowX: 'auto', borderBottom: '1px solid #333', marginBottom: '1.25rem', WebkitOverflowScrolling: 'touch' }}>
-          <button className={`tab-btn ${activeTab === 'overview' ? 'active' : ''}`} onClick={() => setActiveTab('overview')}>Overview</button>
-          <button className={`tab-btn ${activeTab === 'envelopes' ? 'active' : ''}`} onClick={() => setActiveTab('envelopes')}>Envelopes</button>
-          <button className={`tab-btn ${activeTab === 'accounts' ? 'active' : ''}`} onClick={() => setActiveTab('accounts')}>Accounts</button>
-          <button className={`tab-btn ${activeTab === 'transactions' ? 'active' : ''}`} onClick={() => setActiveTab('transactions')}>Transactions</button>
-          <button className={`tab-btn ${activeTab === 'reports' ? 'active' : ''}`} onClick={() => setActiveTab('reports')}>Reports</button>
-          <button className={`tab-btn ${activeTab === 'debts' ? 'active' : ''}`} onClick={() => setActiveTab('debts')}>Debts</button>
+      {/* Overlay Backdrop */}
+      {isSidebarOpen && (
+        <div onClick={() => setIsSidebarOpen(false)} style={{ position: 'fixed', inset: 0, backgroundColor: 'rgba(0,0,0,0.6)', zIndex: 101 }} />
+      )}
+
+      {/* Collapsible Sidebar */}
+      <div style={{
+        position: 'fixed',
+        top: 0,
+        left: 0,
+        bottom: 0,
+        width: '260px',
+        backgroundColor: '#181818',
+        borderRight: '1px solid #333',
+        zIndex: 102,
+        transform: isSidebarOpen ? 'translateX(0)' : 'translateX(-100%)',
+        transition: 'transform 0.25s ease-in-out',
+        display: 'flex',
+        flexDirection: 'column'
+      }}>
+        <div style={{ padding: '1rem', borderBottom: '1px solid #333', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <strong style={{ fontSize: '1.1rem', color: '#fff' }}>Menu</strong>
+          <button onClick={() => setIsSidebarOpen(false)} style={{ background: 'none', border: 'none', color: '#888', fontSize: '1.2rem', cursor: 'pointer' }}>✕</button>
         </div>
+        <div style={{ flex: 1, paddingTop: '0.5rem' }}>
+          <button className={`sidebar-btn ${activeTab === 'overview' ? 'active' : ''}`} onClick={() => handleNavClick('overview')}>Overview</button>
+          <button className={`sidebar-btn ${activeTab === 'envelopes' ? 'active' : ''}`} onClick={() => handleNavClick('envelopes')}>Envelopes</button>
+          <button className={`sidebar-btn ${activeTab === 'accounts' ? 'active' : ''}`} onClick={() => handleNavClick('accounts')}>Accounts</button>
+          <button className={`sidebar-btn ${activeTab === 'transactions' ? 'active' : ''}`} onClick={() => handleNavClick('transactions')}>Transactions</button>
+          <button className={`sidebar-btn ${activeTab === 'reports' ? 'active' : ''}`} onClick={() => handleNavClick('reports')}>Reports</button>
+          <button className={`sidebar-btn ${activeTab === 'debts' ? 'active' : ''}`} onClick={() => handleNavClick('debts')}>Debts</button>
+        </div>
+      </div>
+
+      {/* Main Content Area */}
+      <div style={{ padding: '1rem', maxWidth: '800px', margin: '0 auto', paddingBottom: '5rem' }}>
 
         {/* Ready to Assign Banner */}
-        <div style={{ background: '#1b3820', border: '1px solid #28a745', padding: '1rem', borderRadius: '8px', marginBottom: '1.5rem', textAlign: 'center' }}>
-          <span style={{ fontSize: '0.9rem', color: '#a3e2b2' }}>Ready to Assign</span>
+        <div style={{ background: '#1c2d22', border: '1px solid #28a745', padding: '1rem', borderRadius: '8px', marginBottom: '1.5rem', textAlign: 'center' }}>
+          <span style={{ fontSize: '0.9rem', color: '#a0a0a0' }}>Ready to Assign</span>
           <h2 style={{ margin: '0.25rem 0 0 0', color: readyToAssign < 0 ? '#ff6b6b' : '#4caf50', fontSize: '1.75rem' }}>
             ${readyToAssign.toFixed(2)}
           </h2>
@@ -304,7 +287,7 @@ export default function App() {
               const groupEnvelopes = envelopes.filter(e => e.group === group);
               return (
                 <div key={group} style={{ marginBottom: '1.5rem' }}>
-                  <h3 style={{ fontSize: '1.1rem', marginBottom: '0.5rem', color: '#bbb' }}>{group}</h3>
+                  <h3 style={{ fontSize: '1.1rem', marginBottom: '0.5rem', color: '#ccc' }}>{group}</h3>
                   {groupEnvelopes.map(env => {
                     const available = env.assigned - env.activity;
                     return (
@@ -327,8 +310,8 @@ export default function App() {
                             onChange={(e) => setAdjustAmounts({ ...adjustAmounts, [env.id]: e.target.value })}
                             style={{ flex: 1, padding: '0.4rem 0.6rem' }}
                           />
-                          <button onClick={() => handleAdjustEnvelope(env.id, 'add')} style={{ background: '#1b3820', border: '1px solid #28a745', color: '#4caf50', borderRadius: '4px', padding: '0 0.75rem', fontWeight: 'bold', cursor: 'pointer' }}>+</button>
-                          <button onClick={() => handleAdjustEnvelope(env.id, 'subtract')} style={{ background: '#3b1919', border: '1px solid #d93025', color: '#ff6b6b', borderRadius: '4px', padding: '0 0.75rem', fontWeight: 'bold', cursor: 'pointer' }}>-</button>
+                          <button onClick={() => handleAdjustEnvelope(env.id, 'add')} style={{ background: '#1c2d22', border: '1px solid #28a745', color: '#4caf50', borderRadius: '4px', padding: '0 0.75rem', fontWeight: 'bold' }}>+</button>
+                          <button onClick={() => handleAdjustEnvelope(env.id, 'subtract')} style={{ background: '#3a1c1c', border: '1px solid #d93025', color: '#ff6b6b', borderRadius: '4px', padding: '0 0.75rem', fontWeight: 'bold' }}>-</button>
                         </div>
                       </div>
                     );
@@ -336,6 +319,80 @@ export default function App() {
                 </div>
               );
             })}
+          </div>
+        )}
+
+        {/* ENVELOPES TAB */}
+        {activeTab === 'envelopes' && (
+          <div>
+            <div className="mobile-card">
+              <h3 style={{ marginTop: 0, fontSize: '1.1rem', color: '#fff' }}>Add Category Group</h3>
+              <form onSubmit={handleAddGroup} className="form-grid">
+                <input type="text" placeholder="Group Name (e.g., Bills)" value={newGroupName} onChange={(e) => setNewGroupName(e.target.value)} style={{ padding: '0.5rem' }} />
+                <button type="submit" className="btn-primary">Add Group</button>
+              </form>
+            </div>
+
+            <div className="mobile-card">
+              <h3 style={{ marginTop: 0, fontSize: '1.1rem', color: '#fff' }}>Add New Envelope</h3>
+              <form onSubmit={handleAddEnvelope} className="form-grid">
+                <input type="text" placeholder="Envelope Name" value={newEnvName} onChange={(e) => setNewEnvName(e.target.value)} style={{ padding: '0.5rem' }} />
+                <select value={newEnvGroup} onChange={(e) => setNewEnvGroup(e.target.value)} style={{ padding: '0.5rem' }}>
+                  {groups.map(g => <option key={g} value={g}>{g}</option>)}
+                </select>
+                <button type="submit" className="btn-primary">Add Envelope</button>
+              </form>
+            </div>
+
+            <h3 style={{ fontSize: '1.1rem', margin: '1rem 0 0.5rem 0', color: '#ccc' }}>Manage Envelopes</h3>
+            {groups.map(group => (
+              <div key={group} className="mobile-card">
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.75rem' }}>
+                  <strong style={{ color: '#fff' }}>Group: {group}</strong>
+                  <button onClick={() => handleRemoveGroup(group)} className="btn-danger" style={{ fontSize: '0.8rem' }}>Delete Group</button>
+                </div>
+                {envelopes.filter(e => e.group === group).map(env => (
+                  <div key={env.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '0.5rem 0', borderTop: '1px solid #333' }}>
+                    <span>{env.name}</span>
+                    <button onClick={() => handleRemoveEnvelope(env.id)} className="btn-danger" style={{ fontSize: '0.8rem' }}>Delete</button>
+                  </div>
+                ))}
+              </div>
+            ))}
+          </div>
+        )}
+
+        {/* ACCOUNTS TAB */}
+        {activeTab === 'accounts' && (
+          <div>
+            <div className="mobile-card">
+              <h3 style={{ marginTop: 0, fontSize: '1.1rem', color: '#fff' }}>Add Account</h3>
+              <form onSubmit={handleAddAccount} className="form-grid">
+                <input type="text" placeholder="Account Name" value={newAccName} onChange={(e) => setNewAccName(e.target.value)} style={{ padding: '0.5rem' }} />
+                <select value={newAccType} onChange={(e) => setNewAccType(e.target.value)} style={{ padding: '0.5rem' }}>
+                  <option value="Checking">Checking</option>
+                  <option value="Savings">Savings</option>
+                  <option value="Credit Card">Credit Card</option>
+                  <option value="Cash">Cash</option>
+                </select>
+                <input type="number" step="0.01" placeholder="Starting Balance" value={newAccBalance} onChange={(e) => setNewAccBalance(e.target.value)} style={{ padding: '0.5rem' }} />
+                <button type="submit" className="btn-primary">Add Account</button>
+              </form>
+            </div>
+
+            <h3 style={{ fontSize: '1.1rem', margin: '1rem 0 0.5rem 0', color: '#ccc' }}>Accounts</h3>
+            {accounts.map(acc => (
+              <div key={acc.id} className="mobile-card" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <div>
+                  <strong style={{ color: '#fff' }}>{acc.name}</strong>
+                  <div style={{ fontSize: '0.8rem', color: '#aaa' }}>{acc.type}</div>
+                </div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+                  <span style={{ fontWeight: 'bold', color: acc.balance < 0 ? '#ff6b6b' : '#ffffff' }}>${acc.balance.toFixed(2)}</span>
+                  <button onClick={() => handleRemoveAccount(acc.id)} className="btn-danger" style={{ fontSize: '0.8rem' }}>Remove</button>
+                </div>
+              </div>
+            ))}
           </div>
         )}
 
@@ -347,7 +404,6 @@ export default function App() {
               <form onSubmit={handleAddTransaction} className="form-grid">
                 <input type="text" placeholder="Payee" value={payee} onChange={(e) => setPayee(e.target.value)} style={{ padding: '0.5rem' }} />
                 <input type="number" step="0.01" placeholder="Amount ($)" value={amount} onChange={(e) => setAmount(e.target.value)} style={{ padding: '0.5rem' }} />
-                <input type="date" value={txDate} onChange={(e) => setTxDate(e.target.value)} style={{ padding: '0.5rem' }} />
                 <select value={txType} onChange={(e) => setTxType(e.target.value)} style={{ padding: '0.5rem' }}>
                   <option value="expense">Expense</option>
                   <option value="income">Income</option>
@@ -364,12 +420,12 @@ export default function App() {
               </form>
             </div>
 
-            <h3 style={{ fontSize: '1.1rem', margin: '1rem 0 0.5rem 0', color: '#bbb' }}>History</h3>
+            <h3 style={{ fontSize: '1.1rem', margin: '1rem 0 0.5rem 0', color: '#ccc' }}>History</h3>
             {transactions.map(tx => (
               <div key={tx.id} className="mobile-card" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                 <div>
                   <strong style={{ color: '#fff' }}>{tx.payee}</strong>
-                  <div style={{ fontSize: '0.8rem', color: '#888' }}>Date: {tx.date}</div>
+                  <div style={{ fontSize: '0.8rem', color: '#aaa' }}>{tx.date}</div>
                 </div>
                 <span style={{ color: tx.type === 'income' ? '#4caf50' : '#ff6b6b', fontWeight: 'bold' }}>
                   {tx.type === 'income' ? '+' : '-'}${tx.amount.toFixed(2)}
@@ -379,112 +435,115 @@ export default function App() {
           </div>
         )}
 
-        {/* REPORTS TAB WITH SIDE TABS */}
+        {/* REPORTS TAB */}
         {activeTab === 'reports' && (
           <div>
-            <h3 style={{ fontSize: '1.2rem', marginBottom: '1rem', color: '#fff' }}>Financial Reports</h3>
-
-            <div style={{ display: 'flex', gap: '1rem', flexWrap: 'wrap' }}>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem', width: '120px' }}>
-                <button
-                  className={`side-tab-btn ${reportSubTab === 'week' ? 'active' : ''}`}
-                  onClick={() => setReportSubTab('week')}
-                >
-                  Week
-                </button>
-                <button
-                  className={`side-tab-btn ${reportSubTab === 'month' ? 'active' : ''}`}
-                  onClick={() => setReportSubTab('month')}
-                >
-                  Month
-                </button>
-                <button
-                  className={`side-tab-btn ${reportSubTab === 'year' ? 'active' : ''}`}
-                  onClick={() => setReportSubTab('year')}
-                >
-                  Year
-                </button>
-              </div>
-
-              <div style={{ flex: 1, minWidth: '240px' }}>
-                {reportSubTab === 'week' && (
-                  <div className="mobile-card">
-                    <h4 style={{ margin: '0 0 1rem 0', color: '#388e3c', fontSize: '1.1rem' }}>Weekly Report (Last 7 Days)</h4>
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
-                      <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                        <span>Income</span>
-                        <span style={{ color: '#4caf50', fontWeight: 'bold' }}>+${weekMetrics.income.toFixed(2)}</span>
-                      </div>
-                      <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                        <span>Expenses</span>
-                        <span style={{ color: '#ff6b6b', fontWeight: 'bold' }}>-${weekMetrics.expenses.toFixed(2)}</span>
-                      </div>
-                      <div style={{ display: 'flex', justifyContent: 'space-between', borderTop: '1px solid #333', paddingTop: '0.5rem' }}>
-                        <span style={{ fontWeight: 'bold' }}>Net Cash Flow</span>
-                        <span style={{ color: weekMetrics.net >= 0 ? '#4caf50' : '#ff6b6b', fontWeight: 'bold' }}>
-                          ${weekMetrics.net.toFixed(2)}
-                        </span>
-                      </div>
-                      <div style={{ fontSize: '0.8rem', color: '#888', textAlign: 'right' }}>
-                        {weekMetrics.count} transaction(s) found
-                      </div>
-                    </div>
-                  </div>
-                )}
-
-                {reportSubTab === 'month' && (
-                  <div className="mobile-card">
-                    <h4 style={{ margin: '0 0 1rem 0', color: '#388e3c', fontSize: '1.1rem' }}>Monthly Report ({currentMonthStr})</h4>
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
-                      <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                        <span>Income</span>
-                        <span style={{ color: '#4caf50', fontWeight: 'bold' }}>+${monthMetrics.income.toFixed(2)}</span>
-                      </div>
-                      <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                        <span>Expenses</span>
-                        <span style={{ color: '#ff6b6b', fontWeight: 'bold' }}>-${monthMetrics.expenses.toFixed(2)}</span>
-                      </div>
-                      <div style={{ display: 'flex', justifyContent: 'space-between', borderTop: '1px solid #333', paddingTop: '0.5rem' }}>
-                        <span style={{ fontWeight: 'bold' }}>Net Cash Flow</span>
-                        <span style={{ color: monthMetrics.net >= 0 ? '#4caf50' : '#ff6b6b', fontWeight: 'bold' }}>
-                          ${monthMetrics.net.toFixed(2)}
-                        </span>
-                      </div>
-                      <div style={{ fontSize: '0.8rem', color: '#888', textAlign: 'right' }}>
-                        {monthMetrics.count} transaction(s) found
-                      </div>
-                    </div>
-                  </div>
-                )}
-
-                {reportSubTab === 'year' && (
-                  <div className="mobile-card">
-                    <h4 style={{ margin: '0 0 1rem 0', color: '#388e3c', fontSize: '1.1rem' }}>Yearly Report ({currentYearStr})</h4>
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
-                      <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                        <span>Income</span>
-                        <span style={{ color: '#4caf50', fontWeight: 'bold' }}>+${yearMetrics.income.toFixed(2)}</span>
-                      </div>
-                      <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                        <span>Expenses</span>
-                        <span style={{ color: '#ff6b6b', fontWeight: 'bold' }}>-${yearMetrics.expenses.toFixed(2)}</span>
-                      </div>
-                      <div style={{ display: 'flex', justifyContent: 'space-between', borderTop: '1px solid #333', paddingTop: '0.5rem' }}>
-                        <span style={{ fontWeight: 'bold' }}>Net Cash Flow</span>
-                        <span style={{ color: yearMetrics.net >= 0 ? '#4caf50' : '#ff6b6b', fontWeight: 'bold' }}>
-                          ${yearMetrics.net.toFixed(2)}
-                        </span>
-                      </div>
-                      <div style={{ fontSize: '0.8rem', color: '#888', textAlign: 'right' }}>
-                        {yearMetrics.count} transaction(s) found
-                      </div>
-                    </div>
-                  </div>
-                )}
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
+              <h3 style={{ fontSize: '1.2rem', margin: 0, color: '#fff' }}>Financial Reports</h3>
+              <div style={{ display: 'flex', gap: '0.35rem' }}>
+                <button className={`subtab-btn ${reportTimeframe === 'week' ? 'active' : ''}`} onClick={() => setReportTimeframe('week')}>Week</button>
+                <button className={`subtab-btn ${reportTimeframe === 'month' ? 'active' : ''}`} onClick={() => setReportTimeframe('month')}>Month</button>
+                <button className={`subtab-btn ${reportTimeframe === 'year' ? 'active' : ''}`} onClick={() => setReportTimeframe('year')}>Year</button>
               </div>
             </div>
+
+            {reportTimeframe === 'week' && (
+              <div className="mobile-card">
+                <h4 style={{ margin: '0 0 0.5rem 0', color: '#fff' }}>Weekly Overview</h4>
+                <p style={{ fontSize: '0.9rem', color: '#aaa' }}>Weekly summary metrics and activity.</p>
+              </div>
+            )}
+
+            {reportTimeframe === 'month' && (
+              <>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: '0.75rem', marginBottom: '1.5rem' }}>
+                  <div className="stat-card">
+                    <div style={{ fontSize: '0.8rem', color: '#aaa' }}>Total Income</div>
+                    <div style={{ fontSize: '1.25rem', fontWeight: 'bold', color: '#4caf50', marginTop: '0.25rem' }}>
+                      ${totalIncome.toFixed(2)}
+                    </div>
+                  </div>
+
+                  <div className="stat-card">
+                    <div style={{ fontSize: '0.8rem', color: '#aaa' }}>Total Expenses</div>
+                    <div style={{ fontSize: '1.25rem', fontWeight: 'bold', color: '#ff6b6b', marginTop: '0.25rem' }}>
+                      ${totalExpenses.toFixed(2)}
+                    </div>
+                  </div>
+
+                  <div className="stat-card">
+                    <div style={{ fontSize: '0.8rem', color: '#aaa' }}>Cash Flow</div>
+                    <div style={{ fontSize: '1.25rem', fontWeight: 'bold', color: netCashFlow >= 0 ? '#4caf50' : '#ff6b6b', marginTop: '0.25rem' }}>
+                      ${netCashFlow.toFixed(2)}
+                    </div>
+                  </div>
+
+                  <div className="stat-card">
+                    <div style={{ fontSize: '0.8rem', color: '#aaa' }}>Avg / Month</div>
+                    <div style={{ fontSize: '1.25rem', fontWeight: 'bold', color: avgCashFlowPerMonth >= 0 ? '#3b82f6' : '#ff6b6b', marginTop: '0.25rem' }}>
+                      ${avgCashFlowPerMonth.toFixed(2)}
+                    </div>
+                  </div>
+                </div>
+
+                <div className="mobile-card">
+                  <h4 style={{ margin: '0 0 1rem 0', fontSize: '1.05rem', color: '#fff' }}>This Month Overview</h4>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '0.6rem' }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                      <span>Income</span>
+                      <span style={{ fontWeight: 'bold', color: '#4caf50' }}>+${thisMonthIncome.toFixed(2)}</span>
+                    </div>
+                    <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                      <span>Expenses</span>
+                      <span style={{ fontWeight: 'bold', color: '#ff6b6b' }}>-${thisMonthExpenses.toFixed(2)}</span>
+                    </div>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', borderTop: '1px solid #333', paddingTop: '0.5rem', fontWeight: 'bold' }}>
+                      <span>Net Position</span>
+                      <span style={{ color: thisMonthNet >= 0 ? '#4caf50' : '#ff6b6b' }}>${thisMonthNet.toFixed(2)}</span>
+                    </div>
+                  </div>
+                </div>
+              </>
+            )}
+
+            {reportTimeframe === 'year' && (
+              <div className="mobile-card">
+                <h4 style={{ margin: '0 0 0.5rem 0', color: '#fff' }}>Yearly Overview</h4>
+                <p style={{ fontSize: '0.9rem', color: '#aaa' }}>Year-to-date income and expense breakdowns.</p>
+              </div>
+            )}
           </div>
         )}
+
+        {/* DEBTS TAB */}
+        {activeTab === 'debts' && (
+          <div>
+            <div className="mobile-card">
+              <h3 style={{ marginTop: 0, fontSize: '1.1rem', color: '#fff' }}>Add Debt Account</h3>
+              <form onSubmit={handleAddDebt} className="form-grid">
+                <input type="text" placeholder="Debt Name" value={newDebtName} onChange={(e) => setNewDebtName(e.target.value)} style={{ padding: '0.5rem' }} />
+                <input type="number" step="0.01" placeholder="Total Owed ($)" value={newDebtOwed} onChange={(e) => setNewDebtOwed(e.target.value)} style={{ padding: '0.5rem' }} />
+                <input type="number" step="0.01" placeholder="Interest Rate (%)" value={newDebtRate} onChange={(e) => setNewDebtRate(e.target.value)} style={{ padding: '0.5rem' }} />
+                <button type="submit" className="btn-primary">Add Debt</button>
+              </form>
+            </div>
+
+            <h3 style={{ fontSize: '1.1rem', margin: '1rem 0 0.5rem 0', color: '#ccc' }}>Debts</h3>
+            {debts.map(d => (
+              <div key={d.id} className="mobile-card" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <div>
+                  <strong style={{ color: '#fff' }}>{d.name}</strong>
+                  <div style={{ fontSize: '0.8rem', color: '#aaa' }}>{d.interestRate}% APR</div>
+                </div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+                  <span style={{ fontWeight: 'bold', color: '#ff6b6b' }}>${d.totalOwed.toFixed(2)}</span>
+                  <button onClick={() => handleRemoveDebt(d.id)} className="btn-danger" style={{ fontSize: '0.8rem' }}>Remove</button>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+
       </div>
     </div>
   );
