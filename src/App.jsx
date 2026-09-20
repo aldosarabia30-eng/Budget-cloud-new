@@ -182,7 +182,7 @@ export default function App() {
 
   const netCashFlow = totalIncome - totalExpenses;
 
-  const currentYearMonth = new Date().toISOString().slice(0, 7); // 'YYYY-MM'
+  const currentYearMonth = new Date().toISOString().slice(0, 7);
   const uniqueMonths = Array.from(new Set(transactions.map(tx => tx.date.slice(0, 7))));
   const monthCount = uniqueMonths.length || 1;
   const avgCashFlowPerMonth = netCashFlow / monthCount;
@@ -199,25 +199,26 @@ export default function App() {
   const thisMonthNet = thisMonthIncome - thisMonthExpenses;
 
   return (
-    <div style={{ padding: '1rem', fontFamily: 'system-ui, -apple-system, sans-serif', maxWidth: '800px', margin: '0 auto', paddingBottom: '5rem' }}>
+    <div style={{ padding: '1rem', fontFamily: 'system-ui, -apple-system, sans-serif', maxWidth: '800px', margin: '0 auto', paddingBottom: '5rem', backgroundColor: '#121212', color: '#e0e0e0', minHeight: '100vh' }}>
       <style>{`
-        input, select, button { font-size: 16px !important; min-height: 44px; box-sizing: border-box; }
-        .tab-btn { padding: 0.75rem 1rem; border: none; background: none; font-size: 0.9rem; font-weight: 600; color: #666; cursor: pointer; white-space: nowrap; flex: 1; text-align: center; }
-        .tab-btn.active { color: #0070f3; border-bottom: 3px solid #0070f3; }
-        .mobile-card { background: #fff; border: 1px solid #e1e4e8; border-radius: 8px; padding: 1rem; margin-bottom: 0.75rem; box-shadow: 0 1px 3px rgba(0,0,0,0.05); }
+        input, select, button { font-size: 16px !important; min-height: 44px; box-sizing: border-box; background-color: #2a2a2a; color: #ffffff; border: 1px solid #444; border-radius: 4px; }
+        input::placeholder { color: #888; }
+        .tab-btn { padding: 0.75rem 1rem; border: none; background: none; font-size: 0.9rem; font-weight: 600; color: #888; cursor: pointer; white-space: nowrap; flex: 1; text-align: center; }
+        .tab-btn.active { color: #3b82f6; border-bottom: 3px solid #3b82f6; }
+        .mobile-card { background: #1e1e1e; border: 1px solid #333; border-radius: 8px; padding: 1rem; margin-bottom: 0.75rem; box-shadow: 0 1px 3px rgba(0,0,0,0.3); }
         .form-grid { display: flex; flex-direction: column; gap: 0.75rem; }
-        .btn-danger { background: #fce8e6; border: 1px solid #d93025; color: #d93025; border-radius: 4px; padding: 0.4rem 0.75rem; font-weight: bold; cursor: pointer; }
+        .btn-danger { background: #3a1c1c; border: 1px solid #d93025; color: #ff6b6b; border-radius: 4px; padding: 0.4rem 0.75rem; font-weight: bold; cursor: pointer; }
         .btn-primary { background: #0070f3; border: none; color: #fff; border-radius: 4px; font-weight: bold; padding: 0.5rem 1rem; cursor: pointer; }
-        .stat-card { background: #f8f9fa; border: 1px solid #e1e4e8; border-radius: 8px; padding: 1rem; text-align: center; }
+        .stat-card { background: #1e1e1e; border: 1px solid #333; border-radius: 8px; padding: 1rem; text-align: center; }
         @media (min-width: 600px) {
           .form-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); }
         }
       `}</style>
 
-      <h1 style={{ fontSize: '1.5rem', marginBottom: '1rem' }}>Envelope Budgeting</h1>
+      <h1 style={{ fontSize: '1.5rem', marginBottom: '1rem', color: '#ffffff' }}>Envelope Budgeting</h1>
 
       {/* Navigation Bar */}
-      <div style={{ display: 'flex', overflowX: 'auto', borderBottom: '1px solid #ddd', marginBottom: '1.25rem', WebkitOverflowScrolling: 'touch' }}>
+      <div style={{ display: 'flex', overflowX: 'auto', borderBottom: '1px solid #333', marginBottom: '1.25rem', WebkitOverflowScrolling: 'touch' }}>
         <button className={`tab-btn ${activeTab === 'overview' ? 'active' : ''}`} onClick={() => setActiveTab('overview')}>Overview</button>
         <button className={`tab-btn ${activeTab === 'envelopes' ? 'active' : ''}`} onClick={() => setActiveTab('envelopes')}>Envelopes</button>
         <button className={`tab-btn ${activeTab === 'accounts' ? 'active' : ''}`} onClick={() => setActiveTab('accounts')}>Accounts</button>
@@ -227,9 +228,9 @@ export default function App() {
       </div>
 
       {/* Ready to Assign Banner */}
-      <div style={{ background: '#e6f4ea', padding: '1rem', borderRadius: '8px', marginBottom: '1.5rem', textAlign: 'center' }}>
-        <span style={{ fontSize: '0.9rem', color: '#333' }}>Ready to Assign</span>
-        <h2 style={{ margin: '0.25rem 0 0 0', color: readyToAssign < 0 ? 'red' : '#28a745', fontSize: '1.75rem' }}>
+      <div style={{ background: '#1c2d22', border: '1px solid #28a745', padding: '1rem', borderRadius: '8px', marginBottom: '1.5rem', textAlign: 'center' }}>
+        <span style={{ fontSize: '0.9rem', color: '#a0a0a0' }}>Ready to Assign</span>
+        <h2 style={{ margin: '0.25rem 0 0 0', color: readyToAssign < 0 ? '#ff6b6b' : '#4caf50', fontSize: '1.75rem' }}>
           ${readyToAssign.toFixed(2)}
         </h2>
       </div>
@@ -241,18 +242,18 @@ export default function App() {
             const groupEnvelopes = envelopes.filter(e => e.group === group);
             return (
               <div key={group} style={{ marginBottom: '1.5rem' }}>
-                <h3 style={{ fontSize: '1.1rem', marginBottom: '0.5rem', color: '#444' }}>{group}</h3>
+                <h3 style={{ fontSize: '1.1rem', marginBottom: '0.5rem', color: '#ccc' }}>{group}</h3>
                 {groupEnvelopes.map(env => {
                   const available = env.assigned - env.activity;
                   return (
                     <div key={env.id} className="mobile-card">
                       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.5rem' }}>
-                        <strong style={{ fontSize: '1.05rem' }}>{env.name}</strong>
-                        <span style={{ fontWeight: 'bold', color: available < 0 ? 'red' : 'green', fontSize: '1.1rem' }}>
+                        <strong style={{ fontSize: '1.05rem', color: '#fff' }}>{env.name}</strong>
+                        <span style={{ fontWeight: 'bold', color: available < 0 ? '#ff6b6b' : '#4caf50', fontSize: '1.1rem' }}>
                           ${available.toFixed(2)}
                         </span>
                       </div>
-                      <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.85rem', color: '#666', marginBottom: '0.75rem' }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.85rem', color: '#aaa', marginBottom: '0.75rem' }}>
                         <span>Assigned: ${env.assigned.toFixed(2)}</span>
                         <span>Activity: ${env.activity.toFixed(2)}</span>
                       </div>
@@ -262,10 +263,10 @@ export default function App() {
                           placeholder="Amount"
                           value={adjustAmounts[env.id] || ''}
                           onChange={(e) => setAdjustAmounts({ ...adjustAmounts, [env.id]: e.target.value })}
-                          style={{ flex: 1, padding: '0.4rem 0.6rem', border: '1px solid #ccc', borderRadius: '4px' }}
+                          style={{ flex: 1, padding: '0.4rem 0.6rem' }}
                         />
-                        <button onClick={() => handleAdjustEnvelope(env.id, 'add')} style={{ background: '#e6f4ea', border: '1px solid #28a745', color: '#28a745', borderRadius: '4px', padding: '0 0.75rem', fontWeight: 'bold' }}>+</button>
-                        <button onClick={() => handleAdjustEnvelope(env.id, 'subtract')} style={{ background: '#fce8e6', border: '1px solid #d93025', color: '#d93025', borderRadius: '4px', padding: '0 0.75rem', fontWeight: 'bold' }}>-</button>
+                        <button onClick={() => handleAdjustEnvelope(env.id, 'add')} style={{ background: '#1c2d22', border: '1px solid #28a745', color: '#4caf50', borderRadius: '4px', padding: '0 0.75rem', fontWeight: 'bold' }}>+</button>
+                        <button onClick={() => handleAdjustEnvelope(env.id, 'subtract')} style={{ background: '#3a1c1c', border: '1px solid #d93025', color: '#ff6b6b', borderRadius: '4px', padding: '0 0.75rem', fontWeight: 'bold' }}>-</button>
                       </div>
                     </div>
                   );
@@ -279,34 +280,34 @@ export default function App() {
       {/* ENVELOPES MANAGEMENT TAB */}
       {activeTab === 'envelopes' && (
         <div>
-          <div className="mobile-card" style={{ background: '#f8f9fa' }}>
-            <h3 style={{ marginTop: 0, fontSize: '1.1rem' }}>Add Category Group</h3>
+          <div className="mobile-card">
+            <h3 style={{ marginTop: 0, fontSize: '1.1rem', color: '#fff' }}>Add Category Group</h3>
             <form onSubmit={handleAddGroup} className="form-grid">
-              <input type="text" placeholder="Group Name (e.g., Bills)" value={newGroupName} onChange={(e) => setNewGroupName(e.target.value)} style={{ padding: '0.5rem', border: '1px solid #ccc', borderRadius: '4px' }} />
+              <input type="text" placeholder="Group Name (e.g., Bills)" value={newGroupName} onChange={(e) => setNewGroupName(e.target.value)} style={{ padding: '0.5rem' }} />
               <button type="submit" className="btn-primary">Add Group</button>
             </form>
           </div>
 
-          <div className="mobile-card" style={{ background: '#f8f9fa' }}>
-            <h3 style={{ marginTop: 0, fontSize: '1.1rem' }}>Add New Envelope</h3>
+          <div className="mobile-card">
+            <h3 style={{ marginTop: 0, fontSize: '1.1rem', color: '#fff' }}>Add New Envelope</h3>
             <form onSubmit={handleAddEnvelope} className="form-grid">
-              <input type="text" placeholder="Envelope Name" value={newEnvName} onChange={(e) => setNewEnvName(e.target.value)} style={{ padding: '0.5rem', border: '1px solid #ccc', borderRadius: '4px' }} />
-              <select value={newEnvGroup} onChange={(e) => setNewEnvGroup(e.target.value)} style={{ padding: '0.5rem', border: '1px solid #ccc', borderRadius: '4px' }}>
+              <input type="text" placeholder="Envelope Name" value={newEnvName} onChange={(e) => setNewEnvName(e.target.value)} style={{ padding: '0.5rem' }} />
+              <select value={newEnvGroup} onChange={(e) => setNewEnvGroup(e.target.value)} style={{ padding: '0.5rem' }}>
                 {groups.map(g => <option key={g} value={g}>{g}</option>)}
               </select>
               <button type="submit" className="btn-primary">Add Envelope</button>
             </form>
           </div>
 
-          <h3 style={{ fontSize: '1.1rem', margin: '1rem 0 0.5rem 0' }}>Manage Envelopes</h3>
+          <h3 style={{ fontSize: '1.1rem', margin: '1rem 0 0.5rem 0', color: '#ccc' }}>Manage Envelopes</h3>
           {groups.map(group => (
             <div key={group} className="mobile-card">
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.75rem' }}>
-                <strong>Group: {group}</strong>
+                <strong style={{ color: '#fff' }}>Group: {group}</strong>
                 <button onClick={() => handleRemoveGroup(group)} className="btn-danger" style={{ fontSize: '0.8rem' }}>Delete Group</button>
               </div>
               {envelopes.filter(e => e.group === group).map(env => (
-                <div key={env.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '0.5rem 0', borderTop: '1px solid #eee' }}>
+                <div key={env.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '0.5rem 0', borderTop: '1px solid #333' }}>
                   <span>{env.name}</span>
                   <button onClick={() => handleRemoveEnvelope(env.id)} className="btn-danger" style={{ fontSize: '0.8rem' }}>Delete</button>
                 </div>
@@ -319,30 +320,30 @@ export default function App() {
       {/* ACCOUNTS TAB */}
       {activeTab === 'accounts' && (
         <div>
-          <div className="mobile-card" style={{ background: '#f8f9fa' }}>
-            <h3 style={{ marginTop: 0, fontSize: '1.1rem' }}>Add Account</h3>
+          <div className="mobile-card">
+            <h3 style={{ marginTop: 0, fontSize: '1.1rem', color: '#fff' }}>Add Account</h3>
             <form onSubmit={handleAddAccount} className="form-grid">
-              <input type="text" placeholder="Account Name" value={newAccName} onChange={(e) => setNewAccName(e.target.value)} style={{ padding: '0.5rem', border: '1px solid #ccc', borderRadius: '4px' }} />
-              <select value={newAccType} onChange={(e) => setNewAccType(e.target.value)} style={{ padding: '0.5rem', border: '1px solid #ccc', borderRadius: '4px' }}>
+              <input type="text" placeholder="Account Name" value={newAccName} onChange={(e) => setNewAccName(e.target.value)} style={{ padding: '0.5rem' }} />
+              <select value={newAccType} onChange={(e) => setNewAccType(e.target.value)} style={{ padding: '0.5rem' }}>
                 <option value="Checking">Checking</option>
                 <option value="Savings">Savings</option>
                 <option value="Credit Card">Credit Card</option>
                 <option value="Cash">Cash</option>
               </select>
-              <input type="number" step="0.01" placeholder="Starting Balance" value={newAccBalance} onChange={(e) => setNewAccBalance(e.target.value)} style={{ padding: '0.5rem', border: '1px solid #ccc', borderRadius: '4px' }} />
+              <input type="number" step="0.01" placeholder="Starting Balance" value={newAccBalance} onChange={(e) => setNewAccBalance(e.target.value)} style={{ padding: '0.5rem' }} />
               <button type="submit" className="btn-primary">Add Account</button>
             </form>
           </div>
 
-          <h3 style={{ fontSize: '1.1rem', margin: '1rem 0 0.5rem 0' }}>Accounts</h3>
+          <h3 style={{ fontSize: '1.1rem', margin: '1rem 0 0.5rem 0', color: '#ccc' }}>Accounts</h3>
           {accounts.map(acc => (
             <div key={acc.id} className="mobile-card" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
               <div>
-                <strong>{acc.name}</strong>
-                <div style={{ fontSize: '0.8rem', color: '#666' }}>{acc.type}</div>
+                <strong style={{ color: '#fff' }}>{acc.name}</strong>
+                <div style={{ fontSize: '0.8rem', color: '#aaa' }}>{acc.type}</div>
               </div>
               <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
-                <span style={{ fontWeight: 'bold', color: acc.balance < 0 ? 'red' : 'black' }}>${acc.balance.toFixed(2)}</span>
+                <span style={{ fontWeight: 'bold', color: acc.balance < 0 ? '#ff6b6b' : '#ffffff' }}>${acc.balance.toFixed(2)}</span>
                 <button onClick={() => handleRemoveAccount(acc.id)} className="btn-danger" style={{ fontSize: '0.8rem' }}>Remove</button>
               </div>
             </div>
@@ -353,20 +354,20 @@ export default function App() {
       {/* TRANSACTIONS TAB */}
       {activeTab === 'transactions' && (
         <div>
-          <div className="mobile-card" style={{ background: '#f8f9fa' }}>
-            <h3 style={{ marginTop: 0, fontSize: '1.1rem' }}>Add Transaction</h3>
+          <div className="mobile-card">
+            <h3 style={{ marginTop: 0, fontSize: '1.1rem', color: '#fff' }}>Add Transaction</h3>
             <form onSubmit={handleAddTransaction} className="form-grid">
-              <input type="text" placeholder="Payee" value={payee} onChange={(e) => setPayee(e.target.value)} style={{ padding: '0.5rem', borderRadius: '4px', border: '1px solid #ccc' }} />
-              <input type="number" step="0.01" placeholder="Amount ($)" value={amount} onChange={(e) => setAmount(e.target.value)} style={{ padding: '0.5rem', borderRadius: '4px', border: '1px solid #ccc' }} />
-              <select value={txType} onChange={(e) => setTxType(e.target.value)} style={{ padding: '0.5rem', borderRadius: '4px', border: '1px solid #ccc' }}>
+              <input type="text" placeholder="Payee" value={payee} onChange={(e) => setPayee(e.target.value)} style={{ padding: '0.5rem' }} />
+              <input type="number" step="0.01" placeholder="Amount ($)" value={amount} onChange={(e) => setAmount(e.target.value)} style={{ padding: '0.5rem' }} />
+              <select value={txType} onChange={(e) => setTxType(e.target.value)} style={{ padding: '0.5rem' }}>
                 <option value="expense">Expense</option>
                 <option value="income">Income</option>
               </select>
-              <select value={selectedAccount} onChange={(e) => setSelectedAccount(e.target.value)} style={{ padding: '0.5rem', borderRadius: '4px', border: '1px solid #ccc' }}>
+              <select value={selectedAccount} onChange={(e) => setSelectedAccount(e.target.value)} style={{ padding: '0.5rem' }}>
                 {accounts.map(acc => <option key={acc.id} value={acc.id}>{acc.name}</option>)}
               </select>
               {txType === 'expense' && (
-                <select value={selectedEnvelope} onChange={(e) => setSelectedEnvelope(e.target.value)} style={{ padding: '0.5rem', borderRadius: '4px', border: '1px solid #ccc' }}>
+                <select value={selectedEnvelope} onChange={(e) => setSelectedEnvelope(e.target.value)} style={{ padding: '0.5rem' }}>
                   {envelopes.map(env => <option key={env.id} value={env.id}>{env.name}</option>)}
                 </select>
               )}
@@ -374,14 +375,14 @@ export default function App() {
             </form>
           </div>
 
-          <h3 style={{ fontSize: '1.1rem', margin: '1rem 0 0.5rem 0' }}>History</h3>
+          <h3 style={{ fontSize: '1.1rem', margin: '1rem 0 0.5rem 0', color: '#ccc' }}>History</h3>
           {transactions.map(tx => (
             <div key={tx.id} className="mobile-card" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
               <div>
-                <strong>{tx.payee}</strong>
-                <div style={{ fontSize: '0.8rem', color: '#666' }}>{tx.date}</div>
+                <strong style={{ color: '#fff' }}>{tx.payee}</strong>
+                <div style={{ fontSize: '0.8rem', color: '#aaa' }}>{tx.date}</div>
               </div>
-              <span style={{ color: tx.type === 'income' ? 'green' : 'red', fontWeight: 'bold' }}>
+              <span style={{ color: tx.type === 'income' ? '#4caf50' : '#ff6b6b', fontWeight: 'bold' }}>
                 {tx.type === 'income' ? '+' : '-'}${tx.amount.toFixed(2)}
               </span>
             </div>
@@ -392,34 +393,34 @@ export default function App() {
       {/* REPORTS TAB */}
       {activeTab === 'reports' && (
         <div>
-          <h3 style={{ fontSize: '1.2rem', marginBottom: '1rem' }}>Financial Reports</h3>
+          <h3 style={{ fontSize: '1.2rem', marginBottom: '1rem', color: '#fff' }}>Financial Reports</h3>
 
           {/* Key Metrics Grid */}
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: '0.75rem', marginBottom: '1.5rem' }}>
             <div className="stat-card">
-              <div style={{ fontSize: '0.8rem', color: '#666' }}>Total Income</div>
-              <div style={{ fontSize: '1.25rem', fontWeight: 'bold', color: '#28a745', marginTop: '0.25rem' }}>
+              <div style={{ fontSize: '0.8rem', color: '#aaa' }}>Total Income</div>
+              <div style={{ fontSize: '1.25rem', fontWeight: 'bold', color: '#4caf50', marginTop: '0.25rem' }}>
                 ${totalIncome.toFixed(2)}
               </div>
             </div>
 
             <div className="stat-card">
-              <div style={{ fontSize: '0.8rem', color: '#666' }}>Total Expenses</div>
-              <div style={{ fontSize: '1.25rem', fontWeight: 'bold', color: '#d93025', marginTop: '0.25rem' }}>
+              <div style={{ fontSize: '0.8rem', color: '#aaa' }}>Total Expenses</div>
+              <div style={{ fontSize: '1.25rem', fontWeight: 'bold', color: '#ff6b6b', marginTop: '0.25rem' }}>
                 ${totalExpenses.toFixed(2)}
               </div>
             </div>
 
             <div className="stat-card">
-              <div style={{ fontSize: '0.8rem', color: '#666' }}>Cash Flow</div>
-              <div style={{ fontSize: '1.25rem', fontWeight: 'bold', color: netCashFlow >= 0 ? '#28a745' : '#d93025', marginTop: '0.25rem' }}>
+              <div style={{ fontSize: '0.8rem', color: '#aaa' }}>Cash Flow</div>
+              <div style={{ fontSize: '1.25rem', fontWeight: 'bold', color: netCashFlow >= 0 ? '#4caf50' : '#ff6b6b', marginTop: '0.25rem' }}>
                 ${netCashFlow.toFixed(2)}
               </div>
             </div>
 
             <div className="stat-card">
-              <div style={{ fontSize: '0.8rem', color: '#666' }}>Avg / Month</div>
-              <div style={{ fontSize: '1.25rem', fontWeight: 'bold', color: avgCashFlowPerMonth >= 0 ? '#0070f3' : '#d93025', marginTop: '0.25rem' }}>
+              <div style={{ fontSize: '0.8rem', color: '#aaa' }}>Avg / Month</div>
+              <div style={{ fontSize: '1.25rem', fontWeight: 'bold', color: avgCashFlowPerMonth >= 0 ? '#3b82f6' : '#ff6b6b', marginTop: '0.25rem' }}>
                 ${avgCashFlowPerMonth.toFixed(2)}
               </div>
             </div>
@@ -427,19 +428,19 @@ export default function App() {
 
           {/* This Month Overview */}
           <div className="mobile-card">
-            <h4 style={{ margin: '0 0 1rem 0', fontSize: '1.05rem', color: '#333' }}>This Month Overview</h4>
+            <h4 style={{ margin: '0 0 1rem 0', fontSize: '1.05rem', color: '#fff' }}>This Month Overview</h4>
             <div style={{ display: 'flex', flexDirection: 'column', gap: '0.6rem' }}>
               <div style={{ display: 'flex', justifyContent: 'space-between' }}>
                 <span>Income</span>
-                <span style={{ fontWeight: 'bold', color: 'green' }}>+${thisMonthIncome.toFixed(2)}</span>
+                <span style={{ fontWeight: 'bold', color: '#4caf50' }}>+${thisMonthIncome.toFixed(2)}</span>
               </div>
               <div style={{ display: 'flex', justifyContent: 'space-between' }}>
                 <span>Expenses</span>
-                <span style={{ fontWeight: 'bold', color: 'red' }}>-${thisMonthExpenses.toFixed(2)}</span>
+                <span style={{ fontWeight: 'bold', color: '#ff6b6b' }}>-${thisMonthExpenses.toFixed(2)}</span>
               </div>
-              <div style={{ display: 'flex', justifyContent: 'space-between', borderTop: '1px solid #eee', paddingTop: '0.5rem', fontWeight: 'bold' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', borderTop: '1px solid #333', paddingTop: '0.5rem', fontWeight: 'bold' }}>
                 <span>Net Position</span>
-                <span style={{ color: thisMonthNet >= 0 ? 'green' : 'red' }}>${thisMonthNet.toFixed(2)}</span>
+                <span style={{ color: thisMonthNet >= 0 ? '#4caf50' : '#ff6b6b' }}>${thisMonthNet.toFixed(2)}</span>
               </div>
             </div>
           </div>
@@ -449,25 +450,25 @@ export default function App() {
       {/* DEBTS TAB */}
       {activeTab === 'debts' && (
         <div>
-          <div className="mobile-card" style={{ background: '#f8f9fa' }}>
-            <h3 style={{ marginTop: 0, fontSize: '1.1rem' }}>Add Debt Account</h3>
+          <div className="mobile-card">
+            <h3 style={{ marginTop: 0, fontSize: '1.1rem', color: '#fff' }}>Add Debt Account</h3>
             <form onSubmit={handleAddDebt} className="form-grid">
-              <input type="text" placeholder="Debt Name" value={newDebtName} onChange={(e) => setNewDebtName(e.target.value)} style={{ padding: '0.5rem', border: '1px solid #ccc', borderRadius: '4px' }} />
-              <input type="number" step="0.01" placeholder="Total Owed ($)" value={newDebtOwed} onChange={(e) => setNewDebtOwed(e.target.value)} style={{ padding: '0.5rem', border: '1px solid #ccc', borderRadius: '4px' }} />
-              <input type="number" step="0.01" placeholder="Interest Rate (%)" value={newDebtRate} onChange={(e) => setNewDebtRate(e.target.value)} style={{ padding: '0.5rem', border: '1px solid #ccc', borderRadius: '4px' }} />
+              <input type="text" placeholder="Debt Name" value={newDebtName} onChange={(e) => setNewDebtName(e.target.value)} style={{ padding: '0.5rem' }} />
+              <input type="number" step="0.01" placeholder="Total Owed ($)" value={newDebtOwed} onChange={(e) => setNewDebtOwed(e.target.value)} style={{ padding: '0.5rem' }} />
+              <input type="number" step="0.01" placeholder="Interest Rate (%)" value={newDebtRate} onChange={(e) => setNewDebtRate(e.target.value)} style={{ padding: '0.5rem' }} />
               <button type="submit" className="btn-primary">Add Debt</button>
             </form>
           </div>
 
-          <h3 style={{ fontSize: '1.1rem', margin: '1rem 0 0.5rem 0' }}>Debts</h3>
+          <h3 style={{ fontSize: '1.1rem', margin: '1rem 0 0.5rem 0', color: '#ccc' }}>Debts</h3>
           {debts.map(d => (
             <div key={d.id} className="mobile-card" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
               <div>
-                <strong>{d.name}</strong>
-                <div style={{ fontSize: '0.8rem', color: '#666' }}>{d.interestRate}% APR</div>
+                <strong style={{ color: '#fff' }}>{d.name}</strong>
+                <div style={{ fontSize: '0.8rem', color: '#aaa' }}>{d.interestRate}% APR</div>
               </div>
               <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
-                <span style={{ fontWeight: 'bold', color: '#d93025' }}>${d.totalOwed.toFixed(2)}</span>
+                <span style={{ fontWeight: 'bold', color: '#ff6b6b' }}>${d.totalOwed.toFixed(2)}</span>
                 <button onClick={() => handleRemoveDebt(d.id)} className="btn-danger" style={{ fontSize: '0.8rem' }}>Remove</button>
               </div>
             </div>
