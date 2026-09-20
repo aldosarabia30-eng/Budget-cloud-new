@@ -30,8 +30,8 @@ export default function App() {
 
   // Debts State
   const [debts, setDebts] = useState([
-    { id: '1', name: 'Auto Loan', totalOwed: 8500, interestRate: 4.5, monthlyPayment: 250 },
-    { id: '2', name: 'Rewards Credit Card', totalOwed: 450, interestRate: 19.99, monthlyPayment: 50 }
+    { id: '1', name: 'Auto Loan', totalOwed: 8500, interestRate: 4.5 },
+    { id: '2', name: 'Rewards Credit Card', totalOwed: 450, interestRate: 19.99 }
   ]);
   const [newDebtName, setNewDebtName] = useState('');
   const [newDebtOwed, setNewDebtOwed] = useState('');
@@ -44,7 +44,7 @@ export default function App() {
   const [selectedAccount, setSelectedAccount] = useState('1');
   const [selectedEnvelope, setSelectedEnvelope] = useState('1');
 
-  // Add Account
+  // --- ACCOUNT MANAGEMENT ---
   const handleAddAccount = (e) => {
     e.preventDefault();
     if (!newAccName || isNaN(parseFloat(newAccBalance))) return;
@@ -58,7 +58,11 @@ export default function App() {
     setNewAccBalance('');
   };
 
-  // Add Group
+  const handleRemoveAccount = (id) => {
+    setAccounts(accounts.filter(acc => acc.id !== id));
+  };
+
+  // --- GROUP & ENVELOPE MANAGEMENT ---
   const handleAddGroup = (e) => {
     e.preventDefault();
     if (!newGroupName || groups.includes(newGroupName)) return;
@@ -67,7 +71,15 @@ export default function App() {
     setNewGroupName('');
   };
 
-  // Add Envelope
+  const handleRemoveGroup = (groupName) => {
+    // Remove group and its associated envelopes
+    setGroups(groups.filter(g => g !== groupName));
+    setEnvelopes(envelopes.filter(env => env.group !== groupName));
+    if (newEnvGroup === groupName && groups.length > 1) {
+      setNewEnvGroup(groups.find(g => g !== groupName));
+    }
+  };
+
   const handleAddEnvelope = (e) => {
     e.preventDefault();
     if (!newEnvName) return;
@@ -81,7 +93,16 @@ export default function App() {
     setNewEnvName('');
   };
 
-  // Add Debt
+  const handleRemoveEnvelope = (id) => {
+    const targetEnv = envelopes.find(e => e.id === id);
+    if (targetEnv && targetEnv.assigned > 0) {
+      // Return remaining assigned funds back to Ready to Assign
+      setReadyToAssign(prev => prev + targetEnv.assigned);
+    }
+    setEnvelopes(envelopes.filter(e => e.id !== id));
+  };
+
+  // --- DEBT MANAGEMENT ---
   const handleAddDebt = (e) => {
     e.preventDefault();
     if (!newDebtName || isNaN(parseFloat(newDebtOwed))) return;
@@ -89,12 +110,15 @@ export default function App() {
       id: Date.now().toString(),
       name: newDebtName,
       totalOwed: parseFloat(newDebtOwed),
-      interestRate: parseFloat(newDebtRate) || 0,
-      monthlyPayment: 0
+      interestRate: parseFloat(newDebtRate) || 0
     }]);
     setNewDebtName('');
     setNewDebtOwed('');
     setNewDebtRate('');
+  };
+
+  const handleRemoveDebt = (id) => {
+    setDebts(debts.filter(d => d.id !== id));
   };
 
   // Direct Envelope Addition / Subtraction
@@ -168,7 +192,7 @@ export default function App() {
       <h1>Envelope Budgeting</h1>
 
       {/* Navigation Tabs */}
-      <div style={{ display: 'flex', borderBottom: '1px solid #ddd', marginBottom: '1.5rem' }}>
+      <div style={{ display: 'flex', borderBottom: '1px solid #ddd', marginBottom: '1.5rem', flexWrap: 'wrap' }}>
         <button style={navStyle('overview')} onClick={() => setActiveTab('overview')}>Overview</button>
         <button style={navStyle('envelopes')} onClick={() => setActiveTab('envelopes')}>Envelopes & Groups</button>
         <button style={navStyle('accounts')} onClick={() => setActiveTab('accounts')}>Accounts</button>
@@ -189,8 +213,8 @@ export default function App() {
             const groupEnvelopes = envelopes.filter(e => e.group === group);
             return (
               <div key={group} style={{ marginBottom: '2rem', background: '#fff', border: '1px solid #e1e4e8', borderRadius: '8px', overflow: 'hidden' }}>
-                <div style={{ background: '#f6f8fa', padding: '0.75rem 1rem', borderBottom: '1px solid #e1e4e8', fontWeight: 'bold' }}>
-                  {group}
+                <div style={{ background: '#f6f8fa', padding: '0.75rem 1rem', borderBottom: '1px solid #e1e4e8', fontWeight: 'bold', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <span>{group}</span>
                 </div>
                 <table style={{ width: '100%', borderCollapse: 'collapse' }}>
                   <thead>
@@ -219,8 +243,8 @@ export default function App() {
                               onChange={(e) => setAdjustAmounts({ ...adjustAmounts, [env.id]: e.target.value })}
                               style={{ width: '80px', padding: '0.3rem', marginRight: '0.5rem' }}
                             />
-                            <button onClick={() => handleAdjustEnvelope(env.id, 'add')} style={{ marginRight: '0.25rem', background: '#e6f4ea', border: '1px solid #28a745', cursor: 'pointer' }}>+ Add</button>
-                            <button onClick={() => handleAdjustEnvelope(env.id, 'subtract')} style={{ background: '#fce8e6', border: '1px solid #d93025', cursor: 'pointer' }}>- Subtract</button>
+                            <button onClick={() => handleAdjustEnvelope(env.id, 'add')} style={{ marginRight: '0.25rem', background: '#e6f4ea', border: '1px solid #28a745', cursor: 'pointer', borderRadius: '4px' }}>+ Add</button>
+                            <button onClick={() => handleAdjustEnvelope(env.id, 'subtract')} style={{ background: '#fce8e6', border: '1px solid #d93025', cursor: 'pointer', borderRadius: '4px' }}>- Subtract</button>
                           </td>
                         </tr>
                       );
@@ -238,14 +262,16 @@ export default function App() {
         <div>
           <h3>Envelope & Group Settings</h3>
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1.5rem', marginBottom: '2rem' }}>
+            {/* Group Addition Form */}
             <div style={{ background: '#f8f9fa', padding: '1.25rem', borderRadius: '8px' }}>
               <h4>Add New Category Group</h4>
               <form onSubmit={handleAddGroup} style={{ display: 'flex', gap: '0.5rem' }}>
                 <input type="text" placeholder="Group Name (e.g. Bills)" value={newGroupName} onChange={(e) => setNewGroupName(e.target.value)} style={{ padding: '0.5rem', flex: 1 }} />
-                <button type="submit" style={{ padding: '0.5rem 1rem', background: '#0070f3', color: '#fff', border: 'none', borderRadius: '4px' }}>Add Group</button>
+                <button type="submit" style={{ padding: '0.5rem 1rem', background: '#0070f3', color: '#fff', border: 'none', borderRadius: '4px', cursor: 'pointer' }}>Add Group</button>
               </form>
             </div>
 
+            {/* Envelope Addition Form */}
             <div style={{ background: '#f8f9fa', padding: '1.25rem', borderRadius: '8px' }}>
               <h4>Add New Envelope</h4>
               <form onSubmit={handleAddEnvelope} style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
@@ -253,10 +279,28 @@ export default function App() {
                 <select value={newEnvGroup} onChange={(e) => setNewEnvGroup(e.target.value)} style={{ padding: '0.5rem' }}>
                   {groups.map(g => <option key={g} value={g}>{g}</option>)}
                 </select>
-                <button type="submit" style={{ padding: '0.5rem 1rem', background: '#28a745', color: '#fff', border: 'none', borderRadius: '4px' }}>Create Envelope</button>
+                <button type="submit" style={{ padding: '0.5rem 1rem', background: '#28a745', color: '#fff', border: 'none', borderRadius: '4px', cursor: 'pointer' }}>Create Envelope</button>
               </form>
             </div>
           </div>
+
+          <h3>Manage Existing Groups & Envelopes</h3>
+          {groups.map(group => (
+            <div key={group} style={{ marginBottom: '1.5rem', background: '#fff', border: '1px solid #e1e4e8', borderRadius: '8px', padding: '1rem' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.75rem' }}>
+                <h4 style={{ margin: 0 }}>Group: {group}</h4>
+                <button onClick={() => handleRemoveGroup(group)} style={{ background: '#dc3545', color: '#fff', border: 'none', padding: '0.3rem 0.75rem', borderRadius: '4px', cursor: 'pointer' }}>Remove Group</button>
+              </div>
+              <ul style={{ listStyle: 'none', padding: 0, margin: 0 }}>
+                {envelopes.filter(e => e.group === group).map(env => (
+                  <li key={env.id} style={{ display: 'flex', justifyContent: 'space-between', padding: '0.5rem 0', borderBottom: '1px solid #f0f0f0' }}>
+                    <span>{env.name}</span>
+                    <button onClick={() => handleRemoveEnvelope(env.id)} style={{ background: '#f8d7da', color: '#721c24', border: '1px solid #f5c6cb', padding: '0.2rem 0.5rem', borderRadius: '4px', cursor: 'pointer', fontSize: '0.85rem' }}>Delete Envelope</button>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ))}
         </div>
       )}
 
@@ -275,7 +319,7 @@ export default function App() {
                 <option value="Cash">Cash</option>
               </select>
               <input type="number" step="0.01" placeholder="Starting Balance" value={newAccBalance} onChange={(e) => setNewAccBalance(e.target.value)} style={{ padding: '0.5rem' }} />
-              <button type="submit" style={{ padding: '0.5rem 1rem', background: '#0070f3', color: '#fff', border: 'none', borderRadius: '4px' }}>Add Account</button>
+              <button type="submit" style={{ padding: '0.5rem 1rem', background: '#0070f3', color: '#fff', border: 'none', borderRadius: '4px', cursor: 'pointer' }}>Add Account</button>
             </form>
           </div>
 
@@ -285,6 +329,7 @@ export default function App() {
                 <th style={{ padding: '0.75rem' }}>Account Name</th>
                 <th style={{ padding: '0.75rem' }}>Type</th>
                 <th style={{ padding: '0.75rem' }}>Current Balance</th>
+                <th style={{ padding: '0.75rem' }}>Action</th>
               </tr>
             </thead>
             <tbody>
@@ -293,6 +338,9 @@ export default function App() {
                   <td style={{ padding: '0.75rem' }}><strong>{acc.name}</strong></td>
                   <td style={{ padding: '0.75rem' }}>{acc.type}</td>
                   <td style={{ padding: '0.75rem', color: acc.balance < 0 ? 'red' : 'black', fontWeight: 'bold' }}>${acc.balance.toFixed(2)}</td>
+                  <td style={{ padding: '0.75rem' }}>
+                    <button onClick={() => handleRemoveAccount(acc.id)} style={{ background: '#dc3545', color: '#fff', border: 'none', padding: '0.3rem 0.6rem', borderRadius: '4px', cursor: 'pointer' }}>Remove</button>
+                  </td>
                 </tr>
               ))}
             </tbody>
@@ -314,7 +362,7 @@ export default function App() {
               <select value={selectedEnvelope} onChange={(e) => setSelectedEnvelope(e.target.value)} style={{ padding: '0.5rem' }}>
                 {envelopes.map(env => <option key={env.id} value={env.id}>{env.name}</option>)}
               </select>
-              <button type="submit" style={{ padding: '0.5rem 1rem', background: '#0070f3', color: '#fff', border: 'none', borderRadius: '4px' }}>Log Expense</button>
+              <button type="submit" style={{ padding: '0.5rem 1rem', background: '#0070f3', color: '#fff', border: 'none', borderRadius: '4px', cursor: 'pointer' }}>Log Expense</button>
             </form>
           </div>
 
@@ -360,7 +408,7 @@ export default function App() {
               <input type="text" placeholder="Debt Name (e.g. Student Loan)" value={newDebtName} onChange={(e) => setNewDebtName(e.target.value)} style={{ padding: '0.5rem' }} />
               <input type="number" step="0.01" placeholder="Total Balance ($)" value={newDebtOwed} onChange={(e) => setNewDebtOwed(e.target.value)} style={{ padding: '0.5rem' }} />
               <input type="number" step="0.01" placeholder="Interest Rate (%)" value={newDebtRate} onChange={(e) => setNewDebtRate(e.target.value)} style={{ padding: '0.5rem' }} />
-              <button type="submit" style={{ padding: '0.5rem 1rem', background: '#d93025', color: '#fff', border: 'none', borderRadius: '4px' }}>Add Debt</button>
+              <button type="submit" style={{ padding: '0.5rem 1rem', background: '#d93025', color: '#fff', border: 'none', borderRadius: '4px', cursor: 'pointer' }}>Add Debt</button>
             </form>
           </div>
 
@@ -370,6 +418,7 @@ export default function App() {
                 <th style={{ padding: '0.75rem' }}>Debt Name</th>
                 <th style={{ padding: '0.75rem' }}>Interest Rate</th>
                 <th style={{ padding: '0.75rem' }}>Remaining Balance</th>
+                <th style={{ padding: '0.75rem' }}>Action</th>
               </tr>
             </thead>
             <tbody>
@@ -378,6 +427,9 @@ export default function App() {
                   <td style={{ padding: '0.75rem' }}><strong>{d.name}</strong></td>
                   <td style={{ padding: '0.75rem' }}>{d.interestRate}% APR</td>
                   <td style={{ padding: '0.75rem', color: '#d93025', fontWeight: 'bold' }}>${d.totalOwed.toFixed(2)}</td>
+                  <td style={{ padding: '0.75rem' }}>
+                    <button onClick={() => handleRemoveDebt(d.id)} style={{ background: '#dc3545', color: '#fff', border: 'none', padding: '0.3rem 0.6rem', borderRadius: '4px', cursor: 'pointer' }}>Remove</button>
+                  </td>
                 </tr>
               ))}
             </tbody>
