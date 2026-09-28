@@ -66,6 +66,7 @@ export default function BudgetApp() {
 
   const [groups, setGroups] = useState(['Housing & Utilities', 'Daily Living', 'Savings Goals']);
   const [collapsedGroups, setCollapsedGroups] = useState({});
+  const [collapsedAccountTx, setCollapsedAccountTx] = useState({});
 
   const [envelopes, setEnvelopes] = useState([
     { id: 'env-1', name: 'Rent/Mortgage', group: 'Housing & Utilities', assigned: 1000, isDeleted: false, goalType: 'repeating', targetAmount: 1000, cadence: 'monthly', repeatDayOfMonth: '1', targetDate: '' },
@@ -127,6 +128,7 @@ export default function BudgetApp() {
         if (parsed.accounts) setAccounts(parsed.accounts);
         if (parsed.groups) setGroups(parsed.groups);
         if (parsed.collapsedGroups) setCollapsedGroups(parsed.collapsedGroups);
+        if (parsed.collapsedAccountTx) setCollapsedAccountTx(parsed.collapsedAccountTx);
         if (parsed.envelopes) setEnvelopes(parsed.envelopes);
         if (parsed.transactions) setTransactions(parsed.transactions);
         if (parsed.debts) setDebts(parsed.debts);
@@ -137,9 +139,9 @@ export default function BudgetApp() {
   }, []);
 
   useEffect(() => {
-    const dataToSave = { readyToAssign, accounts, groups, collapsedGroups, envelopes, transactions, debts };
+    const dataToSave = { readyToAssign, accounts, groups, collapsedGroups, collapsedAccountTx, envelopes, transactions, debts };
     localStorage.setItem(STORAGE_KEY, JSON.stringify(dataToSave));
-  }, [readyToAssign, accounts, groups, collapsedGroups, envelopes, transactions, debts]);
+  }, [readyToAssign, accounts, groups, collapsedGroups, collapsedAccountTx, envelopes, transactions, debts]);
 
   const showNotification = (msg) => {
     setNotification(msg);
@@ -148,6 +150,10 @@ export default function BudgetApp() {
 
   const toggleGroupCollapse = (groupName) => {
     setCollapsedGroups(prev => ({ ...prev, [groupName]: !prev[groupName] }));
+  };
+
+  const toggleAccountTxCollapse = (accId) => {
+    setCollapsedAccountTx(prev => ({ ...prev, [accId]: !prev[accId] }));
   };
 
   const activeTransactions = transactions.filter(t => !t.isDeleted);
@@ -645,27 +651,78 @@ export default function BudgetApp() {
               </div>
             </div>
 
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: '12px' }}>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
               {activeAccounts.map(acc => {
                 const balance = getAccountBalance(acc.id);
+                const accTxList = activeTransactions.filter(t => t.accountId === acc.id);
+                const isCollapsed = collapsedAccountTx[acc.id];
+
                 return (
-                  <div key={acc.id} style={{ border: '1px solid #e5e7eb', borderRadius: '8px', padding: '14px', backgroundColor: '#f9fafb', display: 'flex', flexDirection: 'column', justifyContent: 'space-between' }}>
-                    <div>
-                      <div style={{ fontSize: '0.8rem', color: '#6b7280', textTransform: 'uppercase', fontWeight: 'bold' }}>{acc.type}</div>
-                      <div style={{ fontSize: '1.1rem', fontWeight: 'bold', margin: '4px 0' }}>{acc.name}</div>
-                      <div style={{ fontSize: '1.3rem', fontWeight: 'bold', color: balance >= 0 ? '#059669' : '#dc2626' }}>
-                        ${balance.toFixed(2)}
+                  <div key={acc.id} style={{ border: '1px solid #e5e7eb', borderRadius: '8px', padding: '16px', backgroundColor: '#f9fafb' }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '10px' }}>
+                      <div>
+                        <div style={{ fontSize: '0.8rem', color: '#6b7280', textTransform: 'uppercase', fontWeight: 'bold' }}>{acc.type}</div>
+                        <div style={{ fontSize: '1.2rem', fontWeight: 'bold', margin: '2px 0' }}>{acc.name}</div>
+                        <div style={{ fontSize: '0.8rem', color: '#9ca3af' }}>Initial: ${Number(acc.initialBalance).toFixed(2)}</div>
+                      </div>
+                      <div style={{ textAlign: 'right', display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: '6px' }}>
+                        <div style={{ fontSize: '1.4rem', fontWeight: 'bold', color: balance >= 0 ? '#059669' : '#dc2626' }}>
+                          ${balance.toFixed(2)}
+                        </div>
+                        <div style={{ display: 'flex', gap: '8px' }}>
+                          <button
+                            onClick={() => toggleAccountTxCollapse(acc.id)}
+                            style={{ backgroundColor: '#e0e7ff', color: '#1e3a8a', border: 'none', padding: '4px 10px', borderRadius: '4px', cursor: 'pointer', fontSize: '0.8rem', fontWeight: '600' }}
+                          >
+                            {isCollapsed ? `► Show Transactions (${accTxList.length})` : `▼ Hide Transactions (${accTxList.length})`}
+                          </button>
+                          <button
+                            onClick={() => handleSoftDeleteAccount(acc.id)}
+                            style={{ backgroundColor: '#fee2e2', color: '#dc2626', border: 'none', padding: '4px 8px', borderRadius: '4px', cursor: 'pointer', fontSize: '0.75rem' }}
+                          >
+                            Trash
+                          </button>
+                        </div>
                       </div>
                     </div>
-                    <div style={{ marginTop: '12px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                      <span style={{ fontSize: '0.75rem', color: '#9ca3af' }}>Initial: ${Number(acc.initialBalance).toFixed(2)}</span>
-                      <button
-                        onClick={() => handleSoftDeleteAccount(acc.id)}
-                        style={{ backgroundColor: '#fee2e2', color: '#dc2626', border: 'none', padding: '4px 8px', borderRadius: '4px', cursor: 'pointer', fontSize: '0.75rem' }}
-                      >
-                        Trash
-                      </button>
-                    </div>
+
+                    {!isCollapsed && (
+                      <div style={{ marginTop: '16px', paddingTop: '12px', borderTop: '1px solid #e5e7eb' }}>
+                        <h4 style={{ margin: '0 0 10px 0', fontSize: '0.9rem', color: '#4b5563' }}>Transactions</h4>
+                        {accTxList.length === 0 ? (
+                          <p style={{ color: '#9ca3af', fontStyle: 'italic', fontSize: '0.85rem', margin: 0 }}>No transactions recorded for this account.</p>
+                        ) : (
+                          <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                            {accTxList.map(tx => {
+                              const envName = tx.type === 'expense' 
+                                ? (envelopes.find(e => e.id === tx.envelopeId)?.name || 'Uncategorized') 
+                                : 'Income / Ready to Assign';
+
+                              return (
+                                <div key={tx.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '8px 12px', backgroundColor: 'white', borderRadius: '6px', border: '1px solid #e5e7eb', fontSize: '0.85rem', flexWrap: 'wrap', gap: '8px' }}>
+                                  <div>
+                                    <span style={{ fontWeight: '600', marginRight: '8px' }}>{tx.payee}</span>
+                                    <span style={{ color: '#6b7280', fontSize: '0.75rem' }}>({formatDate(tx.date, 'readable')})</span>
+                                    <span style={{ marginLeft: '8px', backgroundColor: tx.type === 'income' ? '#d1fae5' : '#e5e7eb', color: tx.type === 'income' ? '#065f46' : '#4b5563', padding: '2px 6px', borderRadius: '10px', fontSize: '0.75rem' }}>
+                                      {envName}
+                                    </span>
+                                    {tx.notes && <span style={{ marginLeft: '8px', color: '#9ca3af', fontSize: '0.75rem' }}>— {tx.notes}</span>}
+                                  </div>
+                                  <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                                    <span style={{ fontWeight: 'bold', color: tx.type === 'income' ? '#059669' : '#1f2937' }}>
+                                      {tx.type === 'income' ? '+' : '-'}${Number(tx.amount).toFixed(2)}
+                                    </span>
+                                    <button onClick={() => handleSoftDeleteTransaction(tx.id)} style={{ backgroundColor: '#fee2e2', color: '#dc2626', border: 'none', padding: '2px 6px', borderRadius: '4px', cursor: 'pointer', fontSize: '0.7rem' }}>
+                                      Trash
+                                    </button>
+                                  </div>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        )}
+                      </div>
+                    )}
                   </div>
                 );
               })}
