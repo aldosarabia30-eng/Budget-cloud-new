@@ -38,10 +38,10 @@ export default function BudgetApp() {
   const [newGroup, setNewGroup] = useState('');
   const [newEnvName, setNewEnvName] = useState('');
   const [newEnvGroup, setNewEnvGroup] = useState('');
-  const [newEnvGoalType, setNewEnvGoalType] = useState('none'); // 'none' | 'target_by_date' | 'repeating'
+  const [newEnvGoalType, setNewEnvGoalType] = useState('none');
   const [newEnvTargetAmount, setNewEnvTargetAmount] = useState('');
   const [newEnvTargetDate, setNewEnvTargetDate] = useState('');
-  const [newEnvCadence, setNewEnvCadence] = useState('monthly'); // 'weekly' | 'monthly' | 'yearly'
+  const [newEnvCadence, setNewEnvCadence] = useState('monthly');
   
   const [newAccName, setNewAccName] = useState('');
   const [newAccType, setNewAccType] = useState('Checking');
@@ -180,7 +180,7 @@ export default function BudgetApp() {
     setNewEnvTargetAmount('');
     setNewEnvTargetDate('');
     setNewEnvCadence('monthly');
-    showNotification(`Envelope '${newEnv.name}' created with goal.`);
+    showNotification(`Envelope '${newEnv.name}' created.`);
   };
 
   const handleAssignFunds = (envId, newAssignedAmount) => {
@@ -291,7 +291,7 @@ export default function BudgetApp() {
     showNotification('Debt moved to Trash.');
   };
 
-  // Trash Restore & Delete Handlers
+  // Trash Bin Handlers
   const handleRestoreTransaction = (txId) => {
     const tx = transactions.find(t => t.id === txId);
     if (!tx) return;
@@ -351,36 +351,39 @@ export default function BudgetApp() {
   const deletedDebts = debts.filter(d => d.isDeleted);
   const totalTrashCount = deletedTx.length + deletedEnv.length + deletedAcc.length + deletedDebts.length;
 
-  // --- GOAL PROGRESS RENDERER ---
+  // --- GOAL PROGRESS & REMAINING TO TARGET DISPLAY ---
   const renderGoalProgress = (env) => {
     if (!env.goalType || env.goalType === 'none' || !env.targetAmount) return null;
 
     const available = getEnvelopeRemaining(env);
     const target = Number(env.targetAmount) || 0;
+    const amountLeft = Math.max(0, target - available);
     const percent = Math.min(100, Math.max(0, (available / target) * 100));
 
     if (env.goalType === 'target_by_date') {
       const today = new Date();
       const targetD = env.targetDate ? new Date(env.targetDate) : today;
       const monthsDiff = (targetD.getFullYear() - today.getFullYear()) * 12 + (targetD.getMonth() - today.getMonth());
-      const amountNeeded = Math.max(0, target - available);
-      const monthlyNeeded = monthsDiff > 0 ? amountNeeded / monthsDiff : amountNeeded;
+      const monthlyNeeded = monthsDiff > 0 ? amountLeft / monthsDiff : amountLeft;
 
       return (
-        <div style={{ marginTop: '8px', fontSize: '0.8rem', backgroundColor: '#ffffff', padding: '8px 10px', borderRadius: '6px', border: '1px solid #e5e7eb' }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '4px' }}>
-            <span>🎯 Goal: <strong>${target.toFixed(2)}</strong> by {env.targetDate || 'Target Date'}</span>
-            <span style={{ fontWeight: 'bold', color: percent >= 100 ? '#059669' : '#2563eb' }}>{percent.toFixed(0)}%</span>
+        <div style={{ marginTop: '10px', fontSize: '0.825rem', backgroundColor: '#ffffff', padding: '10px 12px', borderRadius: '8px', border: '1px solid #e5e7eb' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '6px' }}>
+            <span>🎯 Target Goal: <strong>${target.toFixed(2)}</strong> by {env.targetDate || 'Target Date'}</span>
+            <span style={{ fontWeight: '700', color: amountLeft === 0 ? '#059669' : '#dc2626' }}>
+              {amountLeft === 0 ? '🎉 Goal Reached!' : `$${amountLeft.toFixed(2)} left to goal`}
+            </span>
           </div>
-          <div style={{ height: '6px', backgroundColor: '#e5e7eb', borderRadius: '3px', overflow: 'hidden' }}>
+
+          <div style={{ height: '8px', backgroundColor: '#e5e7eb', borderRadius: '4px', overflow: 'hidden' }}>
             <div style={{ width: `${percent}%`, backgroundColor: percent >= 100 ? '#10b981' : '#2563eb', height: '100%', transition: 'width 0.3s ease' }} />
           </div>
-          <div style={{ marginTop: '4px', color: '#6b7280', fontSize: '0.75rem' }}>
-            {amountNeeded === 0 
-              ? '🎉 Goal reached!' 
-              : monthsDiff > 0 
-                ? `Need ~$${monthlyNeeded.toFixed(2)}/mo for ${monthsDiff} mo to stay on track.`
-                : `$${amountNeeded.toFixed(2)} remaining.`}
+
+          <div style={{ marginTop: '6px', color: '#6b7280', fontSize: '0.75rem', display: 'flex', justifyContent: 'space-between', flexWrap: 'wrap', gap: '4px' }}>
+            <span>Progress: {percent.toFixed(0)}% (${available.toFixed(2)} saved)</span>
+            {amountLeft > 0 && monthsDiff > 0 && (
+              <span style={{ fontWeight: '600', color: '#1e3a8a' }}>Need ~$${monthlyNeeded.toFixed(2)}/mo ({monthsDiff} mos remaining)</span>
+            )}
           </div>
         </div>
       );
@@ -388,18 +391,21 @@ export default function BudgetApp() {
 
     if (env.goalType === 'repeating') {
       return (
-        <div style={{ marginTop: '8px', fontSize: '0.8rem', backgroundColor: '#ffffff', padding: '8px 10px', borderRadius: '6px', border: '1px solid #e5e7eb' }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '4px' }}>
-            <span>🔄 Refill: <strong>${target.toFixed(2)}</strong> / {env.cadence || 'month'}</span>
-            <span style={{ fontWeight: 'bold', color: percent >= 100 ? '#059669' : '#3b82f6' }}>{percent.toFixed(0)}%</span>
+        <div style={{ marginTop: '10px', fontSize: '0.825rem', backgroundColor: '#ffffff', padding: '10px 12px', borderRadius: '8px', border: '1px solid #e5e7eb' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '6px' }}>
+            <span>🔄 Refill Target: <strong>${target.toFixed(2)}</strong> / {env.cadence || 'month'}</span>
+            <span style={{ fontWeight: '700', color: amountLeft === 0 ? '#059669' : '#d97706' }}>
+              {amountLeft === 0 ? '✓ Fully Funded' : `$${amountLeft.toFixed(2)} needed to refill`}
+            </span>
           </div>
-          <div style={{ height: '6px', backgroundColor: '#e5e7eb', borderRadius: '3px', overflow: 'hidden' }}>
-            <div style={{ width: `${percent}%`, backgroundColor: percent >= 100 ? '#10b981' : '#3b82f6', height: '100%', transition: 'width 0.3s ease' }} />
+
+          <div style={{ height: '8px', backgroundColor: '#e5e7eb', borderRadius: '4px', overflow: 'hidden' }}>
+            <div style={{ width: `${percent}%`, backgroundColor: percent >= 100 ? '#10b981' : '#f59e0b', height: '100%', transition: 'width 0.3s ease' }} />
           </div>
-          <div style={{ marginTop: '4px', color: '#6b7280', fontSize: '0.75rem' }}>
-            {available >= target 
-              ? 'Fully funded for this period!' 
-              : `$${(target - available).toFixed(2)} needed to reach refill target.`}
+
+          <div style={{ marginTop: '6px', color: '#6b7280', fontSize: '0.75rem', display: 'flex', justifyContent: 'space-between' }}>
+            <span>Funding: {percent.toFixed(0)}%</span>
+            <span>{amountLeft === 0 ? 'Goal fully met for this period' : `$${amountLeft.toFixed(2)} remaining to hit target`}</span>
           </div>
         </div>
       );
@@ -416,7 +422,7 @@ export default function BudgetApp() {
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '10px' }}>
           <div>
             <h1 style={{ margin: 0, fontSize: '1.6rem', fontWeight: '700' }}>Envelope Budgeting</h1>
-            <p style={{ margin: '4px 0 0 0', opacity: 0.85, fontSize: '0.9rem' }}>Real-time Cash Flow & Envelope Goals</p>
+            <p style={{ margin: '4px 0 0 0', opacity: 0.85, fontSize: '0.9rem' }}>Real-time Cash Flow & Goal Tracking</p>
           </div>
           <div style={{ textAlign: 'right', backgroundColor: '#3b82f6', padding: '10px 16px', borderRadius: '8px' }}>
             <div style={{ fontSize: '0.8rem', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Ready to Assign</div>
@@ -500,7 +506,6 @@ export default function BudgetApp() {
                   </select>
                 </div>
 
-                {/* Goal Selector */}
                 <select
                   value={newEnvGoalType}
                   onChange={e => setNewEnvGoalType(e.target.value)}
@@ -511,7 +516,6 @@ export default function BudgetApp() {
                   <option value="repeating">Repeating Target (e.g. Refill $X every week/month/year)</option>
                 </select>
 
-                {/* Conditional Inputs for Target by Date */}
                 {newEnvGoalType === 'target_by_date' && (
                   <div style={{ display: 'flex', gap: '8px' }}>
                     <input
@@ -530,7 +534,6 @@ export default function BudgetApp() {
                   </div>
                 )}
 
-                {/* Conditional Inputs for Repeating Target */}
                 {newEnvGoalType === 'repeating' && (
                   <div style={{ display: 'flex', gap: '8px' }}>
                     <input
@@ -593,14 +596,22 @@ export default function BudgetApp() {
                       {groupEnvs.map(env => {
                         const spent = getEnvelopeSpent(env.id);
                         const remaining = getEnvelopeRemaining(env);
+                        const targetAmt = Number(env.targetAmount) || 0;
+                        const leftToGoal = Math.max(0, targetAmt - remaining);
+
                         return (
                           <div key={env.id} style={{ padding: '12px', backgroundColor: '#f9fafb', borderRadius: '8px', border: '1px solid #f3f4f6' }}>
                             <div style={{ display: 'flex', flexWrap: 'wrap', justifyContent: 'space-between', alignItems: 'center', gap: '8px' }}>
-                              <div style={{ minWidth: '150px' }}>
+                              <div style={{ minWidth: '160px' }}>
                                 <strong>{env.name}</strong>
                                 <div style={{ fontSize: '0.8rem', color: '#6b7280' }}>
                                   Activity: ${spent.toFixed(2)}
                                 </div>
+                                {env.goalType && env.goalType !== 'none' && targetAmt > 0 && (
+                                  <div style={{ fontSize: '0.75rem', color: leftToGoal === 0 ? '#059669' : '#dc2626', fontWeight: '600', marginTop: '2px' }}>
+                                    {leftToGoal === 0 ? '✓ Goal reached' : `Left to Goal: $${leftToGoal.toFixed(2)}`}
+                                  </div>
+                                )}
                               </div>
 
                               <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
@@ -631,7 +642,7 @@ export default function BudgetApp() {
                               </div>
                             </div>
 
-                            {/* Render Envelope Goal Progress if configured */}
+                            {/* Render Goal Progress Bar & Breakdown */}
                             {renderGoalProgress(env)}
                           </div>
                         );
@@ -725,7 +736,6 @@ export default function BudgetApp() {
           <div style={{ backgroundColor: 'white', padding: '16px', borderRadius: '10px', marginBottom: '20px', boxShadow: '0 1px 3px rgba(0,0,0,0.1)' }}>
             <h3 style={{ margin: '0 0 12px 0' }}>+ Record Transaction</h3>
             <form onSubmit={handleAddTransaction} style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: '10px' }}>
-              
               <select value={txType} onChange={e => setTxType(e.target.value)} style={{ padding: '8px', border: '1px solid #d1d5db', borderRadius: '6px', fontWeight: 'bold' }}>
                 <option value="expense">Expense (-)</option>
                 <option value="income">Income (+)</option>
