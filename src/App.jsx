@@ -500,17 +500,68 @@ export default function BudgetApp() {
                   />
                 )}
 
+                {/* Granular Controls for Repeating Targets */}
                 {newEnvGoalType === 'repeating' && (
-                  <select
-                    value={newEnvCadence}
-                    onChange={e => setNewEnvCadence(e.target.value)}
-                    style={{ padding: '8px', border: '1px solid #d1d5db', borderRadius: '6px' }}
-                  >
-                    <option value="weekly">Weekly</option>
-                    <option value="biweekly">Every 2 Weeks</option>
-                    <option value="monthly">Monthly</option>
-                    <option value="yearly">Yearly</option>
-                  </select>
+                  <>
+                    <select
+                      value={newEnvCadence}
+                      onChange={e => setNewEnvCadence(e.target.value)}
+                      style={{ padding: '8px', border: '1px solid #d1d5db', borderRadius: '6px' }}
+                    >
+                      <option value="weekly">Weekly</option>
+                      <option value="biweekly">Every 2 Weeks</option>
+                      <option value="monthly">Monthly</option>
+                      <option value="yearly">Yearly</option>
+                    </select>
+
+                    {(newEnvCadence === 'weekly' || newEnvCadence === 'biweekly') && (
+                      <select
+                        value={newEnvRepeatDayOfWeek}
+                        onChange={e => setNewEnvRepeatDayOfWeek(e.target.value)}
+                        style={{ padding: '8px', border: '1px solid #d1d5db', borderRadius: '6px' }}
+                      >
+                        {['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'].map(day => (
+                          <option key={day} value={day}>Every {newEnvCadence === 'biweekly' ? '2 weeks on' : 'week on'} {day}</option>
+                        ))}
+                      </select>
+                    )}
+
+                    {newEnvCadence === 'monthly' && (
+                      <select
+                        value={newEnvRepeatDayOfMonth}
+                        onChange={e => setNewEnvRepeatDayOfMonth(e.target.value)}
+                        style={{ padding: '8px', border: '1px solid #d1d5db', borderRadius: '6px' }}
+                      >
+                        {Array.from({ length: 31 }, (_, i) => i + 1).map(day => (
+                          <option key={day} value={String(day)}>Day {day}{getOrdinalSuffix(day)} of the month</option>
+                        ))}
+                        <option value="last">Last day of the month</option>
+                      </select>
+                    )}
+
+                    {newEnvCadence === 'yearly' && (
+                      <div style={{ display: 'flex', gap: '8px' }}>
+                        <select
+                          value={newEnvRepeatMonth}
+                          onChange={e => setNewEnvRepeatMonth(e.target.value)}
+                          style={{ flex: 1, padding: '8px', border: '1px solid #d1d5db', borderRadius: '6px' }}
+                        >
+                          {['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'].map(m => (
+                            <option key={m} value={m}>{m}</option>
+                          ))}
+                        </select>
+                        <select
+                          value={newEnvRepeatDayOfMonth}
+                          onChange={e => setNewEnvRepeatDayOfMonth(e.target.value)}
+                          style={{ flex: 1, padding: '8px', border: '1px solid #d1d5db', borderRadius: '6px' }}
+                        >
+                          {Array.from({ length: 31 }, (_, i) => i + 1).map(day => (
+                            <option key={day} value={String(day)}>{day}{getOrdinalSuffix(day)}</option>
+                          ))}
+                        </select>
+                      </div>
+                    )}
+                  </>
                 )}
 
                 <button type="submit" style={{ backgroundColor: '#2563eb', color: 'white', border: 'none', padding: '8px', borderRadius: '6px', fontWeight: 'bold', cursor: 'pointer', marginTop: '4px' }}>
