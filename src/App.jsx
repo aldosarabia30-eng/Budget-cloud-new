@@ -1,5 +1,14 @@
 import React, { useState, useEffect } from 'react';
 
+// Helper to format YYYY-MM-DD into DD/MM/YYYY for display
+const formatDateDMY = (dateStr) => {
+  if (!dateStr) return '';
+  const parts = dateStr.split('-');
+  if (parts.length !== 3) return dateStr;
+  const [year, month, day] = parts;
+  return `${day}/${month}/${year}`;
+};
+
 // Helper for ordinal numbers (1st, 2nd, 3rd, 4th...)
 const getOrdinalSuffix = (num) => {
   const n = Number(num);
@@ -432,7 +441,7 @@ export default function BudgetApp() {
       return (
         <div style={{ marginTop: '10px', fontSize: '0.825rem', backgroundColor: '#ffffff', padding: '10px 12px', borderRadius: '8px', border: '1px solid #e5e7eb' }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '6px' }}>
-            <span>🎯 Target Goal: <strong>${target.toFixed(2)}</strong> by {env.targetDate || 'Target Date'}</span>
+            <span>🎯 Target Goal: <strong>${target.toFixed(2)}</strong> by {formatDateDMY(env.targetDate) || 'Target Date'}</span>
             <span style={{ fontWeight: '700', color: amountLeft === 0 ? '#059669' : '#dc2626' }}>
               {amountLeft === 0 ? '🎉 Goal Reached!' : `$${amountLeft.toFixed(2)} left to goal`}
             </span>
@@ -445,7 +454,7 @@ export default function BudgetApp() {
           <div style={{ marginTop: '6px', color: '#6b7280', fontSize: '0.75rem', display: 'flex', justifyContent: 'space-between', flexWrap: 'wrap', gap: '4px' }}>
             <span>Progress: {percent.toFixed(0)}% (${available.toFixed(2)} saved)</span>
             {amountLeft > 0 && monthsDiff > 0 && (
-              <span style={{ fontWeight: '600', color: '#1e3a8a' }}>Need ~$${monthlyNeeded.toFixed(2)}/mo ({monthsDiff} mos remaining)</span>
+              <span style={{ fontWeight: '600', color: '#1e3a8a' }}>Need ~${monthlyNeeded.toFixed(2)}/mo ({monthsDiff} mos remaining)</span>
             )}
           </div>
         </div>
@@ -940,7 +949,7 @@ export default function BudgetApp() {
                   return (
                     <div key={dateKey} style={{ border: '1px solid #e5e7eb', borderRadius: '8px', overflow: 'hidden' }}>
                       <div style={{ backgroundColor: '#f3f4f6', padding: '10px 14px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontWeight: '600' }}>
-                        <span style={{ color: '#1f2937' }}>📅 {dateKey}</span>
+                        <span style={{ color: '#1f2937' }}>📅 {formatDateDMY(dateKey)}</span>
                         <span style={{ fontSize: '0.85rem', color: dayNet >= 0 ? '#059669' : '#dc2626' }}>
                           Net: {dayNet >= 0 ? '+' : ''}${dayNet.toFixed(2)}
                         </span>
@@ -1089,7 +1098,7 @@ export default function BudgetApp() {
                     {deletedTx.map(tx => (
                       <div key={tx.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '10px', backgroundColor: '#f9fafb', borderRadius: '6px', fontSize: '0.85rem' }}>
                         <div>
-                          <strong>{tx.payee}</strong> - ${tx.amount} ({tx.date})
+                          <strong>{tx.payee}</strong> - ${tx.amount} ({formatDateDMY(tx.date)})
                         </div>
                         <div style={{ display: 'flex', gap: '6px' }}>
                           <button onClick={() => handleRestoreTransaction(tx.id)} style={{ backgroundColor: '#10b981', color: 'white', border: 'none', padding: '4px 8px', borderRadius: '4px', cursor: 'pointer' }}>
