@@ -41,6 +41,9 @@ export default function BudgetApp() {
   ]);
 
   const [groups, setGroups] = useState(['Housing & Utilities', 'Daily Living', 'Savings Goals']);
+  
+  // Track collapsed state for envelope groups
+  const [collapsedGroups, setCollapsedGroups] = useState({});
 
   const [envelopes, setEnvelopes] = useState([
     { id: 'env-1', name: 'Rent/Mortgage', group: 'Housing & Utilities', assigned: 1000, isDeleted: false, goalType: 'repeating', targetAmount: 1000, cadence: 'monthly', repeatDayOfMonth: '1', targetDate: '' },
@@ -53,7 +56,8 @@ export default function BudgetApp() {
   const [transactions, setTransactions] = useState([
     { id: 'tx-1', date: '2026-09-15', payee: 'Landlord Co.', amount: 1000, type: 'expense', accountId: 'acc-1', envelopeId: 'env-1', notes: 'Monthly rent', isDeleted: false },
     { id: 'tx-2', date: '2026-09-18', payee: 'Trader Joe\'s', amount: 125.50, type: 'expense', accountId: 'acc-1', envelopeId: 'env-3', notes: 'Weekly groceries', isDeleted: false },
-    { id: 'tx-3', date: '2026-09-25', payee: 'Employer Inc.', amount: 2500, type: 'income', accountId: 'acc-1', envelopeId: '', notes: 'Bi-weekly Paycheck', isDeleted: false }
+    { id: 'tx-3', date: '2026-09-25', payee: 'Employer Inc.', amount: 2500, type: 'income', accountId: 'acc-1', envelopeId: '', notes: 'Bi-weekly Paycheck', isDeleted: false },
+    { id: 'tx-4', date: '2026-09-25', payee: 'Coffee Shop', amount: 4.75, type: 'expense', accountId: 'acc-1', envelopeId: 'env-4', notes: 'Morning latte', isDeleted: false }
   ]);
 
   const [debts, setDebts] = useState([
@@ -101,6 +105,7 @@ export default function BudgetApp() {
         if (parsed.readyToAssign !== undefined) setReadyToAssign(parsed.readyToAssign);
         if (parsed.accounts) setAccounts(parsed.accounts);
         if (parsed.groups) setGroups(parsed.groups);
+        if (parsed.collapsedGroups) setCollapsedGroups(parsed.collapsedGroups);
         if (parsed.envelopes) setEnvelopes(parsed.envelopes);
         if (parsed.transactions) setTransactions(parsed.transactions);
         if (parsed.debts) setDebts(parsed.debts);
@@ -115,17 +120,26 @@ export default function BudgetApp() {
       readyToAssign,
       accounts,
       groups,
+      collapsedGroups,
       envelopes,
       transactions,
       debts
     };
     localStorage.setItem(STORAGE_KEY, JSON.stringify(dataToSave));
-  }, [readyToAssign, accounts, groups, envelopes, transactions, debts]);
+  }, [readyToAssign, accounts, groups, collapsedGroups, envelopes, transactions, debts]);
 
   // --- NOTIFICATION HELPER ---
   const showNotification = (msg) => {
     setNotification(msg);
     setTimeout(() => setNotification(''), 3500);
+  };
+
+  // --- COLLAPSE TOGGLE HELPER ---
+  const toggleGroupCollapse = (groupName) => {
+    setCollapsedGroups(prev => ({
+      ...prev,
+      [groupName]: !prev[groupName]
+    }));
   };
 
   // --- DERIVED CALCULATIONS ---
@@ -154,6 +168,17 @@ export default function BudgetApp() {
   };
 
   const totalBankBalance = activeAccounts.reduce((sum, acc) => sum + getAccountBalance(acc.id), 0);
+
+  // Group active transactions by date
+  const groupedTransactions = activeTransactions.reduce((acc, tx) => {
+    const dateKey = tx.date || 'No Date';
+    if (!acc[dateKey]) acc[dateKey] = [];
+    acc[dateKey].push(tx);
+    return acc;
+  }, {});
+
+  // Sort dates descending
+  const sortedTransactionDates = Object.keys(groupedTransactions).sort((a, b) => new Date(b) - new Date(a));
 
   // --- HANDLERS ---
   const handlePayeeChange = (val) => {
@@ -389,7 +414,7 @@ export default function BudgetApp() {
   const deletedDebts = debts.filter(d => d.isDeleted);
   const totalTrashCount = deletedTx.length + deletedEnv.length + deletedAcc.length + deletedDebts.length;
 
-  // --- GOAL PROGRESS & REMAINING TO TARGET DISPLAY ---
+  // --- GOAL PROGRESS DISPLAY ---
   const renderGoalProgress = (env) => {
     if (!env.goalType || env.goalType === 'none' || !env.targetAmount) return null;
 
@@ -661,6 +686,7 @@ export default function BudgetApp() {
             <p style={{ color: '#6b7280', textAlign: 'center' }}>No groups created yet.</p>
           ) : (
             groups.map(groupName => {
+              const isCollapsed = !!collapsedGroups[groupName];
               const groupEnvs = activeEnvelopes.filter(e => e.group === groupName);
               const groupAssigned = groupEnvs.reduce((sum, e) => sum + Number(e.assigned), 0);
               const groupSpent = groupEnvs.reduce((sum, e) => sum + getEnvelopeSpent(e.id), 0);
@@ -668,12 +694,24 @@ export default function BudgetApp() {
 
               return (
                 <div key={groupName} style={{ backgroundColor: 'white', borderRadius: '10px', padding: '16px', marginBottom: '20px', boxShadow: '0 1px 3px rgba(0,0,0,0.1)' }}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px', borderBottom: '1px solid #f3f4f6', paddingBottom: '8px' }}>
-                    <div>
-                      <h2 style={{ margin: 0, fontSize: '1.2rem' }}>{groupName}</h2>
-                      <span style={{ fontSize: '0.85rem', color: '#6b7280' }}>
-                        Available: <strong style={{ color: groupAvailable >= 0 ? '#10b981' : '#ef4444' }}>${groupAvailable.toFixed(2)}</strong>
-                      </span>
+                  {/* Group Header with Collapse Button */}
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: isCollapsed ? '0' : '12px', borderBottom: isCollapsed ? 'none' : '1px solid #f3f4f6', paddingBottom: isCollapsed ? '0' : '8px' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                      <button
+                        onClick={() => toggleGroupCollapse(groupName)}
+                        style={{ backgroundColor: '#f3f4f6', border: 'none', borderRadius: '6px', cursor: 'pointer', padding: '4px 8px', fontSize: '0.85rem', color: '#374151', fontWeight: 'bold' }}
+                        title={isCollapsed ? "Expand Group" : "Collapse Group"}
+                      >
+                        {isCollapsed ? '▶ Expand' : '▼ Collapse'}
+                      </button>
+                      <div>
+                        <h2 style={{ margin: 0, fontSize: '1.2rem', cursor: 'pointer' }} onClick={() => toggleGroupCollapse(groupName)}>
+                          {groupName}
+                        </h2>
+                        <span style={{ fontSize: '0.85rem', color: '#6b7280' }}>
+                          Available: <strong style={{ color: groupAvailable >= 0 ? '#10b981' : '#ef4444' }}>${groupAvailable.toFixed(2)}</strong>
+                        </span>
+                      </div>
                     </div>
                     <button
                       onClick={() => handleRemoveGroup(groupName)}
@@ -683,65 +721,68 @@ export default function BudgetApp() {
                     </button>
                   </div>
 
-                  {groupEnvs.length === 0 ? (
-                    <p style={{ fontSize: '0.85rem', color: '#9ca3af' }}>No envelopes in this group.</p>
-                  ) : (
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
-                      {groupEnvs.map(env => {
-                        const spent = getEnvelopeSpent(env.id);
-                        const remaining = getEnvelopeRemaining(env);
-                        const targetAmt = Number(env.targetAmount) || 0;
-                        const leftToGoal = Math.max(0, targetAmt - remaining);
+                  {/* Envelope Cards (Visible only when not collapsed) */}
+                  {!isCollapsed && (
+                    groupEnvs.length === 0 ? (
+                      <p style={{ fontSize: '0.85rem', color: '#9ca3af', marginTop: '8px' }}>No envelopes in this group.</p>
+                    ) : (
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: '12px', marginTop: '8px' }}>
+                        {groupEnvs.map(env => {
+                          const spent = getEnvelopeSpent(env.id);
+                          const remaining = getEnvelopeRemaining(env);
+                          const targetAmt = Number(env.targetAmount) || 0;
+                          const leftToGoal = Math.max(0, targetAmt - remaining);
 
-                        return (
-                          <div key={env.id} style={{ padding: '12px', backgroundColor: '#f9fafb', borderRadius: '8px', border: '1px solid #f3f4f6' }}>
-                            <div style={{ display: 'flex', flexWrap: 'wrap', justifyContent: 'space-between', alignItems: 'center', gap: '8px' }}>
-                              <div style={{ minWidth: '160px' }}>
-                                <strong>{env.name}</strong>
-                                <div style={{ fontSize: '0.8rem', color: '#6b7280' }}>
-                                  Activity: ${spent.toFixed(2)}
-                                </div>
-                                {env.goalType && env.goalType !== 'none' && targetAmt > 0 && (
-                                  <div style={{ fontSize: '0.75rem', color: leftToGoal === 0 ? '#059669' : '#dc2626', fontWeight: '600', marginTop: '2px' }}>
-                                    {leftToGoal === 0 ? '✓ Goal reached' : `Left to Goal: $${leftToGoal.toFixed(2)}`}
+                          return (
+                            <div key={env.id} style={{ padding: '12px', backgroundColor: '#f9fafb', borderRadius: '8px', border: '1px solid #f3f4f6' }}>
+                              <div style={{ display: 'flex', flexWrap: 'wrap', justifyContent: 'space-between', alignItems: 'center', gap: '8px' }}>
+                                <div style={{ minWidth: '160px' }}>
+                                  <strong>{env.name}</strong>
+                                  <div style={{ fontSize: '0.8rem', color: '#6b7280' }}>
+                                    Activity: ${spent.toFixed(2)}
                                   </div>
-                                )}
+                                  {env.goalType && env.goalType !== 'none' && targetAmt > 0 && (
+                                    <div style={{ fontSize: '0.75rem', color: leftToGoal === 0 ? '#059669' : '#dc2626', fontWeight: '600', marginTop: '2px' }}>
+                                      {leftToGoal === 0 ? '✓ Goal reached' : `Left to Goal: $${leftToGoal.toFixed(2)}`}
+                                    </div>
+                                  )}
+                                </div>
+
+                                <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                                  <div>
+                                    <label style={{ fontSize: '0.75rem', color: '#6b7280', display: 'block' }}>Assigned</label>
+                                    <input
+                                      type="number"
+                                      value={env.assigned}
+                                      onChange={e => handleAssignFunds(env.id, e.target.value)}
+                                      style={{ width: '90px', padding: '6px', border: '1px solid #d1d5db', borderRadius: '4px' }}
+                                    />
+                                  </div>
+
+                                  <div style={{ textAlign: 'right', minWidth: '90px' }}>
+                                    <div style={{ fontSize: '0.75rem', color: '#6b7280' }}>Available</div>
+                                    <div style={{ fontWeight: 'bold', color: remaining >= 0 ? '#059669' : '#dc2626' }}>
+                                      ${remaining.toFixed(2)}
+                                    </div>
+                                  </div>
+
+                                  <button
+                                    onClick={() => handleSoftDeleteEnvelope(env.id)}
+                                    style={{ backgroundColor: '#f3f4f6', color: '#6b7280', border: 'none', padding: '6px 10px', borderRadius: '4px', cursor: 'pointer' }}
+                                    title="Delete Envelope"
+                                  >
+                                    ✕
+                                  </button>
+                                </div>
                               </div>
 
-                              <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-                                <div>
-                                  <label style={{ fontSize: '0.75rem', color: '#6b7280', display: 'block' }}>Assigned</label>
-                                  <input
-                                    type="number"
-                                    value={env.assigned}
-                                    onChange={e => handleAssignFunds(env.id, e.target.value)}
-                                    style={{ width: '90px', padding: '6px', border: '1px solid #d1d5db', borderRadius: '4px' }}
-                                  />
-                                </div>
-
-                                <div style={{ textAlign: 'right', minWidth: '90px' }}>
-                                  <div style={{ fontSize: '0.75rem', color: '#6b7280' }}>Available</div>
-                                  <div style={{ fontWeight: 'bold', color: remaining >= 0 ? '#059669' : '#dc2626' }}>
-                                    ${remaining.toFixed(2)}
-                                  </div>
-                                </div>
-
-                                <button
-                                  onClick={() => handleSoftDeleteEnvelope(env.id)}
-                                  style={{ backgroundColor: '#f3f4f6', color: '#6b7280', border: 'none', padding: '6px 10px', borderRadius: '4px', cursor: 'pointer' }}
-                                  title="Delete Envelope"
-                                >
-                                  ✕
-                                </button>
-                              </div>
+                              {/* Render Goal Progress Bar & Schedule Breakdown */}
+                              {renderGoalProgress(env)}
                             </div>
-
-                            {/* Render Goal Progress Bar & Schedule Breakdown */}
-                            {renderGoalProgress(env)}
-                          </div>
-                        );
-                      })}
-                    </div>
+                          );
+                        })}
+                      </div>
+                    )
                   )}
                 </div>
               );
@@ -886,51 +927,70 @@ export default function BudgetApp() {
           </div>
 
           <div style={{ backgroundColor: 'white', borderRadius: '10px', padding: '16px', boxShadow: '0 1px 3px rgba(0,0,0,0.1)' }}>
-            <h3 style={{ margin: '0 0 12px 0' }}>Transaction Register</h3>
+            <h3 style={{ margin: '0 0 16px 0' }}>Transaction Register</h3>
             {activeTransactions.length === 0 ? (
               <p style={{ color: '#6b7280' }}>No active transactions recorded.</p>
             ) : (
-              <div style={{ overflowX: 'auto' }}>
-                <table style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'left', fontSize: '0.9rem' }}>
-                  <thead>
-                    <tr style={{ borderBottom: '2px solid #e5e7eb', color: '#6b7280' }}>
-                      <th style={{ padding: '8px' }}>Date</th>
-                      <th style={{ padding: '8px' }}>Payee</th>
-                      <th style={{ padding: '8px' }}>Account</th>
-                      <th style={{ padding: '8px' }}>Envelope</th>
-                      <th style={{ padding: '8px', textAlign: 'right' }}>Amount</th>
-                      <th style={{ padding: '8px', textAlign: 'center' }}>Action</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {activeTransactions.map(tx => {
-                      const acc = accounts.find(a => a.id === tx.accountId);
-                      const env = envelopes.find(e => e.id === tx.envelopeId);
-                      return (
-                        <tr key={tx.id} style={{ borderBottom: '1px solid #f3f4f6' }}>
-                          <td style={{ padding: '8px' }}>{tx.date}</td>
-                          <td style={{ padding: '8px' }}>
-                            <strong>{tx.payee}</strong>
-                            {tx.notes && <div style={{ fontSize: '0.75rem', color: '#6b7280' }}>{tx.notes}</div>}
-                          </td>
-                          <td style={{ padding: '8px' }}>{acc?.name || '—'}</td>
-                          <td style={{ padding: '8px' }}>{tx.type === 'income' ? <em style={{ color: '#10b981' }}>Ready to Assign</em> : (env?.name || 'Uncategorized')}</td>
-                          <td style={{ padding: '8px', textAlign: 'right', fontWeight: 'bold', color: tx.type === 'income' ? '#10b981' : '#111827' }}>
-                            {tx.type === 'income' ? '+' : '-'}${Number(tx.amount).toFixed(2)}
-                          </td>
-                          <td style={{ padding: '8px', textAlign: 'center' }}>
-                            <button
-                              onClick={() => handleSoftDeleteTransaction(tx.id)}
-                              style={{ backgroundColor: '#fee2e2', color: '#dc2626', border: 'none', padding: '4px 8px', borderRadius: '4px', cursor: 'pointer', fontSize: '0.75rem' }}
-                            >
-                              Trash
-                            </button>
-                          </td>
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
+                {/* Render Transactions Grouped by Date */}
+                {sortedTransactionDates.map(dateKey => {
+                  const txsForDate = groupedTransactions[dateKey];
+                  const dayNet = txsForDate.reduce((sum, tx) => sum + (tx.type === 'income' ? Number(tx.amount) : -Number(tx.amount)), 0);
+
+                  return (
+                    <div key={dateKey} style={{ border: '1px solid #e5e7eb', borderRadius: '8px', overflow: 'hidden' }}>
+                      <div style={{ backgroundColor: '#f3f4f6', padding: '10px 14px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontWeight: '600' }}>
+                        <span style={{ color: '#1f2937' }}>📅 {dateKey}</span>
+                        <span style={{ fontSize: '0.85rem', color: dayNet >= 0 ? '#059669' : '#dc2626' }}>
+                          Net: {dayNet >= 0 ? '+' : ''}${dayNet.toFixed(2)}
+                        </span>
+                      </div>
+
+                      <div style={{ overflowX: 'auto' }}>
+                        <table style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'left', fontSize: '0.9rem' }}>
+                          <thead>
+                            <tr style={{ borderBottom: '1px solid #e5e7eb', color: '#6b7280', backgroundColor: '#fafafa' }}>
+                              <th style={{ padding: '8px 12px' }}>Payee</th>
+                              <th style={{ padding: '8px 12px' }}>Account</th>
+                              <th style={{ padding: '8px 12px' }}>Envelope</th>
+                              <th style={{ padding: '8px 12px', textAlign: 'right' }}>Amount</th>
+                              <th style={{ padding: '8px 12px', textAlign: 'center' }}>Action</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {txsForDate.map(tx => {
+                              const acc = accounts.find(a => a.id === tx.accountId);
+                              const env = envelopes.find(e => e.id === tx.envelopeId);
+                              return (
+                                <tr key={tx.id} style={{ borderBottom: '1px solid #f3f4f6' }}>
+                                  <td style={{ padding: '8px 12px' }}>
+                                    <strong>{tx.payee}</strong>
+                                    {tx.notes && <div style={{ fontSize: '0.75rem', color: '#6b7280' }}>{tx.notes}</div>}
+                                  </td>
+                                  <td style={{ padding: '8px 12px' }}>{acc?.name || '—'}</td>
+                                  <td style={{ padding: '8px 12px' }}>
+                                    {tx.type === 'income' ? <em style={{ color: '#10b981' }}>Ready to Assign</em> : (env?.name || 'Uncategorized')}
+                                  </td>
+                                  <td style={{ padding: '8px 12px', textAlign: 'right', fontWeight: 'bold', color: tx.type === 'income' ? '#10b981' : '#111827' }}>
+                                    {tx.type === 'income' ? '+' : '-'}${Number(tx.amount).toFixed(2)}
+                                  </td>
+                                  <td style={{ padding: '8px 12px', textAlign: 'center' }}>
+                                    <button
+                                      onClick={() => handleSoftDeleteTransaction(tx.id)}
+                                      style={{ backgroundColor: '#fee2e2', color: '#dc2626', border: 'none', padding: '4px 8px', borderRadius: '4px', cursor: 'pointer', fontSize: '0.75rem' }}
+                                    >
+                                      Trash
+                                    </button>
+                                  </td>
+                                </tr>
+                              );
+                            })}
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+                  );
+                })}
               </div>
             )}
           </div>
