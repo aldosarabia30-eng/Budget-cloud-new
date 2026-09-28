@@ -60,8 +60,8 @@ export default function BudgetApp() {
   const [readyToAssign, setReadyToAssign] = useState(1250.0);
 
   const [accounts, setAccounts] = useState([
-    { id: 'acc-1', name: 'Checking Account', type: 'Checking', initialBalance: 2000, isDeleted: false },
-    { id: 'acc-2', name: 'Savings Account', type: 'Savings', initialBalance: 5000, isDeleted: false }
+    { id: 'acc-1', name: 'Checking Account', type: 'Checking', initialBalance: 2000, isDeleted: false, lastReconciledDate: '2026-09-01', lastReconciledBalance: 2000 },
+    { id: 'acc-2', name: 'Savings Account', type: 'Savings', initialBalance: 5000, isDeleted: false, lastReconciledDate: '', lastReconciledBalance: null }
   ]);
 
   const [groups, setGroups] = useState(['Housing & Utilities', 'Daily Living', 'Savings Goals']);
@@ -77,10 +77,10 @@ export default function BudgetApp() {
   ]);
 
   const [transactions, setTransactions] = useState([
-    { id: 'tx-1', date: '2026-09-15', payee: 'Landlord Co.', amount: 1000, type: 'expense', accountId: 'acc-1', envelopeId: 'env-1', notes: 'Monthly rent', isDeleted: false },
-    { id: 'tx-2', date: '2026-09-18', payee: "Trader Joe's", amount: 125.5, type: 'expense', accountId: 'acc-1', envelopeId: 'env-3', notes: 'Weekly groceries', isDeleted: false },
-    { id: 'tx-3', date: '2026-09-25', payee: 'Employer Inc.', amount: 2500, type: 'income', accountId: 'acc-1', envelopeId: '', notes: 'Bi-weekly Paycheck', isDeleted: false },
-    { id: 'tx-4', date: '2026-09-25', payee: 'Transfer to Savings', amount: 500, type: 'expense', accountId: 'acc-1', envelopeId: 'env-5', notes: 'Emergency fund transfer', isDeleted: false }
+    { id: 'tx-1', date: '2026-09-15', payee: 'Landlord Co.', amount: 1000, type: 'expense', accountId: 'acc-1', envelopeId: 'env-1', notes: 'Monthly rent', isDeleted: false, cleared: true, reconciled: true },
+    { id: 'tx-2', date: '2026-09-18', payee: "Trader Joe's", amount: 125.5, type: 'expense', accountId: 'acc-1', envelopeId: 'env-3', notes: 'Weekly groceries', isDeleted: false, cleared: true, reconciled: false },
+    { id: 'tx-3', date: '2026-09-25', payee: 'Employer Inc.', amount: 2500, type: 'income', accountId: 'acc-1', envelopeId: '', notes: 'Bi-weekly Paycheck', isDeleted: false, cleared: true, reconciled: false },
+    { id: 'tx-4', date: '2026-09-25', payee: 'Transfer to Savings', amount: 500, type: 'expense', accountId: 'acc-1', envelopeId: 'env-5', notes: 'Emergency fund transfer', isDeleted: false, cleared: false, reconciled: false }
   ]);
 
   const [debts, setDebts] = useState([
@@ -89,6 +89,10 @@ export default function BudgetApp() {
 
   const [activeTab, setActiveTab] = useState('budget');
   const [notification, setNotification] = useState('');
+
+  // Reconciliation state
+  const [reconcilingAccId, setReconcilingAccId] = useState(null);
+  const [targetBankBalance, setTargetBankBalance] = useState('');
 
   // Form States
   const [newGroup, setNewGroup] = useState('');
@@ -168,6 +172,85 @@ export default function BudgetApp() {
       .filter(t => t.accountId === accId)
       .reduce((sum, t) => sum + (t.type === 'income' ? Number(t.amount) : -Number(t.amount)), 0);
     return Number(acc.initialBalance) + txTotal;
+  };
+
+  const getClearedBalance = (accId) => {
+    const acc = accounts.find(a => a.id === accId);
+    if (!acc) return 0;
+    const txTotal = activeTransactions
+      .filter(t => t.accountId === accId && (t.cleared || t.reconciled))
+      .reduce((sum, t) => sum + (t.type === 'income' ? Number(t.amount) : -Number(t.amount)), 0);
+    return Number(acc.initialBalance) + txTotal;
+  };
+
+  const handleToggleCleared = (txId) => {
+    setTransactions(prev => prev.map(t => {
+      if (t.id === txId) {
+        return { ...t, cleared: !t.cleared };
+      }
+      return t;
+    }));
+  };
+
+  const startReconcile = (accId) => {
+    setReconcilingAccId(accId);
+    const currentBal = getClearedBalance(accId);
+    setTargetBankBalance(currentBal.toFixed(2));
+  };
+
+  const handleFinishReconciliation = (accId) => {
+    const target = parseFloat(targetBankBalance);
+    if (isNaN(target)) {
+      showNotification('Please enter a valid numeric statement balance.');
+      return;
+    }
+
+    const currentBal = getAccountBalance(accId);
+    const diff = target - currentBal;
+
+    if (Math.abs(diff) >= 0.01) {
+      const isIncome = diff > 0;
+      const adjustmentAmt = Math.abs(diff);
+
+      const adjTx = {
+        id: 'tx-' + Date.now(),
+        date: getTodayISO(),
+        payee: 'Reconciliation Adjustment',
+        amount: adjustmentAmt,
+        type: isIncome ? 'income' : 'expense',
+        accountId: accId,
+        envelopeId: '',
+        notes: `Auto adjustment for bank statement balance $${target.toFixed(2)}`,
+        isDeleted: false,
+        cleared: true,
+        reconciled: true
+      };
+
+      setTransactions(prev => [adjTx, ...prev]);
+      setReadyToAssign(prev => prev + (isIncome ? adjustmentAmt : -adjustmentAmt));
+    }
+
+    setTransactions(prev => prev.map(t => {
+      if (t.accountId === accId && (t.cleared || Math.abs(diff) >= 0.01) && !t.isDeleted) {
+        return { ...t, cleared: true, reconciled: true };
+      }
+      return t;
+    }));
+
+    setAccounts(prev => prev.map(a => {
+      if (a.id === accId) {
+        return {
+          ...a,
+          lastReconciledDate: getTodayISO(),
+          lastReconciledBalance: target
+        };
+      }
+      return a;
+    }));
+
+    setReconcilingAccId(null);
+    setTargetBankBalance('');
+    showNotification(`Account reconciled successfully to $${target.toFixed(2)}.`);
   };
 
   const getEnvelopeSpent = (envId) => {
@@ -274,7 +357,9 @@ export default function BudgetApp() {
       name: newAccName.trim(),
       type: newAccType,
       initialBalance: parseFloat(newAccBalance) || 0,
-      isDeleted: false
+      isDeleted: false,
+      lastReconciledDate: '',
+      lastReconciledBalance: null
     };
     setAccounts([...accounts, newAcc]);
     setReadyToAssign(prev => prev + newAcc.initialBalance);
@@ -306,7 +391,9 @@ export default function BudgetApp() {
       accountId: txAccountId,
       envelopeId: txType === 'expense' ? txEnvelopeId : '',
       notes: txNotes,
-      isDeleted: false
+      isDeleted: false,
+      cleared: false,
+      reconciled: false
     };
 
     setTransactions([newTx, ...transactions]);
@@ -394,7 +481,7 @@ export default function BudgetApp() {
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '10px' }}>
           <div>
             <h1 style={{ margin: 0, fontSize: '1.6rem', fontWeight: '700' }}>Envelope Budgeting</h1>
-            <p style={{ margin: '4px 0 0 0', opacity: 0.85, fontSize: '0.9rem' }}>Real-time Cash Flow & Goal Tracking</p>
+            <p style={{ margin: '4px 0 0 0', opacity: 0.85, fontSize: '0.9rem' }}>Real-time Cash Flow & Reconciliation</p>
           </div>
           <div style={{ textAlign: 'right', backgroundColor: '#3b82f6', padding: '10px 16px', borderRadius: '8px' }}>
             <div style={{ fontSize: '0.8rem', textTransform: 'uppercase' }}>Ready to Assign</div>
@@ -500,7 +587,6 @@ export default function BudgetApp() {
                   />
                 )}
 
-                {/* Granular Controls for Repeating Targets */}
                 {newEnvGoalType === 'repeating' && (
                   <>
                     <select
@@ -705,8 +791,13 @@ export default function BudgetApp() {
             <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
               {activeAccounts.map(acc => {
                 const balance = getAccountBalance(acc.id);
+                const clearedBal = getClearedBalance(acc.id);
                 const accTxList = activeTransactions.filter(t => t.accountId === acc.id);
                 const isCollapsed = collapsedAccountTx[acc.id];
+                const isReconciling = reconcilingAccId === acc.id;
+
+                const targetNum = parseFloat(targetBankBalance);
+                const diff = isNaN(targetNum) ? 0 : targetNum - balance;
 
                 return (
                   <div key={acc.id} style={{ border: '1px solid #e5e7eb', borderRadius: '8px', padding: '16px', backgroundColor: '#f9fafb' }}>
@@ -714,7 +805,14 @@ export default function BudgetApp() {
                       <div>
                         <div style={{ fontSize: '0.8rem', color: '#6b7280', textTransform: 'uppercase', fontWeight: 'bold' }}>{acc.type}</div>
                         <div style={{ fontSize: '1.2rem', fontWeight: 'bold', margin: '2px 0' }}>{acc.name}</div>
-                        <div style={{ fontSize: '0.8rem', color: '#9ca3af' }}>Initial: ${Number(acc.initialBalance).toFixed(2)}</div>
+                        <div style={{ fontSize: '0.8rem', color: '#6b7280' }}>
+                          Cleared: <strong>${clearedBal.toFixed(2)}</strong> | Total: <strong>${balance.toFixed(2)}</strong>
+                        </div>
+                        {acc.lastReconciledDate && (
+                          <div style={{ fontSize: '0.75rem', color: '#059669', marginTop: '2px' }}>
+                            ✓ Reconciled {formatDate(acc.lastReconciledDate, 'readable')} (${Number(acc.lastReconciledBalance).toFixed(2)})
+                          </div>
+                        )}
                       </div>
                       <div style={{ textAlign: 'right', display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: '6px' }}>
                         <div style={{ fontSize: '1.4rem', fontWeight: 'bold', color: balance >= 0 ? '#059669' : '#dc2626' }}>
@@ -722,10 +820,16 @@ export default function BudgetApp() {
                         </div>
                         <div style={{ display: 'flex', gap: '8px' }}>
                           <button
+                            onClick={() => startReconcile(acc.id)}
+                            style={{ backgroundColor: '#059669', color: 'white', border: 'none', padding: '4px 10px', borderRadius: '4px', cursor: 'pointer', fontSize: '0.8rem', fontWeight: '600' }}
+                          >
+                            ⚖ Reconcile Account
+                          </button>
+                          <button
                             onClick={() => toggleAccountTxCollapse(acc.id)}
                             style={{ backgroundColor: '#e0e7ff', color: '#1e3a8a', border: 'none', padding: '4px 10px', borderRadius: '4px', cursor: 'pointer', fontSize: '0.8rem', fontWeight: '600' }}
                           >
-                            {isCollapsed ? `► Show Transactions (${accTxList.length})` : `▼ Hide Transactions (${accTxList.length})`}
+                            {isCollapsed ? `► Show Tx (${accTxList.length})` : `▼ Hide Tx (${accTxList.length})`}
                           </button>
                           <button
                             onClick={() => handleSoftDeleteAccount(acc.id)}
@@ -736,6 +840,46 @@ export default function BudgetApp() {
                         </div>
                       </div>
                     </div>
+
+                    {/* RECONCILIATION MODAL / PANEL */}
+                    {isReconciling && (
+                      <div style={{ marginTop: '16px', padding: '14px', backgroundColor: '#ecfdf5', borderRadius: '8px', border: '1px solid #10b981' }}>
+                        <h4 style={{ margin: '0 0 8px 0', color: '#065f46' }}>Reconcile {acc.name}</h4>
+                        <p style={{ margin: '0 0 12px 0', fontSize: '0.85rem', color: '#047857' }}>
+                          Enter the current statement balance from your bank. Toggle transactions as <strong>Cleared (C)</strong> to match your statement.
+                        </p>
+                        <div style={{ display: 'flex', gap: '12px', alignItems: 'center', flexWrap: 'wrap' }}>
+                          <label style={{ fontSize: '0.85rem', fontWeight: 'bold', color: '#065f46' }}>
+                            Bank Statement Balance ($):
+                            <input
+                              type="number"
+                              step="0.01"
+                              value={targetBankBalance}
+                              onChange={e => setTargetBankBalance(e.target.value)}
+                              style={{ marginLeft: '8px', padding: '6px 10px', border: '1px solid #10b981', borderRadius: '6px', fontWeight: 'bold', width: '120px' }}
+                            />
+                          </label>
+                          <div style={{ fontSize: '0.85rem' }}>
+                            Difference: <strong style={{ color: Math.abs(diff) < 0.01 ? '#059669' : '#dc2626' }}>${diff.toFixed(2)}</strong>
+                          </div>
+                        </div>
+
+                        <div style={{ display: 'flex', gap: '8px', marginTop: '12px' }}>
+                          <button
+                            onClick={() => handleFinishReconciliation(acc.id)}
+                            style={{ backgroundColor: '#059669', color: 'white', border: 'none', padding: '6px 14px', borderRadius: '6px', fontWeight: 'bold', cursor: 'pointer', fontSize: '0.85rem' }}
+                          >
+                            {Math.abs(diff) < 0.01 ? 'Finish Reconciliation' : 'Create Adjustment & Finish'}
+                          </button>
+                          <button
+                            onClick={() => setReconcilingAccId(null)}
+                            style={{ backgroundColor: '#e5e7eb', color: '#374151', border: 'none', padding: '6px 12px', borderRadius: '6px', cursor: 'pointer', fontSize: '0.85rem' }}
+                          >
+                            Cancel
+                          </button>
+                        </div>
+                      </div>
+                    )}
 
                     {!isCollapsed && (
                       <div style={{ marginTop: '16px', paddingTop: '12px', borderTop: '1px solid #e5e7eb' }}>
@@ -750,7 +894,7 @@ export default function BudgetApp() {
                                 : 'Income / Ready to Assign';
 
                               return (
-                                <div key={tx.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '8px 12px', backgroundColor: 'white', borderRadius: '6px', border: '1px solid #e5e7eb', fontSize: '0.85rem', flexWrap: 'wrap', gap: '8px' }}>
+                                <div key={tx.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '8px 12px', backgroundColor: tx.reconciled ? '#f3f4f6' : 'white', borderRadius: '6px', border: '1px solid #e5e7eb', fontSize: '0.85rem', flexWrap: 'wrap', gap: '8px' }}>
                                   <div>
                                     <span style={{ fontWeight: '600', marginRight: '8px' }}>{tx.payee}</span>
                                     <span style={{ color: '#6b7280', fontSize: '0.75rem' }}>({formatDate(tx.date, 'readable')})</span>
@@ -763,6 +907,22 @@ export default function BudgetApp() {
                                     <span style={{ fontWeight: 'bold', color: tx.type === 'income' ? '#059669' : '#1f2937' }}>
                                       {tx.type === 'income' ? '+' : '-'}${Number(tx.amount).toFixed(2)}
                                     </span>
+                                    <button
+                                      onClick={() => handleToggleCleared(tx.id)}
+                                      title={tx.reconciled ? "Reconciled with Bank Statement" : "Toggle Cleared Status"}
+                                      style={{
+                                        backgroundColor: tx.reconciled ? '#10b981' : tx.cleared ? '#3b82f6' : '#e5e7eb',
+                                        color: tx.cleared || tx.reconciled ? 'white' : '#6b7280',
+                                        border: 'none',
+                                        padding: '2px 8px',
+                                        borderRadius: '4px',
+                                        cursor: tx.reconciled ? 'default' : 'pointer',
+                                        fontSize: '0.75rem',
+                                        fontWeight: 'bold'
+                                      }}
+                                    >
+                                      {tx.reconciled ? 'R' : tx.cleared ? 'C' : 'U'}
+                                    </button>
                                     <button onClick={() => handleSoftDeleteTransaction(tx.id)} style={{ backgroundColor: '#fee2e2', color: '#dc2626', border: 'none', padding: '2px 6px', borderRadius: '4px', cursor: 'pointer', fontSize: '0.7rem' }}>
                                       Trash
                                     </button>
@@ -856,7 +1016,7 @@ export default function BudgetApp() {
                         : 'Income / Ready to Assign';
                       
                       return (
-                        <div key={tx.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '10px', backgroundColor: '#f9fafb', borderRadius: '8px', border: '1px solid #f3f4f6', fontSize: '0.9rem', flexWrap: 'wrap', gap: '8px' }}>
+                        <div key={tx.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '10px', backgroundColor: tx.reconciled ? '#f3f4f6' : '#f9fafb', borderRadius: '8px', border: '1px solid #f3f4f6', fontSize: '0.9rem', flexWrap: 'wrap', gap: '8px' }}>
                           <div style={{ flex: 1, minWidth: '180px' }}>
                             <div style={{ fontWeight: '600' }}>{tx.payee}</div>
                             <div style={{ fontSize: '0.8rem', color: '#6b7280', marginTop: '2px' }}>
@@ -871,6 +1031,22 @@ export default function BudgetApp() {
                             <span style={{ fontWeight: 'bold', fontSize: '1rem', color: tx.type === 'income' ? '#059669' : '#1f2937' }}>
                               {tx.type === 'income' ? '+' : '-'}${Number(tx.amount).toFixed(2)}
                             </span>
+                            <button
+                              onClick={() => handleToggleCleared(tx.id)}
+                              title={tx.reconciled ? "Reconciled with Bank Statement" : "Toggle Cleared Status"}
+                              style={{
+                                backgroundColor: tx.reconciled ? '#10b981' : tx.cleared ? '#3b82f6' : '#e5e7eb',
+                                color: tx.cleared || tx.reconciled ? 'white' : '#6b7280',
+                                border: 'none',
+                                padding: '3px 8px',
+                                borderRadius: '4px',
+                                cursor: tx.reconciled ? 'default' : 'pointer',
+                                fontSize: '0.75rem',
+                                fontWeight: 'bold'
+                              }}
+                            >
+                              {tx.reconciled ? 'R' : tx.cleared ? 'C' : 'U'}
+                            </button>
                             <button onClick={() => handleSoftDeleteTransaction(tx.id)} style={{ backgroundColor: '#fee2e2', color: '#dc2626', border: 'none', padding: '4px 8px', borderRadius: '4px', cursor: 'pointer', fontSize: '0.75rem' }}>
                               Trash
                             </button>
