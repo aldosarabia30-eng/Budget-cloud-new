@@ -1,5 +1,34 @@
 import React, { useState, useEffect } from 'react';
 
+// Helper for ordinal numbers (1st, 2nd, 3rd, 4th...)
+const getOrdinalSuffix = (num) => {
+  const n = Number(num);
+  if (isNaN(n)) return '';
+  if (n > 3 && n < 21) return 'th';
+  switch (n % 10) {
+    case 1:  return "st";
+    case 2:  return "nd";
+    case 3:  return "rd";
+    default: return "th";
+  }
+};
+
+// Helper for formatting schedule text
+const getScheduleText = (env) => {
+  if (env.goalType !== 'repeating') return '';
+  const { cadence, repeatDayOfWeek, repeatDayOfMonth, repeatMonth } = env;
+  if (cadence === 'weekly') return `Every week on ${repeatDayOfWeek || 'Monday'}`;
+  if (cadence === 'biweekly') return `Every 2 weeks on ${repeatDayOfWeek || 'Monday'}`;
+  if (cadence === 'monthly') {
+    if (repeatDayOfMonth === 'last') return `Every month on the last day`;
+    return `Every month on the ${repeatDayOfMonth}${getOrdinalSuffix(repeatDayOfMonth)}`;
+  }
+  if (cadence === 'yearly') {
+    return `Every year on ${repeatMonth || 'January'} ${repeatDayOfMonth || '1'}${getOrdinalSuffix(repeatDayOfMonth || '1')}`;
+  }
+  return `Every ${cadence}`;
+};
+
 export default function BudgetApp() {
   const STORAGE_KEY = 'envelope_budget_app_data';
 
@@ -14,9 +43,9 @@ export default function BudgetApp() {
   const [groups, setGroups] = useState(['Housing & Utilities', 'Daily Living', 'Savings Goals']);
 
   const [envelopes, setEnvelopes] = useState([
-    { id: 'env-1', name: 'Rent/Mortgage', group: 'Housing & Utilities', assigned: 1000, isDeleted: false, goalType: 'repeating', targetAmount: 1000, cadence: 'monthly', targetDate: '' },
-    { id: 'env-2', name: 'Electric & Gas', group: 'Housing & Utilities', assigned: 150, isDeleted: false, goalType: 'repeating', targetAmount: 150, cadence: 'monthly', targetDate: '' },
-    { id: 'env-3', name: 'Groceries', group: 'Daily Living', assigned: 400, isDeleted: false, goalType: 'repeating', targetAmount: 500, cadence: 'monthly', targetDate: '' },
+    { id: 'env-1', name: 'Rent/Mortgage', group: 'Housing & Utilities', assigned: 1000, isDeleted: false, goalType: 'repeating', targetAmount: 1000, cadence: 'monthly', repeatDayOfMonth: '1', targetDate: '' },
+    { id: 'env-2', name: 'Electric & Gas', group: 'Housing & Utilities', assigned: 150, isDeleted: false, goalType: 'repeating', targetAmount: 150, cadence: 'monthly', repeatDayOfMonth: '15', targetDate: '' },
+    { id: 'env-3', name: 'Groceries', group: 'Daily Living', assigned: 400, isDeleted: false, goalType: 'repeating', targetAmount: 500, cadence: 'weekly', repeatDayOfWeek: 'Friday', targetDate: '' },
     { id: 'env-4', name: 'Dining Out', group: 'Daily Living', assigned: 150, isDeleted: false, goalType: 'none', targetAmount: 0, cadence: 'monthly', targetDate: '' },
     { id: 'env-5', name: 'Emergency Fund', group: 'Savings Goals', assigned: 300, isDeleted: false, goalType: 'target_by_date', targetAmount: 5000, targetDate: '2026-12-31', cadence: 'monthly' }
   ]);
@@ -42,6 +71,9 @@ export default function BudgetApp() {
   const [newEnvTargetAmount, setNewEnvTargetAmount] = useState('');
   const [newEnvTargetDate, setNewEnvTargetDate] = useState('');
   const [newEnvCadence, setNewEnvCadence] = useState('monthly');
+  const [newEnvRepeatDayOfWeek, setNewEnvRepeatDayOfWeek] = useState('Monday');
+  const [newEnvRepeatDayOfMonth, setNewEnvRepeatDayOfMonth] = useState('1');
+  const [newEnvRepeatMonth, setNewEnvRepeatMonth] = useState('January');
   
   const [newAccName, setNewAccName] = useState('');
   const [newAccType, setNewAccType] = useState('Checking');
@@ -171,7 +203,10 @@ export default function BudgetApp() {
       goalType: newEnvGoalType,
       targetAmount: parseFloat(newEnvTargetAmount) || 0,
       targetDate: newEnvTargetDate,
-      cadence: newEnvCadence
+      cadence: newEnvCadence,
+      repeatDayOfWeek: newEnvRepeatDayOfWeek,
+      repeatDayOfMonth: newEnvRepeatDayOfMonth,
+      repeatMonth: newEnvRepeatMonth
     };
 
     setEnvelopes([...envelopes, newEnv]);
@@ -180,6 +215,9 @@ export default function BudgetApp() {
     setNewEnvTargetAmount('');
     setNewEnvTargetDate('');
     setNewEnvCadence('monthly');
+    setNewEnvRepeatDayOfWeek('Monday');
+    setNewEnvRepeatDayOfMonth('1');
+    setNewEnvRepeatMonth('January');
     showNotification(`Envelope '${newEnv.name}' created.`);
   };
 
@@ -390,10 +428,11 @@ export default function BudgetApp() {
     }
 
     if (env.goalType === 'repeating') {
+      const scheduleText = getScheduleText(env);
       return (
         <div style={{ marginTop: '10px', fontSize: '0.825rem', backgroundColor: '#ffffff', padding: '10px 12px', borderRadius: '8px', border: '1px solid #e5e7eb' }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '6px' }}>
-            <span>🔄 Refill Target: <strong>${target.toFixed(2)}</strong> / {env.cadence || 'month'}</span>
+            <span>🔄 Refill Target: <strong>${target.toFixed(2)}</strong> <span style={{ color: '#4b5563', fontStyle: 'italic' }}>({scheduleText})</span></span>
             <span style={{ fontWeight: '700', color: amountLeft === 0 ? '#059669' : '#d97706' }}>
               {amountLeft === 0 ? '✓ Fully Funded' : `$${amountLeft.toFixed(2)} needed to refill`}
             </span>
@@ -484,7 +523,7 @@ export default function BudgetApp() {
               </form>
             </div>
 
-            {/* Create Envelope with Goal Options */}
+            {/* Create Envelope with Goal */}
             <div style={{ backgroundColor: 'white', padding: '16px', borderRadius: '10px', boxShadow: '0 1px 3px rgba(0,0,0,0.1)' }}>
               <h3 style={{ margin: '0 0 12px 0', fontSize: '1rem' }}>+ Create Envelope with Goal</h3>
               <form onSubmit={handleAddEnvelope} style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
@@ -534,24 +573,79 @@ export default function BudgetApp() {
                   </div>
                 )}
 
+                {/* Granular Schedule Selection for Repeating Targets */}
                 {newEnvGoalType === 'repeating' && (
-                  <div style={{ display: 'flex', gap: '8px' }}>
-                    <input
-                      type="number"
-                      placeholder="Amount ($)"
-                      value={newEnvTargetAmount}
-                      onChange={e => setNewEnvTargetAmount(e.target.value)}
-                      style={{ flex: 1, padding: '8px 12px', border: '1px solid #d1d5db', borderRadius: '6px' }}
-                    />
-                    <select
-                      value={newEnvCadence}
-                      onChange={e => setNewEnvCadence(e.target.value)}
-                      style={{ flex: 1, padding: '8px 12px', border: '1px solid #d1d5db', borderRadius: '6px' }}
-                    >
-                      <option value="weekly">Every Week</option>
-                      <option value="monthly">Every Month</option>
-                      <option value="yearly">Every Year</option>
-                    </select>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                    <div style={{ display: 'flex', gap: '8px' }}>
+                      <input
+                        type="number"
+                        placeholder="Amount ($)"
+                        value={newEnvTargetAmount}
+                        onChange={e => setNewEnvTargetAmount(e.target.value)}
+                        style={{ flex: 1, padding: '8px 12px', border: '1px solid #d1d5db', borderRadius: '6px' }}
+                      />
+                      <select
+                        value={newEnvCadence}
+                        onChange={e => setNewEnvCadence(e.target.value)}
+                        style={{ flex: 1, padding: '8px 12px', border: '1px solid #d1d5db', borderRadius: '6px' }}
+                      >
+                        <option value="weekly">Every Week</option>
+                        <option value="biweekly">Every 2 Weeks</option>
+                        <option value="monthly">Every Month</option>
+                        <option value="yearly">Every Year</option>
+                      </select>
+                    </div>
+
+                    {/* Sub-controls based on chosen Cadence */}
+                    <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+                      {(newEnvCadence === 'weekly' || newEnvCadence === 'biweekly') && (
+                        <select
+                          value={newEnvRepeatDayOfWeek}
+                          onChange={e => setNewEnvRepeatDayOfWeek(e.target.value)}
+                          style={{ flex: 1, padding: '8px 12px', border: '1px solid #d1d5db', borderRadius: '6px' }}
+                        >
+                          {['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'].map(day => (
+                            <option key={day} value={day}>Repeat on {day}s</option>
+                          ))}
+                        </select>
+                      )}
+
+                      {newEnvCadence === 'monthly' && (
+                        <select
+                          value={newEnvRepeatDayOfMonth}
+                          onChange={e => setNewEnvRepeatDayOfMonth(e.target.value)}
+                          style={{ flex: 1, padding: '8px 12px', border: '1px solid #d1d5db', borderRadius: '6px' }}
+                        >
+                          {Array.from({ length: 31 }, (_, i) => i + 1).map(day => (
+                            <option key={day} value={day}>Repeat on the {day}{getOrdinalSuffix(day)}</option>
+                          ))}
+                          <option value="last">Repeat on Last Day of Month</option>
+                        </select>
+                      )}
+
+                      {newEnvCadence === 'yearly' && (
+                        <>
+                          <select
+                            value={newEnvRepeatMonth}
+                            onChange={e => setNewEnvRepeatMonth(e.target.value)}
+                            style={{ flex: 1, padding: '8px 12px', border: '1px solid #d1d5db', borderRadius: '6px' }}
+                          >
+                            {['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'].map(m => (
+                              <option key={m} value={m}>{m}</option>
+                            ))}
+                          </select>
+                          <select
+                            value={newEnvRepeatDayOfMonth}
+                            onChange={e => setNewEnvRepeatDayOfMonth(e.target.value)}
+                            style={{ flex: 1, padding: '8px 12px', border: '1px solid #d1d5db', borderRadius: '6px' }}
+                          >
+                            {Array.from({ length: 31 }, (_, i) => i + 1).map(day => (
+                              <option key={day} value={day}>{day}{getOrdinalSuffix(day)}</option>
+                            ))}
+                          </select>
+                        </>
+                      )}
+                    </div>
                   </div>
                 )}
 
@@ -642,7 +736,7 @@ export default function BudgetApp() {
                               </div>
                             </div>
 
-                            {/* Render Goal Progress Bar & Breakdown */}
+                            {/* Render Goal Progress Bar & Schedule Breakdown */}
                             {renderGoalProgress(env)}
                           </div>
                         );
