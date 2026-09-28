@@ -404,7 +404,7 @@ export default function BudgetApp() {
         </div>
       )}
 
-      {/* Main Nav (Budget Tab is First) */}
+      {/* Main Nav */}
       <nav style={{ display: 'flex', gap: '8px', overflowX: 'auto', paddingBottom: '8px', marginBottom: '20px', borderBottom: '2px solid #e5e7eb' }}>
         {['budget', 'accounts', 'transactions', 'debts', 'trash'].map(tab => (
           <button
@@ -674,16 +674,42 @@ export default function BudgetApp() {
         </div>
       )}
 
-      {/* TRANSACTIONS TAB (UNIFIED REGISTER WITH ACCOUNT COLUMN) */}
+      {/* TRANSACTIONS TAB */}
       {activeTab === 'transactions' && (
-        <div>
-          <div style={{ backgroundColor: 'white', padding: '16px', borderRadius: '10px', marginBottom: '20px', boxShadow: '0 1px 3px rgba(0,0,0,0.1)' }}>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
+          <div style={{ backgroundColor: 'white', padding: '16px', borderRadius: '10px', boxShadow: '0 1px 3px rgba(0,0,0,0.1)' }}>
             <h3 style={{ margin: '0 0 12px 0' }}>+ Record Transaction</h3>
             <form onSubmit={handleAddTransaction} style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: '10px' }}>
-              <select value={txType} onChange={e => setTxType(e.target.value)} style={{ padding: '8px', border: '1px solid #d1d5db', borderRadius: '6px', fontWeight: 'bold' }}>
-                <option value="expense">Expense (-)</option>
-                <option value="income">Income (+)</option>
+              <input
+                type="text"
+                placeholder="Payee (e.g., Target, Electric Co)"
+                value={txPayee}
+                onChange={e => handlePayeeChange(e.target.value)}
+                style={{ padding: '8px', border: '1px solid #d1d5db', borderRadius: '6px' }}
+              />
+              <input
+                type="number"
+                step="0.01"
+                placeholder="Amount ($)"
+                value={txAmount}
+                onChange={e => setTxAmount(e.target.value)}
+                style={{ padding: '8px', border: '1px solid #d1d5db', borderRadius: '6px' }}
+              />
+              <select value={txType} onChange={e => setTxType(e.target.value)} style={{ padding: '8px', border: '1px solid #d1d5db', borderRadius: '6px' }}>
+                <option value="expense">Expense</option>
+                <option value="income">Income / Inflow</option>
               </select>
+              <select value={txAccountId} onChange={e => setTxAccountId(e.target.value)} style={{ padding: '8px', border: '1px solid #d1d5db', borderRadius: '6px' }}>
+                <option value="">Select Account...</option>
+                {activeAccounts.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}
+              </select>
+              
+              {txType === 'expense' && (
+                <select value={txEnvelopeId} onChange={e => setTxEnvelopeId(e.target.value)} style={{ padding: '8px', border: '1px solid #d1d5db', borderRadius: '6px' }}>
+                  <option value="">Select Envelope...</option>
+                  {activeEnvelopes.map(env => <option key={env.id} value={env.id}>{env.name}</option>)}
+                </select>
+              )}
 
               <input
                 type="date"
@@ -691,119 +717,62 @@ export default function BudgetApp() {
                 onChange={e => setTxDate(e.target.value)}
                 style={{ padding: '8px', border: '1px solid #d1d5db', borderRadius: '6px' }}
               />
-
-              <input
-                type="text"
-                placeholder="Payee / Source"
-                value={txPayee}
-                onChange={e => handlePayeeChange(e.target.value)}
-                style={{ padding: '8px', border: '1px solid #d1d5db', borderRadius: '6px' }}
-              />
-
-              <input
-                type="number"
-                step="0.01"
-                placeholder="Amount"
-                value={txAmount}
-                onChange={e => setTxAmount(e.target.value)}
-                style={{ padding: '8px', border: '1px solid #d1d5db', borderRadius: '6px' }}
-              />
-
-              <select value={txAccountId} onChange={e => setTxAccountId(e.target.value)} style={{ padding: '8px', border: '1px solid #d1d5db', borderRadius: '6px' }}>
-                <option value="">Select Account (Debited/Credited)...</option>
-                {activeAccounts.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}
-              </select>
-
-              {txType === 'expense' && (
-                <select value={txEnvelopeId} onChange={e => setTxEnvelopeId(e.target.value)} style={{ padding: '8px', border: '1px solid #d1d5db', borderRadius: '6px' }}>
-                  <option value="">Select Envelope...</option>
-                  {activeEnvelopes.map(e => <option key={e.id} value={e.id}>{e.name} ({e.group})</option>)}
-                </select>
-              )}
-
               <input
                 type="text"
                 placeholder="Notes (optional)"
                 value={txNotes}
                 onChange={e => setTxNotes(e.target.value)}
-                style={{ padding: '8px', border: '1px solid #d1d5db', borderRadius: '6px' }}
+                style={{ padding: '8px', border: '1px solid #d1d5db', borderRadius: '6px', gridColumn: '1 / -1' }}
               />
-
-              <button type="submit" style={{ backgroundColor: '#2563eb', color: 'white', border: 'none', padding: '8px', borderRadius: '6px', fontWeight: '600', cursor: 'pointer', gridColumn: '1 / -1' }}>
-                Submit Transaction
+              <button type="submit" style={{ backgroundColor: '#2563eb', color: 'white', border: 'none', padding: '10px', borderRadius: '6px', fontWeight: 'bold', cursor: 'pointer', gridColumn: '1 / -1' }}>
+                Save Transaction
               </button>
             </form>
           </div>
 
-          <div style={{ backgroundColor: 'white', borderRadius: '10px', padding: '16px', boxShadow: '0 1px 3px rgba(0,0,0,0.1)' }}>
+          <div style={{ backgroundColor: 'white', padding: '16px', borderRadius: '10px', boxShadow: '0 1px 3px rgba(0,0,0,0.1)' }}>
             <h3 style={{ margin: '0 0 16px 0' }}>Transaction Register</h3>
-            {activeTransactions.length === 0 ? (
-              <p style={{ color: '#6b7280' }}>No active transactions recorded.</p>
+            {sortedTransactionDates.length === 0 ? (
+              <p style={{ color: '#6b7280', fontStyle: 'italic', margin: 0 }}>No transactions recorded yet.</p>
             ) : (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
-                {sortedTransactionDates.map(dateKey => {
-                  const txsForDate = groupedTransactions[dateKey];
-                  const dayNet = txsForDate.reduce((sum, tx) => sum + (tx.type === 'income' ? Number(tx.amount) : -Number(tx.amount)), 0);
-
-                  return (
-                    <div key={dateKey} style={{ border: '1px solid #e5e7eb', borderRadius: '8px', overflow: 'hidden' }}>
-                      <div style={{ backgroundColor: '#f3f4f6', padding: '10px 14px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontWeight: '600' }}>
-                        <span style={{ color: '#1f2937' }}>📅 {formatDate(dateKey, 'readable')}</span>
-                        <span style={{ fontSize: '0.85rem', color: dayNet >= 0 ? '#059669' : '#dc2626' }}>
-                          Net: {dayNet >= 0 ? '+' : ''}${dayNet.toFixed(2)}
-                        </span>
-                      </div>
-
-                      <div style={{ overflowX: 'auto' }}>
-                        <table style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'left', fontSize: '0.9rem' }}>
-                          <thead>
-                            <tr style={{ borderBottom: '1px solid #e5e7eb', color: '#6b7280', backgroundColor: '#fafafa' }}>
-                              <th style={{ padding: '8px 12px' }}>Payee / Source</th>
-                              <th style={{ padding: '8px 12px' }}>Account (Debited / Credited)</th>
-                              <th style={{ padding: '8px 12px' }}>Envelope Category</th>
-                              <th style={{ padding: '8px 12px', textAlign: 'right' }}>Amount</th>
-                              <th style={{ padding: '8px 12px', textAlign: 'center' }}>Action</th>
-                            </tr>
-                          </thead>
-                          <tbody>
-                            {txsForDate.map(tx => {
-                              const acc = accounts.find(a => a.id === tx.accountId);
-                              const env = envelopes.find(e => e.id === tx.envelopeId);
-                              return (
-                                <tr key={tx.id} style={{ borderBottom: '1px solid #f3f4f6' }}>
-                                  <td style={{ padding: '8px 12px' }}>
-                                    <strong>{tx.payee}</strong>
-                                    {tx.notes && <div style={{ fontSize: '0.75rem', color: '#6b7280' }}>{tx.notes}</div>}
-                                  </td>
-                                  <td style={{ padding: '8px 12px' }}>
-                                    <span style={{ backgroundColor: '#f3f4f6', border: '1px solid #d1d5db', padding: '2px 8px', borderRadius: '4px', fontSize: '0.85rem', fontWeight: '500' }}>
-                                      💳 {acc?.name || '—'}
-                                    </span>
-                                  </td>
-                                  <td style={{ padding: '8px 12px' }}>
-                                    {tx.type === 'income' ? <em style={{ color: '#10b981', fontWeight: '600' }}>Income (Ready to Assign)</em> : (env?.name || 'Uncategorized')}
-                                  </td>
-                                  <td style={{ padding: '8px 12px', textAlign: 'right', fontWeight: 'bold', color: tx.type === 'income' ? '#10b981' : '#dc2626' }}>
-                                    {tx.type === 'income' ? '+' : '-'}${Number(tx.amount).toFixed(2)}
-                                  </td>
-                                  <td style={{ padding: '8px 12px', textAlign: 'center' }}>
-                                    <button
-                                      onClick={() => handleSoftDeleteTransaction(tx.id)}
-                                      style={{ backgroundColor: '#fee2e2', color: '#dc2626', border: 'none', padding: '4px 8px', borderRadius: '4px', cursor: 'pointer', fontSize: '0.75rem' }}
-                                    >
-                                      Trash
-                                    </button>
-                                  </td>
-                                </tr>
-                              );
-                            })}
-                          </tbody>
-                        </table>
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
+              sortedTransactionDates.map(date => (
+                <div key={date} style={{ marginBottom: '24px' }}>
+                  <div style={{ fontWeight: 'bold', paddingBottom: '8px', borderBottom: '2px solid #e5e7eb', marginBottom: '12px', color: '#1e3a8a' }}>
+                    {formatDate(date, 'readable')}
+                  </div>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                    {groupedTransactions[date].map(tx => {
+                      const accName = accounts.find(a => a.id === tx.accountId)?.name || 'Unknown Account';
+                      const envName = tx.type === 'expense' 
+                        ? (envelopes.find(e => e.id === tx.envelopeId)?.name || 'Uncategorized') 
+                        : 'Income / Ready to Assign';
+                      
+                      return (
+                        <div key={tx.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '10px', backgroundColor: '#f9fafb', borderRadius: '8px', border: '1px solid #f3f4f6', fontSize: '0.9rem', flexWrap: 'wrap', gap: '8px' }}>
+                          <div style={{ flex: 1, minWidth: '180px' }}>
+                            <div style={{ fontWeight: '600' }}>{tx.payee}</div>
+                            <div style={{ fontSize: '0.8rem', color: '#6b7280', marginTop: '2px' }}>
+                              <span>Account: <strong>{accName}</strong></span>
+                              <span style={{ marginLeft: '8px', backgroundColor: tx.type === 'income' ? '#d1fae5' : '#e5e7eb', color: tx.type === 'income' ? '#065f46' : '#4b5563', padding: '2px 8px', borderRadius: '12px', fontSize: '0.75rem', fontWeight: '500' }}>
+                                {envName}
+                              </span>
+                              {tx.notes && <span style={{ marginLeft: '8px', fontStyle: 'italic' }}>— {tx.notes}</span>}
+                            </div>
+                          </div>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                            <span style={{ fontWeight: 'bold', fontSize: '1rem', color: tx.type === 'income' ? '#059669' : '#1f2937' }}>
+                              {tx.type === 'income' ? '+' : '-'}${Number(tx.amount).toFixed(2)}
+                            </span>
+                            <button onClick={() => handleSoftDeleteTransaction(tx.id)} style={{ backgroundColor: '#fee2e2', color: '#dc2626', border: 'none', padding: '4px 8px', borderRadius: '4px', cursor: 'pointer', fontSize: '0.75rem' }}>
+                              Trash
+                            </button>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              ))
             )}
           </div>
         </div>
@@ -813,67 +782,42 @@ export default function BudgetApp() {
       {activeTab === 'debts' && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
           <div style={{ backgroundColor: 'white', padding: '16px', borderRadius: '10px', boxShadow: '0 1px 3px rgba(0,0,0,0.1)' }}>
-            <h3 style={{ margin: '0 0 12px 0' }}>+ Add Debt Tracker</h3>
-            <form onSubmit={handleAddDebt} style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: '10px' }}>
-              <input
-                type="text"
-                placeholder="Debt Name (e.g. Visa)"
-                value={newDebtName}
-                onChange={e => setNewDebtName(e.target.value)}
-                style={{ padding: '8px', border: '1px solid #d1d5db', borderRadius: '6px' }}
-              />
-              <input
-                type="number"
-                step="0.01"
-                placeholder="Current Balance ($)"
-                value={newDebtTotal}
-                onChange={e => setNewDebtTotal(e.target.value)}
-                style={{ padding: '8px', border: '1px solid #d1d5db', borderRadius: '6px' }}
-              />
-              <input
-                type="number"
-                step="0.01"
-                placeholder="APR (%)"
-                value={newDebtAPR}
-                onChange={e => setNewDebtAPR(e.target.value)}
-                style={{ padding: '8px', border: '1px solid #d1d5db', borderRadius: '6px' }}
-              />
-              <input
-                type="number"
-                step="0.01"
-                placeholder="Min Payment ($)"
-                value={newDebtMin}
-                onChange={e => setNewDebtMin(e.target.value)}
-                style={{ padding: '8px', border: '1px solid #d1d5db', borderRadius: '6px' }}
-              />
-              <button type="submit" style={{ backgroundColor: '#2563eb', color: 'white', border: 'none', padding: '8px', borderRadius: '6px', fontWeight: 'bold', cursor: 'pointer' }}>
-                Track Debt
-              </button>
+            <h3 style={{ margin: '0 0 12px 0' }}>+ Track New Debt</h3>
+            <form onSubmit={handleAddDebt} style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: '10px' }}>
+              <input type="text" placeholder="Debt Name (e.g., Visa Card)" value={newDebtName} onChange={e => setNewDebtName(e.target.value)} style={{ padding: '8px', border: '1px solid #d1d5db', borderRadius: '6px' }} />
+              <input type="number" step="0.01" placeholder="Total Balance ($)" value={newDebtTotal} onChange={e => setNewDebtTotal(e.target.value)} style={{ padding: '8px', border: '1px solid #d1d5db', borderRadius: '6px' }} />
+              <input type="number" step="0.01" placeholder="Interest Rate (APR %)" value={newDebtAPR} onChange={e => setNewDebtAPR(e.target.value)} style={{ padding: '8px', border: '1px solid #d1d5db', borderRadius: '6px' }} />
+              <input type="number" step="0.01" placeholder="Minimum Payment ($)" value={newDebtMin} onChange={e => setNewDebtMin(e.target.value)} style={{ padding: '8px', border: '1px solid #d1d5db', borderRadius: '6px' }} />
+              <button type="submit" style={{ backgroundColor: '#2563eb', color: 'white', border: 'none', padding: '8px', borderRadius: '6px', fontWeight: 'bold', cursor: 'pointer' }}>Add Debt</button>
             </form>
           </div>
 
-          <div style={{ backgroundColor: 'white', borderRadius: '10px', padding: '16px', boxShadow: '0 1px 3px rgba(0,0,0,0.1)' }}>
-            <h3 style={{ margin: '0 0 16px 0' }}>Tracked Debts</h3>
+          <div style={{ backgroundColor: 'white', padding: '16px', borderRadius: '10px', boxShadow: '0 1px 3px rgba(0,0,0,0.1)' }}>
+            <h3 style={{ margin: '0 0 16px 0' }}>Active Debts</h3>
             {activeDebts.length === 0 ? (
-              <p style={{ color: '#6b7280' }}>No active debts recorded.</p>
+              <p style={{ color: '#6b7280', fontStyle: 'italic', margin: 0 }}>No debts tracked.</p>
             ) : (
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: '12px' }}>
-                {activeDebts.map(d => (
-                  <div key={d.id} style={{ border: '1px solid #e5e7eb', borderRadius: '8px', padding: '14px', backgroundColor: '#fef2f2' }}>
-                    <div style={{ fontWeight: 'bold', fontSize: '1.1rem', color: '#991b1b' }}>{d.name}</div>
-                    <div style={{ fontSize: '1.4rem', fontWeight: 'bold', color: '#dc2626', margin: '4px 0' }}>
-                      ${Number(d.balance).toFixed(2)}
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: '16px' }}>
+                {activeDebts.map(debt => (
+                  <div key={debt.id} style={{ border: '1px solid #e5e7eb', borderRadius: '8px', padding: '16px', backgroundColor: '#f9fafb' }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '12px' }}>
+                      <div style={{ fontSize: '1.2rem', fontWeight: 'bold', color: '#1f2937' }}>{debt.name}</div>
+                      <button onClick={() => handleSoftDeleteDebt(debt.id)} style={{ backgroundColor: '#fee2e2', color: '#dc2626', border: 'none', padding: '4px 8px', borderRadius: '4px', cursor: 'pointer', fontSize: '0.75rem' }}>Trash</button>
                     </div>
-                    <div style={{ fontSize: '0.85rem', color: '#4b5563', display: 'flex', justifyContent: 'space-between', marginTop: '8px' }}>
-                      <span>APR: {d.APR}%</span>
-                      <span>Min: ${d.minimumPayment}/mo</span>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', fontSize: '0.9rem' }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                        <span style={{ color: '#6b7280' }}>Remaining Balance:</span>
+                        <span style={{ fontWeight: 'bold', color: '#dc2626' }}>${Number(debt.balance).toFixed(2)}</span>
+                      </div>
+                      <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                        <span style={{ color: '#6b7280' }}>Interest Rate (APR):</span>
+                        <span style={{ fontWeight: '600' }}>{debt.APR}%</span>
+                      </div>
+                      <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                        <span style={{ color: '#6b7280' }}>Minimum Payment:</span>
+                        <span style={{ fontWeight: '600' }}>${Number(debt.minimumPayment).toFixed(2)}</span>
+                      </div>
                     </div>
-                    <button
-                      onClick={() => handleSoftDeleteDebt(d.id)}
-                      style={{ marginTop: '12px', width: '100%', backgroundColor: '#fee2e2', color: '#dc2626', border: '1px solid #fca5a5', padding: '6px', borderRadius: '4px', cursor: 'pointer', fontSize: '0.8rem', fontWeight: 'bold' }}
-                    >
-                      Move to Trash
-                    </button>
                   </div>
                 ))}
               </div>
@@ -884,77 +828,77 @@ export default function BudgetApp() {
 
       {/* TRASH TAB */}
       {activeTab === 'trash' && (
-        <div style={{ backgroundColor: 'white', padding: '16px', borderRadius: '10px', boxShadow: '0 1px 3px rgba(0,0,0,0.1)' }}>
-          <h3 style={{ margin: '0 0 16px 0' }}>Trash / Deleted Items</h3>
+        <div style={{ backgroundColor: 'white', padding: '20px', borderRadius: '10px', boxShadow: '0 1px 3px rgba(0,0,0,0.1)' }}>
+          <h2 style={{ margin: '0 0 20px 0', color: '#1f2937' }}>Trash Bin</h2>
+          <p style={{ color: '#6b7280', fontSize: '0.9rem', marginBottom: '20px' }}>
+            Items here are hidden from your budget. Restoring an item returns it to its original location. Permanently deleting an item cannot be undone.
+          </p>
+
           {totalTrashCount === 0 ? (
-            <p style={{ color: '#6b7280' }}>Trash is empty.</p>
+            <div style={{ padding: '20px', textAlign: 'center', color: '#9ca3af', fontStyle: 'italic', backgroundColor: '#f9fafb', borderRadius: '8px' }}>
+              Trash is empty.
+            </div>
           ) : (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
               {deletedTx.length > 0 && (
                 <div>
-                  <h4 style={{ margin: '0 0 8px 0', color: '#4b5563' }}>Deleted Transactions ({deletedTx.length})</h4>
-                  <ul style={{ listStyle: 'none', padding: 0, margin: 0 }}>
-                    {deletedTx.map(tx => (
-                      <li key={tx.id} style={{ display: 'flex', justifyContent: 'space-between', padding: '8px 12px', borderBottom: '1px solid #f3f4f6' }}>
-                        <span>{formatDate(tx.date, 'readable')} - <strong>{tx.payee}</strong> (${tx.amount})</span>
-                        <div>
-                          <button onClick={() => restoreItem('tx', tx.id)} style={{ marginRight: '8px', backgroundColor: '#d1fae5', color: '#065f46', border: 'none', padding: '4px 8px', borderRadius: '4px', cursor: 'pointer' }}>Restore</button>
-                          <button onClick={() => permDeleteItem('tx', tx.id)} style={{ backgroundColor: '#fee2e2', color: '#dc2626', border: 'none', padding: '4px 8px', borderRadius: '4px', cursor: 'pointer' }}>Delete Permanently</button>
-                        </div>
-                      </li>
-                    ))}
-                  </ul>
+                  <h4 style={{ margin: '0 0 8px 0', borderBottom: '1px solid #e5e7eb', paddingBottom: '4px' }}>Transactions</h4>
+                  {deletedTx.map(tx => (
+                    <div key={tx.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '8px', backgroundColor: '#f9fafb', borderBottom: '1px solid #e5e7eb', fontSize: '0.9rem' }}>
+                      <div>
+                        <strong>{tx.payee}</strong> <span style={{ color: '#6b7280' }}>({formatDate(tx.date, 'us')})</span> — ${tx.amount.toFixed(2)}
+                      </div>
+                      <div style={{ display: 'flex', gap: '8px' }}>
+                        <button onClick={() => restoreItem('tx', tx.id)} style={{ backgroundColor: '#d1fae5', color: '#065f46', border: 'none', padding: '4px 10px', borderRadius: '4px', cursor: 'pointer', fontSize: '0.75rem', fontWeight: 'bold' }}>Restore</button>
+                        <button onClick={() => permDeleteItem('tx', tx.id)} style={{ backgroundColor: '#fee2e2', color: '#dc2626', border: 'none', padding: '4px 10px', borderRadius: '4px', cursor: 'pointer', fontSize: '0.75rem', fontWeight: 'bold' }}>Delete Forever</button>
+                      </div>
+                    </div>
+                  ))}
                 </div>
               )}
 
               {deletedEnv.length > 0 && (
                 <div>
-                  <h4 style={{ margin: '0 0 8px 0', color: '#4b5563' }}>Deleted Envelopes ({deletedEnv.length})</h4>
-                  <ul style={{ listStyle: 'none', padding: 0, margin: 0 }}>
-                    {deletedEnv.map(env => (
-                      <li key={env.id} style={{ display: 'flex', justifyContent: 'space-between', padding: '8px 12px', borderBottom: '1px solid #f3f4f6' }}>
-                        <span><strong>{env.name}</strong> ({env.group})</span>
-                        <div>
-                          <button onClick={() => restoreItem('env', env.id)} style={{ marginRight: '8px', backgroundColor: '#d1fae5', color: '#065f46', border: 'none', padding: '4px 8px', borderRadius: '4px', cursor: 'pointer' }}>Restore</button>
-                          <button onClick={() => permDeleteItem('env', env.id)} style={{ backgroundColor: '#fee2e2', color: '#dc2626', border: 'none', padding: '4px 8px', borderRadius: '4px', cursor: 'pointer' }}>Delete Permanently</button>
-                        </div>
-                      </li>
-                    ))}
-                  </ul>
+                  <h4 style={{ margin: '0 0 8px 0', borderBottom: '1px solid #e5e7eb', paddingBottom: '4px' }}>Envelopes</h4>
+                  {deletedEnv.map(env => (
+                    <div key={env.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '8px', backgroundColor: '#f9fafb', borderBottom: '1px solid #e5e7eb', fontSize: '0.9rem' }}>
+                      <div><strong>{env.name}</strong> <span style={{ color: '#6b7280' }}>(Group: {env.group})</span></div>
+                      <div style={{ display: 'flex', gap: '8px' }}>
+                        <button onClick={() => restoreItem('env', env.id)} style={{ backgroundColor: '#d1fae5', color: '#065f46', border: 'none', padding: '4px 10px', borderRadius: '4px', cursor: 'pointer', fontSize: '0.75rem', fontWeight: 'bold' }}>Restore</button>
+                        <button onClick={() => permDeleteItem('env', env.id)} style={{ backgroundColor: '#fee2e2', color: '#dc2626', border: 'none', padding: '4px 10px', borderRadius: '4px', cursor: 'pointer', fontSize: '0.75rem', fontWeight: 'bold' }}>Delete Forever</button>
+                      </div>
+                    </div>
+                  ))}
                 </div>
               )}
 
               {deletedAcc.length > 0 && (
                 <div>
-                  <h4 style={{ margin: '0 0 8px 0', color: '#4b5563' }}>Deleted Accounts ({deletedAcc.length})</h4>
-                  <ul style={{ listStyle: 'none', padding: 0, margin: 0 }}>
-                    {deletedAcc.map(acc => (
-                      <li key={acc.id} style={{ display: 'flex', justifyContent: 'space-between', padding: '8px 12px', borderBottom: '1px solid #f3f4f6' }}>
-                        <span><strong>{acc.name}</strong> ({acc.type})</span>
-                        <div>
-                          <button onClick={() => restoreItem('acc', acc.id)} style={{ marginRight: '8px', backgroundColor: '#d1fae5', color: '#065f46', border: 'none', padding: '4px 8px', borderRadius: '4px', cursor: 'pointer' }}>Restore</button>
-                          <button onClick={() => permDeleteItem('acc', acc.id)} style={{ backgroundColor: '#fee2e2', color: '#dc2626', border: 'none', padding: '4px 8px', borderRadius: '4px', cursor: 'pointer' }}>Delete Permanently</button>
-                        </div>
-                      </li>
-                    ))}
-                  </ul>
+                  <h4 style={{ margin: '0 0 8px 0', borderBottom: '1px solid #e5e7eb', paddingBottom: '4px' }}>Accounts</h4>
+                  {deletedAcc.map(acc => (
+                    <div key={acc.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '8px', backgroundColor: '#f9fafb', borderBottom: '1px solid #e5e7eb', fontSize: '0.9rem' }}>
+                      <div><strong>{acc.name}</strong> <span style={{ color: '#6b7280' }}>({acc.type})</span></div>
+                      <div style={{ display: 'flex', gap: '8px' }}>
+                        <button onClick={() => restoreItem('acc', acc.id)} style={{ backgroundColor: '#d1fae5', color: '#065f46', border: 'none', padding: '4px 10px', borderRadius: '4px', cursor: 'pointer', fontSize: '0.75rem', fontWeight: 'bold' }}>Restore</button>
+                        <button onClick={() => permDeleteItem('acc', acc.id)} style={{ backgroundColor: '#fee2e2', color: '#dc2626', border: 'none', padding: '4px 10px', borderRadius: '4px', cursor: 'pointer', fontSize: '0.75rem', fontWeight: 'bold' }}>Delete Forever</button>
+                      </div>
+                    </div>
+                  ))}
                 </div>
               )}
 
               {deletedDebts.length > 0 && (
                 <div>
-                  <h4 style={{ margin: '0 0 8px 0', color: '#4b5563' }}>Deleted Debts ({deletedDebts.length})</h4>
-                  <ul style={{ listStyle: 'none', padding: 0, margin: 0 }}>
-                    {deletedDebts.map(d => (
-                      <li key={d.id} style={{ display: 'flex', justifyContent: 'space-between', padding: '8px 12px', borderBottom: '1px solid #f3f4f6' }}>
-                        <span><strong>{d.name}</strong> (${d.balance})</span>
-                        <div>
-                          <button onClick={() => restoreItem('debt', d.id)} style={{ marginRight: '8px', backgroundColor: '#d1fae5', color: '#065f46', border: 'none', padding: '4px 8px', borderRadius: '4px', cursor: 'pointer' }}>Restore</button>
-                          <button onClick={() => permDeleteItem('debt', d.id)} style={{ backgroundColor: '#fee2e2', color: '#dc2626', border: 'none', padding: '4px 8px', borderRadius: '4px', cursor: 'pointer' }}>Delete Permanently</button>
-                        </div>
-                      </li>
-                    ))}
-                  </ul>
+                  <h4 style={{ margin: '0 0 8px 0', borderBottom: '1px solid #e5e7eb', paddingBottom: '4px' }}>Debts</h4>
+                  {deletedDebts.map(debt => (
+                    <div key={debt.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '8px', backgroundColor: '#f9fafb', borderBottom: '1px solid #e5e7eb', fontSize: '0.9rem' }}>
+                      <div><strong>{debt.name}</strong></div>
+                      <div style={{ display: 'flex', gap: '8px' }}>
+                        <button onClick={() => restoreItem('debt', debt.id)} style={{ backgroundColor: '#d1fae5', color: '#065f46', border: 'none', padding: '4px 10px', borderRadius: '4px', cursor: 'pointer', fontSize: '0.75rem', fontWeight: 'bold' }}>Restore</button>
+                        <button onClick={() => permDeleteItem('debt', debt.id)} style={{ backgroundColor: '#fee2e2', color: '#dc2626', border: 'none', padding: '4px 10px', borderRadius: '4px', cursor: 'pointer', fontSize: '0.75rem', fontWeight: 'bold' }}>Delete Forever</button>
+                      </div>
+                    </div>
+                  ))}
                 </div>
               )}
             </div>
