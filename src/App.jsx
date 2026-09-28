@@ -1,12 +1,35 @@
 import React, { useState, useEffect } from 'react';
 
-// Helper to format YYYY-MM-DD into DD/MM/YYYY for display
+// Helper to get local date string YYYY-MM-DD (prevents UTC timezone shift bug)
+const getTodayISO = () => {
+  const d = new Date();
+  const year = d.getFullYear();
+  const month = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+};
+
+// Helper to format YYYY-MM-DD or string into DD/MM/YYYY
 const formatDateDMY = (dateStr) => {
   if (!dateStr) return '';
+  if (dateStr.includes('-')) {
+    const parts = dateStr.split('-');
+    if (parts.length === 3) {
+      const [year, month, day] = parts;
+      return `${day.padStart(2, '0')}/${month.padStart(2, '0')}/${year}`;
+    }
+  }
+  return dateStr;
+};
+
+// Local date parser to prevent UTC offset shifts in goal math
+const parseLocalDate = (dateStr) => {
+  if (!dateStr) return new Date();
   const parts = dateStr.split('-');
-  if (parts.length !== 3) return dateStr;
-  const [year, month, day] = parts;
-  return `${day}/${month}/${year}`;
+  if (parts.length === 3) {
+    return new Date(Number(parts[0]), Number(parts[1]) - 1, Number(parts[2]));
+  }
+  return new Date(dateStr);
 };
 
 // Helper for ordinal numbers (1st, 2nd, 3rd, 4th...)
@@ -50,8 +73,6 @@ export default function BudgetApp() {
   ]);
 
   const [groups, setGroups] = useState(['Housing & Utilities', 'Daily Living', 'Savings Goals']);
-  
-  // Track collapsed state for envelope groups
   const [collapsedGroups, setCollapsedGroups] = useState({});
 
   const [envelopes, setEnvelopes] = useState([
@@ -97,7 +118,7 @@ export default function BudgetApp() {
   const [txType, setTxType] = useState('expense');
   const [txAccountId, setTxAccountId] = useState('');
   const [txEnvelopeId, setTxEnvelopeId] = useState('');
-  const [txDate, setTxDate] = useState(new Date().toISOString().split('T')[0]);
+  const [txDate, setTxDate] = useState(getTodayISO());
   const [txNotes, setTxNotes] = useState('');
 
   const [newDebtName, setNewDebtName] = useState('');
@@ -105,7 +126,7 @@ export default function BudgetApp() {
   const [newDebtAPR, setNewDebtAPR] = useState('');
   const [newDebtMin, setNewDebtMin] = useState('');
 
-  // --- PERSISTENCE: LOCALSTORAGE ---
+  // --- PERSISTENCE ---
   useEffect(() => {
     try {
       const savedData = localStorage.getItem(STORAGE_KEY);
@@ -125,15 +146,7 @@ export default function BudgetApp() {
   }, []);
 
   useEffect(() => {
-    const dataToSave = {
-      readyToAssign,
-      accounts,
-      groups,
-      collapsedGroups,
-      envelopes,
-      transactions,
-      debts
-    };
+    const dataToSave = { readyToAssign, accounts, groups, collapsedGroups, envelopes, transactions, debts };
     localStorage.setItem(STORAGE_KEY, JSON.stringify(dataToSave));
   }, [readyToAssign, accounts, groups, collapsedGroups, envelopes, transactions, debts]);
 
@@ -143,12 +156,8 @@ export default function BudgetApp() {
     setTimeout(() => setNotification(''), 3500);
   };
 
-  // --- COLLAPSE TOGGLE HELPER ---
   const toggleGroupCollapse = (groupName) => {
-    setCollapsedGroups(prev => ({
-      ...prev,
-      [groupName]: !prev[groupName]
-    }));
+    setCollapsedGroups(prev => ({ ...prev, [groupName]: !prev[groupName] }));
   };
 
   // --- DERIVED CALCULATIONS ---
@@ -178,16 +187,16 @@ export default function BudgetApp() {
 
   const totalBankBalance = activeAccounts.reduce((sum, acc) => sum + getAccountBalance(acc.id), 0);
 
-  // Group active transactions by date
+  // Group active transactions by ISO date string YYYY-MM-DD
   const groupedTransactions = activeTransactions.reduce((acc, tx) => {
-    const dateKey = tx.date || 'No Date';
+    const dateKey = tx.date || getTodayISO();
     if (!acc[dateKey]) acc[dateKey] = [];
     acc[dateKey].push(tx);
     return acc;
   }, {});
 
-  // Sort dates descending
-  const sortedTransactionDates = Object.keys(groupedTransactions).sort((a, b) => new Date(b) - new Date(a));
+  // Safe string-based descending sort (avoids timezone parsing bugs)
+  const sortedTransactionDates = Object.keys(groupedTransactions).sort((a, b) => b.localeCompare(a));
 
   // --- HANDLERS ---
   const handlePayeeChange = (val) => {
@@ -218,9 +227,7 @@ export default function BudgetApp() {
     }
 
     setGroups(groups.filter(g => g !== groupName));
-    setEnvelopes(envelopes.map(env => 
-      env.group === groupName ? { ...env, isDeleted: true } : env
-    ));
+    setEnvelopes(envelopes.map(env => env.group === groupName ? { ...env, isDeleted: true } : env));
     showNotification(`Group '${groupName}' deleted. $${refundedAmount.toFixed(2)} refunded to Ready to Assign.`);
   };
 
@@ -304,7 +311,7 @@ export default function BudgetApp() {
     const amt = parseFloat(txAmount);
     const newTx = {
       id: 'tx-' + Date.now(),
-      date: txDate,
+      date: txDate || getTodayISO(),
       payee: txPayee.trim(),
       amount: amt,
       type: txType,
@@ -326,6 +333,7 @@ export default function BudgetApp() {
     setTxPayee('');
     setTxAmount('');
     setTxNotes('');
+    setTxDate(getTodayISO());
   };
 
   const handleSoftDeleteTransaction = (txId) => {
@@ -434,7 +442,7 @@ export default function BudgetApp() {
 
     if (env.goalType === 'target_by_date') {
       const today = new Date();
-      const targetD = env.targetDate ? new Date(env.targetDate) : today;
+      const targetD = parseLocalDate(env.targetDate);
       const monthsDiff = (targetD.getFullYear() - today.getFullYear()) * 12 + (targetD.getMonth() - today.getMonth());
       const monthlyNeeded = monthsDiff > 0 ? amountLeft / monthsDiff : amountLeft;
 
@@ -630,7 +638,6 @@ export default function BudgetApp() {
                       </select>
                     </div>
 
-                    {/* Sub-controls based on chosen Cadence */}
                     <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
                       {(newEnvCadence === 'weekly' || newEnvCadence === 'biweekly') && (
                         <select
@@ -703,13 +710,11 @@ export default function BudgetApp() {
 
               return (
                 <div key={groupName} style={{ backgroundColor: 'white', borderRadius: '10px', padding: '16px', marginBottom: '20px', boxShadow: '0 1px 3px rgba(0,0,0,0.1)' }}>
-                  {/* Group Header with Collapse Button */}
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: isCollapsed ? '0' : '12px', borderBottom: isCollapsed ? 'none' : '1px solid #f3f4f6', paddingBottom: isCollapsed ? '0' : '8px' }}>
                     <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
                       <button
                         onClick={() => toggleGroupCollapse(groupName)}
                         style={{ backgroundColor: '#f3f4f6', border: 'none', borderRadius: '6px', cursor: 'pointer', padding: '4px 8px', fontSize: '0.85rem', color: '#374151', fontWeight: 'bold' }}
-                        title={isCollapsed ? "Expand Group" : "Collapse Group"}
                       >
                         {isCollapsed ? '▶ Expand' : '▼ Collapse'}
                       </button>
@@ -730,7 +735,6 @@ export default function BudgetApp() {
                     </button>
                   </div>
 
-                  {/* Envelope Cards (Visible only when not collapsed) */}
                   {!isCollapsed && (
                     groupEnvs.length === 0 ? (
                       <p style={{ fontSize: '0.85rem', color: '#9ca3af', marginTop: '8px' }}>No envelopes in this group.</p>
@@ -778,14 +782,12 @@ export default function BudgetApp() {
                                   <button
                                     onClick={() => handleSoftDeleteEnvelope(env.id)}
                                     style={{ backgroundColor: '#f3f4f6', color: '#6b7280', border: 'none', padding: '6px 10px', borderRadius: '4px', cursor: 'pointer' }}
-                                    title="Delete Envelope"
                                   >
                                     ✕
                                   </button>
                                 </div>
                               </div>
 
-                              {/* Render Goal Progress Bar & Schedule Breakdown */}
                               {renderGoalProgress(env)}
                             </div>
                           );
@@ -941,7 +943,6 @@ export default function BudgetApp() {
               <p style={{ color: '#6b7280' }}>No active transactions recorded.</p>
             ) : (
               <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
-                {/* Render Transactions Grouped by Date */}
                 {sortedTransactionDates.map(dateKey => {
                   const txsForDate = groupedTransactions[dateKey];
                   const dayNet = txsForDate.reduce((sum, tx) => sum + (tx.type === 'income' ? Number(tx.amount) : -Number(tx.amount)), 0);
@@ -959,6 +960,7 @@ export default function BudgetApp() {
                         <table style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'left', fontSize: '0.9rem' }}>
                           <thead>
                             <tr style={{ borderBottom: '1px solid #e5e7eb', color: '#6b7280', backgroundColor: '#fafafa' }}>
+                              <th style={{ padding: '8px 12px' }}>Date</th>
                               <th style={{ padding: '8px 12px' }}>Payee</th>
                               <th style={{ padding: '8px 12px' }}>Account</th>
                               <th style={{ padding: '8px 12px' }}>Envelope</th>
@@ -972,6 +974,9 @@ export default function BudgetApp() {
                               const env = envelopes.find(e => e.id === tx.envelopeId);
                               return (
                                 <tr key={tx.id} style={{ borderBottom: '1px solid #f3f4f6' }}>
+                                  <td style={{ padding: '8px 12px', color: '#4b5563', whiteSpace: 'nowrap' }}>
+                                    {formatDateDMY(tx.date)}
+                                  </td>
                                   <td style={{ padding: '8px 12px' }}>
                                     <strong>{tx.payee}</strong>
                                     {tx.notes && <div style={{ fontSize: '0.75rem', color: '#6b7280' }}>{tx.notes}</div>}
