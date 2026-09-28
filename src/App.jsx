@@ -86,7 +86,7 @@ export default function BudgetApp() {
     { id: 'd-1', name: 'Credit Card', totalAmount: 3000, balance: 2100, APR: 19.99, minimumPayment: 75, isDeleted: false }
   ]);
 
-  const [activeTab, setActiveTab] = useState('accounts');
+  const [activeTab, setActiveTab] = useState('budget');
   const [notification, setNotification] = useState('');
 
   // Form States
@@ -175,6 +175,15 @@ export default function BudgetApp() {
   };
 
   const totalBankBalance = activeAccounts.reduce((sum, acc) => sum + getAccountBalance(acc.id), 0);
+
+  const groupedTransactions = activeTransactions.reduce((acc, tx) => {
+    const dateKey = tx.date || getTodayISO();
+    if (!acc[dateKey]) acc[dateKey] = [];
+    acc[dateKey].push(tx);
+    return acc;
+  }, {});
+
+  const sortedTransactionDates = Object.keys(groupedTransactions).sort((a, b) => b.localeCompare(a));
 
   const handlePayeeChange = (val) => {
     setTxPayee(val);
@@ -395,9 +404,9 @@ export default function BudgetApp() {
         </div>
       )}
 
-      {/* Main Nav */}
+      {/* Main Nav (Budget Tab is First) */}
       <nav style={{ display: 'flex', gap: '8px', overflowX: 'auto', paddingBottom: '8px', marginBottom: '20px', borderBottom: '2px solid #e5e7eb' }}>
-        {['accounts', 'budget', 'transactions', 'debts', 'trash'].map(tab => (
+        {['budget', 'accounts', 'transactions', 'debts', 'trash'].map(tab => (
           <button
             key={tab}
             onClick={() => setActiveTab(tab)}
@@ -416,143 +425,6 @@ export default function BudgetApp() {
           </button>
         ))}
       </nav>
-
-      {/* ACCOUNTS TAB (WITH NESTED TRANSACTIONS PER ACCOUNT) */}
-      {activeTab === 'accounts' && (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
-          <div style={{ backgroundColor: 'white', padding: '16px', borderRadius: '10px', boxShadow: '0 1px 3px rgba(0,0,0,0.1)' }}>
-            <h3 style={{ margin: '0 0 12px 0' }}>+ Add Account</h3>
-            <form onSubmit={handleAddAccount} style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: '10px' }}>
-              <input
-                type="text"
-                placeholder="Account Name (e.g. Chase Checking)"
-                value={newAccName}
-                onChange={e => setNewAccName(e.target.value)}
-                style={{ padding: '8px', border: '1px solid #d1d5db', borderRadius: '6px' }}
-              />
-              <select value={newAccType} onChange={e => setNewAccType(e.target.value)} style={{ padding: '8px', border: '1px solid #d1d5db', borderRadius: '6px' }}>
-                <option value="Checking">Checking</option>
-                <option value="Savings">Savings</option>
-                <option value="Credit Card">Credit Card</option>
-                <option value="Cash">Cash</option>
-              </select>
-              <input
-                type="number"
-                step="0.01"
-                placeholder="Initial Balance ($)"
-                value={newAccBalance}
-                onChange={e => setNewAccBalance(e.target.value)}
-                style={{ padding: '8px', border: '1px solid #d1d5db', borderRadius: '6px' }}
-              />
-              <button type="submit" style={{ backgroundColor: '#2563eb', color: 'white', border: 'none', padding: '8px', borderRadius: '6px', fontWeight: 'bold', cursor: 'pointer' }}>
-                Add Account
-              </button>
-            </form>
-          </div>
-
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', backgroundColor: '#e0e7ff', padding: '14px 18px', borderRadius: '10px', fontWeight: 'bold' }}>
-            <span style={{ color: '#1e3a8a', fontSize: '1.1rem' }}>Linked Accounts Summary</span>
-            <span style={{ fontSize: '1.2rem', color: '#1e3a8a' }}>Total Net Cash: ${totalBankBalance.toFixed(2)}</span>
-          </div>
-
-          {activeAccounts.length === 0 ? (
-            <div style={{ backgroundColor: 'white', padding: '20px', borderRadius: '10px', textAlign: 'center', color: '#6b7280' }}>
-              No accounts created yet. Add an account above to start tracking transactions.
-            </div>
-          ) : (
-            activeAccounts.map(acc => {
-              const balance = getAccountBalance(acc.id);
-              const accTransactions = activeTransactions.filter(t => t.accountId === acc.id);
-
-              return (
-                <div key={acc.id} style={{ backgroundColor: 'white', borderRadius: '10px', overflow: 'hidden', boxShadow: '0 1px 3px rgba(0,0,0,0.1)' }}>
-                  {/* Account Header */}
-                  <div style={{ padding: '16px', borderBottom: '1px solid #e5e7eb', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '10px', backgroundColor: '#fafafa' }}>
-                    <div>
-                      <span style={{ fontSize: '0.75rem', color: '#6b7280', textTransform: 'uppercase', fontWeight: 'bold', letterSpacing: '0.5px' }}>{acc.type}</span>
-                      <h3 style={{ margin: '2px 0 0 0', color: '#111827', fontSize: '1.25rem' }}>{acc.name}</h3>
-                      <span style={{ fontSize: '0.8rem', color: '#9ca3af' }}>Initial Balance: ${Number(acc.initialBalance).toFixed(2)}</span>
-                    </div>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
-                      <div style={{ textAlign: 'right' }}>
-                        <div style={{ fontSize: '0.75rem', color: '#6b7280', textTransform: 'uppercase' }}>Current Balance</div>
-                        <div style={{ fontSize: '1.4rem', fontWeight: 'bold', color: balance >= 0 ? '#059669' : '#dc2626' }}>
-                          ${balance.toFixed(2)}
-                        </div>
-                      </div>
-                      <button
-                        onClick={() => handleSoftDeleteAccount(acc.id)}
-                        style={{ backgroundColor: '#fee2e2', color: '#dc2626', border: '1px solid #fca5a5', padding: '6px 12px', borderRadius: '6px', cursor: 'pointer', fontSize: '0.75rem', fontWeight: 'bold' }}
-                      >
-                        Trash
-                      </button>
-                    </div>
-                  </div>
-
-                  {/* Transactions Table Belonging to this Specific Account */}
-                  <div style={{ padding: '16px' }}>
-                    <h4 style={{ margin: '0 0 12px 0', fontSize: '0.9rem', color: '#4b5563', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
-                      Account Transactions ({accTransactions.length})
-                    </h4>
-
-                    {accTransactions.length === 0 ? (
-                      <p style={{ margin: 0, fontSize: '0.85rem', color: '#9ca3af', fontStyle: 'italic' }}>
-                        No transactions recorded out of or into this account yet.
-                      </p>
-                    ) : (
-                      <div style={{ overflowX: 'auto' }}>
-                        <table style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'left', fontSize: '0.88rem' }}>
-                          <thead>
-                            <tr style={{ borderBottom: '1px solid #e5e7eb', color: '#6b7280', backgroundColor: '#f9fafb' }}>
-                              <th style={{ padding: '8px 10px' }}>Date</th>
-                              <th style={{ padding: '8px 10px' }}>Payee / Source</th>
-                              <th style={{ padding: '8px 10px' }}>Envelope Category</th>
-                              <th style={{ padding: '8px 10px', textAlign: 'right' }}>Amount</th>
-                              <th style={{ padding: '8px 10px', textAlign: 'center' }}>Action</th>
-                            </tr>
-                          </thead>
-                          <tbody>
-                            {accTransactions.map(tx => {
-                              const env = envelopes.find(e => e.id === tx.envelopeId);
-                              return (
-                                <tr key={tx.id} style={{ borderBottom: '1px solid #f3f4f6' }}>
-                                  <td style={{ padding: '8px 10px', whiteSpace: 'nowrap', color: '#4b5563' }}>{formatDate(tx.date, 'readable')}</td>
-                                  <td style={{ padding: '8px 10px' }}>
-                                    <strong>{tx.payee}</strong>
-                                    {tx.notes && <div style={{ fontSize: '0.75rem', color: '#6b7280' }}>{tx.notes}</div>}
-                                  </td>
-                                  <td style={{ padding: '8px 10px' }}>
-                                    {tx.type === 'income' ? (
-                                      <span style={{ color: '#059669', fontWeight: '600' }}>Income (Ready to Assign)</span>
-                                    ) : (
-                                      env ? <span style={{ backgroundColor: '#e0e7ff', color: '#3730a3', padding: '2px 8px', borderRadius: '4px', fontSize: '0.8rem', fontWeight: '500' }}>{env.name}</span> : <em style={{ color: '#9ca3af' }}>Uncategorized</em>
-                                    )}
-                                  </td>
-                                  <td style={{ padding: '8px 10px', textAlign: 'right', fontWeight: 'bold', color: tx.type === 'income' ? '#059669' : '#dc2626' }}>
-                                    {tx.type === 'income' ? '+' : '-'}${Number(tx.amount).toFixed(2)}
-                                  </td>
-                                  <td style={{ padding: '8px 10px', textAlign: 'center' }}>
-                                    <button
-                                      onClick={() => handleSoftDeleteTransaction(tx.id)}
-                                      style={{ backgroundColor: '#fee2e2', color: '#dc2626', border: 'none', padding: '4px 8px', borderRadius: '4px', cursor: 'pointer', fontSize: '0.75rem' }}
-                                    >
-                                      Trash
-                                    </button>
-                                  </td>
-                                </tr>
-                              );
-                            })}
-                          </tbody>
-                        </table>
-                      </div>
-                    )}
-                  </div>
-                </div>
-              );
-            })
-          )}
-        </div>
-      )}
 
       {/* BUDGET TAB */}
       {activeTab === 'budget' && (
@@ -732,7 +604,77 @@ export default function BudgetApp() {
         </div>
       )}
 
-      {/* TRANSACTIONS TAB (RECORD + LIST GROUPED BY ACCOUNT) */}
+      {/* ACCOUNTS TAB */}
+      {activeTab === 'accounts' && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
+          <div style={{ backgroundColor: 'white', padding: '16px', borderRadius: '10px', boxShadow: '0 1px 3px rgba(0,0,0,0.1)' }}>
+            <h3 style={{ margin: '0 0 12px 0' }}>+ Add Account</h3>
+            <form onSubmit={handleAddAccount} style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: '10px' }}>
+              <input
+                type="text"
+                placeholder="Account Name (e.g. Chase Checking)"
+                value={newAccName}
+                onChange={e => setNewAccName(e.target.value)}
+                style={{ padding: '8px', border: '1px solid #d1d5db', borderRadius: '6px' }}
+              />
+              <select value={newAccType} onChange={e => setNewAccType(e.target.value)} style={{ padding: '8px', border: '1px solid #d1d5db', borderRadius: '6px' }}>
+                <option value="Checking">Checking</option>
+                <option value="Savings">Savings</option>
+                <option value="Credit Card">Credit Card</option>
+                <option value="Cash">Cash</option>
+              </select>
+              <input
+                type="number"
+                step="0.01"
+                placeholder="Initial Balance ($)"
+                value={newAccBalance}
+                onChange={e => setNewAccBalance(e.target.value)}
+                style={{ padding: '8px', border: '1px solid #d1d5db', borderRadius: '6px' }}
+              />
+              <button type="submit" style={{ backgroundColor: '#2563eb', color: 'white', border: 'none', padding: '8px', borderRadius: '6px', fontWeight: 'bold', cursor: 'pointer' }}>
+                Add Account
+              </button>
+            </form>
+          </div>
+
+          <div style={{ backgroundColor: 'white', borderRadius: '10px', padding: '16px', boxShadow: '0 1px 3px rgba(0,0,0,0.1)' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
+              <h3 style={{ margin: 0 }}>Linked Accounts</h3>
+              <div style={{ fontWeight: 'bold', fontSize: '1.1rem', color: '#1e3a8a' }}>
+                Total Bank Balance: ${totalBankBalance.toFixed(2)}
+              </div>
+            </div>
+
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: '12px' }}>
+              {activeAccounts.map(acc => {
+                const balance = getAccountBalance(acc.id);
+                return (
+                  <div key={acc.id} style={{ border: '1px solid #e5e7eb', borderRadius: '8px', padding: '14px', backgroundColor: '#f9fafb', display: 'flex', flexDirection: 'column', justifyContent: 'space-between' }}>
+                    <div>
+                      <div style={{ fontSize: '0.8rem', color: '#6b7280', textTransform: 'uppercase', fontWeight: 'bold' }}>{acc.type}</div>
+                      <div style={{ fontSize: '1.1rem', fontWeight: 'bold', margin: '4px 0' }}>{acc.name}</div>
+                      <div style={{ fontSize: '1.3rem', fontWeight: 'bold', color: balance >= 0 ? '#059669' : '#dc2626' }}>
+                        ${balance.toFixed(2)}
+                      </div>
+                    </div>
+                    <div style={{ marginTop: '12px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                      <span style={{ fontSize: '0.75rem', color: '#9ca3af' }}>Initial: ${Number(acc.initialBalance).toFixed(2)}</span>
+                      <button
+                        onClick={() => handleSoftDeleteAccount(acc.id)}
+                        style={{ backgroundColor: '#fee2e2', color: '#dc2626', border: 'none', padding: '4px 8px', borderRadius: '4px', cursor: 'pointer', fontSize: '0.75rem' }}
+                      >
+                        Trash
+                      </button>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* TRANSACTIONS TAB (UNIFIED REGISTER WITH ACCOUNT COLUMN) */}
       {activeTab === 'transactions' && (
         <div>
           <div style={{ backgroundColor: 'white', padding: '16px', borderRadius: '10px', marginBottom: '20px', boxShadow: '0 1px 3px rgba(0,0,0,0.1)' }}>
@@ -768,7 +710,7 @@ export default function BudgetApp() {
               />
 
               <select value={txAccountId} onChange={e => setTxAccountId(e.target.value)} style={{ padding: '8px', border: '1px solid #d1d5db', borderRadius: '6px' }}>
-                <option value="">Select Account Spent From / Deposited To...</option>
+                <option value="">Select Account (Debited/Credited)...</option>
                 {activeAccounts.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}
               </select>
 
@@ -793,73 +735,76 @@ export default function BudgetApp() {
             </form>
           </div>
 
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
-            <h3 style={{ margin: 0 }}>Transactions Grouped by Account</h3>
+          <div style={{ backgroundColor: 'white', borderRadius: '10px', padding: '16px', boxShadow: '0 1px 3px rgba(0,0,0,0.1)' }}>
+            <h3 style={{ margin: '0 0 16px 0' }}>Transaction Register</h3>
+            {activeTransactions.length === 0 ? (
+              <p style={{ color: '#6b7280' }}>No active transactions recorded.</p>
+            ) : (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
+                {sortedTransactionDates.map(dateKey => {
+                  const txsForDate = groupedTransactions[dateKey];
+                  const dayNet = txsForDate.reduce((sum, tx) => sum + (tx.type === 'income' ? Number(tx.amount) : -Number(tx.amount)), 0);
 
-            {activeAccounts.map(acc => {
-              const accTxs = activeTransactions.filter(t => t.accountId === acc.id);
-              return (
-                <div key={acc.id} style={{ backgroundColor: 'white', borderRadius: '10px', padding: '16px', boxShadow: '0 1px 3px rgba(0,0,0,0.1)' }}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px', borderBottom: '2px solid #e5e7eb', paddingBottom: '8px' }}>
-                    <div>
-                      <h3 style={{ margin: 0, color: '#1e3a8a' }}>💳 {acc.name}</h3>
-                      <span style={{ fontSize: '0.8rem', color: '#6b7280' }}>Type: {acc.type}</span>
-                    </div>
-                    <div style={{ textAlign: 'right' }}>
-                      <span style={{ fontWeight: 'bold', color: getAccountBalance(acc.id) >= 0 ? '#059669' : '#dc2626' }}>
-                        Balance: ${getAccountBalance(acc.id).toFixed(2)}
-                      </span>
-                    </div>
-                  </div>
+                  return (
+                    <div key={dateKey} style={{ border: '1px solid #e5e7eb', borderRadius: '8px', overflow: 'hidden' }}>
+                      <div style={{ backgroundColor: '#f3f4f6', padding: '10px 14px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontWeight: '600' }}>
+                        <span style={{ color: '#1f2937' }}>📅 {formatDate(dateKey, 'readable')}</span>
+                        <span style={{ fontSize: '0.85rem', color: dayNet >= 0 ? '#059669' : '#dc2626' }}>
+                          Net: {dayNet >= 0 ? '+' : ''}${dayNet.toFixed(2)}
+                        </span>
+                      </div>
 
-                  {accTxs.length === 0 ? (
-                    <p style={{ color: '#9ca3af', fontSize: '0.85rem', fontStyle: 'italic', margin: 0 }}>No transactions for this account.</p>
-                  ) : (
-                    <div style={{ overflowX: 'auto' }}>
-                      <table style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'left', fontSize: '0.88rem' }}>
-                        <thead>
-                          <tr style={{ borderBottom: '1px solid #e5e7eb', color: '#6b7280', backgroundColor: '#fafafa' }}>
-                            <th style={{ padding: '8px 10px' }}>Date</th>
-                            <th style={{ padding: '8px 10px' }}>Payee</th>
-                            <th style={{ padding: '8px 10px' }}>Envelope</th>
-                            <th style={{ padding: '8px 10px', textAlign: 'right' }}>Amount</th>
-                            <th style={{ padding: '8px 10px', textAlign: 'center' }}>Action</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {accTxs.map(tx => {
-                            const env = envelopes.find(e => e.id === tx.envelopeId);
-                            return (
-                              <tr key={tx.id} style={{ borderBottom: '1px solid #f3f4f6' }}>
-                                <td style={{ padding: '8px 10px', whiteSpace: 'nowrap', color: '#4b5563' }}>{formatDate(tx.date, 'readable')}</td>
-                                <td style={{ padding: '8px 10px' }}>
-                                  <strong>{tx.payee}</strong>
-                                  {tx.notes && <div style={{ fontSize: '0.75rem', color: '#6b7280' }}>{tx.notes}</div>}
-                                </td>
-                                <td style={{ padding: '8px 10px' }}>
-                                  {tx.type === 'income' ? <em style={{ color: '#059669' }}>Ready to Assign</em> : (env?.name || 'Uncategorized')}
-                                </td>
-                                <td style={{ padding: '8px 10px', textAlign: 'right', fontWeight: 'bold', color: tx.type === 'income' ? '#059669' : '#111827' }}>
-                                  {tx.type === 'income' ? '+' : '-'}${Number(tx.amount).toFixed(2)}
-                                </td>
-                                <td style={{ padding: '8px 10px', textAlign: 'center' }}>
-                                  <button
-                                    onClick={() => handleSoftDeleteTransaction(tx.id)}
-                                    style={{ backgroundColor: '#fee2e2', color: '#dc2626', border: 'none', padding: '4px 8px', borderRadius: '4px', cursor: 'pointer', fontSize: '0.75rem' }}
-                                  >
-                                    Trash
-                                  </button>
-                                </td>
-                              </tr>
-                            );
-                          })}
-                        </tbody>
-                      </table>
+                      <div style={{ overflowX: 'auto' }}>
+                        <table style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'left', fontSize: '0.9rem' }}>
+                          <thead>
+                            <tr style={{ borderBottom: '1px solid #e5e7eb', color: '#6b7280', backgroundColor: '#fafafa' }}>
+                              <th style={{ padding: '8px 12px' }}>Payee / Source</th>
+                              <th style={{ padding: '8px 12px' }}>Account (Debited / Credited)</th>
+                              <th style={{ padding: '8px 12px' }}>Envelope Category</th>
+                              <th style={{ padding: '8px 12px', textAlign: 'right' }}>Amount</th>
+                              <th style={{ padding: '8px 12px', textAlign: 'center' }}>Action</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {txsForDate.map(tx => {
+                              const acc = accounts.find(a => a.id === tx.accountId);
+                              const env = envelopes.find(e => e.id === tx.envelopeId);
+                              return (
+                                <tr key={tx.id} style={{ borderBottom: '1px solid #f3f4f6' }}>
+                                  <td style={{ padding: '8px 12px' }}>
+                                    <strong>{tx.payee}</strong>
+                                    {tx.notes && <div style={{ fontSize: '0.75rem', color: '#6b7280' }}>{tx.notes}</div>}
+                                  </td>
+                                  <td style={{ padding: '8px 12px' }}>
+                                    <span style={{ backgroundColor: '#f3f4f6', border: '1px solid #d1d5db', padding: '2px 8px', borderRadius: '4px', fontSize: '0.85rem', fontWeight: '500' }}>
+                                      💳 {acc?.name || '—'}
+                                    </span>
+                                  </td>
+                                  <td style={{ padding: '8px 12px' }}>
+                                    {tx.type === 'income' ? <em style={{ color: '#10b981', fontWeight: '600' }}>Income (Ready to Assign)</em> : (env?.name || 'Uncategorized')}
+                                  </td>
+                                  <td style={{ padding: '8px 12px', textAlign: 'right', fontWeight: 'bold', color: tx.type === 'income' ? '#10b981' : '#dc2626' }}>
+                                    {tx.type === 'income' ? '+' : '-'}${Number(tx.amount).toFixed(2)}
+                                  </td>
+                                  <td style={{ padding: '8px 12px', textAlign: 'center' }}>
+                                    <button
+                                      onClick={() => handleSoftDeleteTransaction(tx.id)}
+                                      style={{ backgroundColor: '#fee2e2', color: '#dc2626', border: 'none', padding: '4px 8px', borderRadius: '4px', cursor: 'pointer', fontSize: '0.75rem' }}
+                                    >
+                                      Trash
+                                    </button>
+                                  </td>
+                                </tr>
+                              );
+                            })}
+                          </tbody>
+                        </table>
+                      </div>
                     </div>
-                  )}
-                </div>
-              );
-            })}
+                  );
+                })}
+              </div>
+            )}
           </div>
         </div>
       )}
