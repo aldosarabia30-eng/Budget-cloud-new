@@ -454,7 +454,7 @@ export default function BudgetApp() {
     const newTx = {
       id: 'tx-' + Date.now(),
       date: txDate || getTodayISO(),
-      payee: txPayee.trim(),
+      Description: txPayee.trim(),
       amount: amt,
       type: txType,
       accountId: txAccountId,
