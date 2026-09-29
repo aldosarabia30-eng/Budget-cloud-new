@@ -76,39 +76,19 @@ const getScheduleText = (env) => {
 
 export default function BudgetApp() {
   const [budgetId, setBudgetId] = useState(getBudgetIdFromUrl());
-  const [readyToAssign, setReadyToAssign] = useState(1250.0);
+  const [readyToAssign, setReadyToAssign] = useState(0.0);
 
-  const [accounts, setAccounts] = useState([
-    { id: 'acc-1', name: 'Checking Account', type: 'Checking', initialBalance: 2000, isDeleted: false, lastReconciledDate: '2026-09-01', lastReconciledBalance: 2000 },
-    { id: 'acc-2', name: 'Savings Account', type: 'Savings', initialBalance: 5000, isDeleted: false, lastReconciledDate: '', lastReconciledBalance: null }
-  ]);
-
-  const [groups, setGroups] = useState(['Housing & Utilities', 'Daily Living', 'Savings Goals']);
+  const [accounts, setAccounts] = useState([]);
+  const [groups, setGroups] = useState([]);
   const [collapsedGroups, setCollapsedGroups] = useState({});
   const [collapsedAccountTx, setCollapsedAccountTx] = useState({});
 
-  const [envelopes, setEnvelopes] = useState([
-    { id: 'env-1', name: 'Rent/Mortgage', group: 'Housing & Utilities', assigned: 1000, isDeleted: false, goalType: 'repeating', targetAmount: 1000, cadence: 'monthly', repeatDayOfMonth: '1', targetDate: '' },
-    { id: 'env-2', name: 'Electric & Gas', group: 'Housing & Utilities', assigned: 150, isDeleted: false, goalType: 'repeating', targetAmount: 150, cadence: 'monthly', repeatDayOfMonth: '15', targetDate: '' },
-    { id: 'env-3', name: 'Groceries', group: 'Daily Living', assigned: 400, isDeleted: false, goalType: 'repeating', targetAmount: 500, cadence: 'weekly', repeatDayOfWeek: 'Friday', targetDate: '' },
-    { id: 'env-4', name: 'Dining Out', group: 'Daily Living', assigned: 150, isDeleted: false, goalType: 'none', targetAmount: 0, cadence: 'monthly', targetDate: '' },
-    { id: 'env-5', name: 'Emergency Fund', group: 'Savings Goals', assigned: 300, isDeleted: false, goalType: 'target_by_date', targetAmount: 5000, targetDate: '2026-12-31', cadence: 'monthly' }
-  ]);
-
-  const [transactions, setTransactions] = useState([
-    { id: 'tx-1', date: '2026-09-15', payee: 'Landlord Co.', amount: 1000, type: 'expense', accountId: 'acc-1', envelopeId: 'env-1', notes: 'Monthly rent', isDeleted: false, cleared: true, reconciled: true },
-    { id: 'tx-2', date: '2026-09-18', payee: "Trader Joe's", amount: 125.5, type: 'expense', accountId: 'acc-1', envelopeId: 'env-3', notes: 'Weekly groceries', isDeleted: false, cleared: true, reconciled: false },
-    { id: 'tx-3', date: '2026-09-25', payee: 'Employer Inc.', amount: 2500, type: 'income', accountId: 'acc-1', envelopeId: '', notes: 'Bi-weekly Paycheck', isDeleted: false, cleared: true, reconciled: false },
-    { id: 'tx-4', date: '2026-09-25', payee: 'Transfer to Savings', amount: 500, type: 'expense', accountId: 'acc-1', envelopeId: 'env-5', notes: 'Emergency fund transfer', isDeleted: false, cleared: false, reconciled: false }
-  ]);
-
-  const [debts, setDebts] = useState([
-    { id: 'd-1', name: 'Credit Card', totalAmount: 3000, balance: 2100, APR: 19.99, minimumPayment: 75, isDeleted: false }
-  ]);
+  const [envelopes, setEnvelopes] = useState([]);
+  const [transactions, setTransactions] = useState([]);
+  const [debts, setDebts] = useState([]);
 
   const [activeTab, setActiveTab] = useState('budget');
   const [notification, setNotification] = useState('');
-  const [selectedTxIds, setSelectedTxIds] = useState([]);
 
   const [reconcilingAccId, setReconcilingAccId] = useState(null);
   const [targetBankBalance, setTargetBankBalance] = useState('');
@@ -136,6 +116,9 @@ export default function BudgetApp() {
   const [txEnvelopeId, setTxEnvelopeId] = useState('');
   const [txDate, setTxDate] = useState(getTodayISO());
   const [txNotes, setTxNotes] = useState('');
+
+  // Multi-select transactions state
+  const [selectedTxIds, setSelectedTxIds] = useState([]);
 
   const [newDebtName, setNewDebtName] = useState('');
   const [newDebtTotal, setNewDebtTotal] = useState('');
@@ -486,41 +469,38 @@ export default function BudgetApp() {
     showNotification('Transaction moved to Trash.');
   };
 
+  // Multi-select transaction deletion handlers
   const handleToggleSelectTx = (txId) => {
     setSelectedTxIds(prev =>
       prev.includes(txId) ? prev.filter(id => id !== txId) : [...prev, txId]
     );
   };
 
-  const handleSelectAllTx = () => {
-    if (selectedTxIds.length === activeTransactions.length) {
-      setSelectedTxIds([]);
-    } else {
+  const handleSelectAllTx = (e) => {
+    if (e.target.checked) {
       setSelectedTxIds(activeTransactions.map(t => t.id));
+    } else {
+      setSelectedTxIds([]);
     }
   };
 
-  const handleBulkSoftDeleteTransactions = () => {
+  const handleDeleteSelectedTransactions = () => {
     if (selectedTxIds.length === 0) return;
 
     let incomeAdjustment = 0;
-    setTransactions(prev => prev.map(t => {
-      if (selectedTxIds.includes(t.id) && !t.isDeleted) {
-        if (t.type === 'income') {
-          incomeAdjustment += Number(t.amount);
-        }
-        return { ...t, isDeleted: true };
+    transactions.forEach(t => {
+      if (selectedTxIds.includes(t.id) && t.type === 'income' && !t.isDeleted) {
+        incomeAdjustment += Number(t.amount);
       }
-      return t;
-    }));
+    });
 
     if (incomeAdjustment > 0) {
       setReadyToAssign(prev => prev - incomeAdjustment);
     }
 
-    const count = selectedTxIds.length;
+    setTransactions(prev => prev.map(t => selectedTxIds.includes(t.id) ? { ...t, isDeleted: true } : t));
     setSelectedTxIds([]);
-    showNotification(`${count} transactions moved to Trash.`);
+    showNotification('Selected transactions moved to Trash.');
   };
 
   const handleAddDebt = (e) => {
@@ -732,7 +712,7 @@ export default function BudgetApp() {
                         ))}
                       </select>
                     ) : newEnvCadence === 'yearly' ? (
-                      <div style={{ display: 'flex', gap: '4px', flex: '1 1 100%' }}>
+                      <div style={{ display: 'flex', gap: '4px', flex: '1 1 100%', flexWrap: 'wrap' }}>
                         <select
                           value={newEnvRepeatMonth}
                           onChange={e => setNewEnvRepeatMonth(e.target.value)}
@@ -782,6 +762,12 @@ export default function BudgetApp() {
             </div>
           </div>
 
+          {groups.length === 0 && (
+            <div style={{ backgroundColor: 'white', padding: '20px', borderRadius: '10px', textAlign: 'center', color: '#6b7280', boxShadow: '0 1px 3px rgba(0,0,0,0.1)' }}>
+              No budget groups or envelopes yet. Add a group above to get started!
+            </div>
+          )}
+
           {/* Group Categories */}
           {groups.map(groupName => {
             const groupEnvelopes = activeEnvelopes.filter(e => e.group === groupName);
@@ -806,42 +792,46 @@ export default function BudgetApp() {
 
                 {!isCollapsed && (
                   <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
-                    {groupEnvelopes.map(env => {
-                      const spent = getEnvelopeSpent(env.id);
-                      const remaining = getEnvelopeRemaining(env);
+                    {groupEnvelopes.length === 0 ? (
+                      <div style={{ fontSize: '0.85rem', color: '#9ca3af', padding: '4px 0' }}>No envelopes in this group.</div>
+                    ) : (
+                      groupEnvelopes.map(env => {
+                        const spent = getEnvelopeSpent(env.id);
+                        const remaining = getEnvelopeRemaining(env);
 
-                      return (
-                        <div key={env.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '10px', backgroundColor: '#f9fafb', borderRadius: '6px', flexWrap: 'wrap', gap: '10px' }}>
-                          <div style={{ flex: '1 1 160px' }}>
-                            <div style={{ fontWeight: '600', fontSize: '0.95rem' }}>{env.name}</div>
-                            {env.goalType !== 'none' && (
-                              <div style={{ fontSize: '0.75rem', color: '#6b7280' }}>
-                                {getScheduleText(env)} {env.targetAmount > 0 ? `(Target: $${Number(env.targetAmount).toFixed(2)})` : ''} {env.targetDate ? `by ${formatDate(env.targetDate, 'us')}` : ''}
-                              </div>
-                            )}
-                          </div>
-                          <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap', justifyContent: 'flex-end', flex: '1 1 200px' }}>
-                            <div style={{ fontSize: '0.85rem' }}>
-                              <span style={{ color: '#6b7280' }}>Ass.: </span>
-                              <input
-                                type="number"
-                                value={env.assigned}
-                                onChange={e => handleAssignFunds(env.id, e.target.value)}
-                                style={{ width: '70px', padding: '4px', border: '1px solid #d1d5db', borderRadius: '4px', fontSize: '0.85rem' }}
-                              />
+                        return (
+                          <div key={env.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '10px', backgroundColor: '#f9fafb', borderRadius: '6px', flexWrap: 'wrap', gap: '10px' }}>
+                            <div style={{ flex: '1 1 160px' }}>
+                              <div style={{ fontWeight: '600', fontSize: '0.95rem' }}>{env.name}</div>
+                              {env.goalType !== 'none' && (
+                                <div style={{ fontSize: '0.75rem', color: '#6b7280' }}>
+                                  {getScheduleText(env)} {env.targetAmount > 0 ? `(Target: $${Number(env.targetAmount).toFixed(2)})` : ''} {env.targetDate ? `by ${formatDate(env.targetDate, 'us')}` : ''}
+                                </div>
+                              )}
                             </div>
-                            <div style={{ fontSize: '0.85rem' }}>Spent: <strong>${spent.toFixed(2)}</strong></div>
-                            <div style={{ fontSize: '0.85rem' }}>Rem: <strong style={{ color: remaining < 0 ? '#dc2626' : '#059669' }}>${remaining.toFixed(2)}</strong></div>
-                            <button
-                              onClick={() => handleSoftDeleteEnvelope(env.id)}
-                              style={{ background: 'none', border: 'none', color: '#dc2626', cursor: 'pointer', fontSize: '0.9rem', padding: '4px' }}
-                            >
-                              ✕
-                            </button>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap', justifyContent: 'flex-end', flex: '1 1 200px' }}>
+                              <div style={{ fontSize: '0.85rem' }}>
+                                <span style={{ color: '#6b7280' }}>Ass.: </span>
+                                <input
+                                  type="number"
+                                  value={env.assigned}
+                                  onChange={e => handleAssignFunds(env.id, e.target.value)}
+                                  style={{ width: '70px', padding: '4px', border: '1px solid #d1d5db', borderRadius: '4px', fontSize: '0.85rem' }}
+                                />
+                              </div>
+                              <div style={{ fontSize: '0.85rem' }}>Spent: <strong>${spent.toFixed(2)}</strong></div>
+                              <div style={{ fontSize: '0.85rem' }}>Rem: <strong style={{ color: remaining < 0 ? '#dc2626' : '#059669' }}>${remaining.toFixed(2)}</strong></div>
+                              <button
+                                onClick={() => handleSoftDeleteEnvelope(env.id)}
+                                style={{ background: 'none', border: 'none', color: '#dc2626', cursor: 'pointer', fontSize: '0.9rem', padding: '4px' }}
+                              >
+                                ✕
+                              </button>
+                            </div>
                           </div>
-                        </div>
-                      );
-                    })}
+                        );
+                      })
+                    )}
                   </div>
                 )}
               </div>
@@ -886,6 +876,12 @@ export default function BudgetApp() {
               </button>
             </form>
           </div>
+
+          {activeAccounts.length === 0 && (
+            <div style={{ backgroundColor: 'white', padding: '20px', borderRadius: '10px', textAlign: 'center', color: '#6b7280', boxShadow: '0 1px 3px rgba(0,0,0,0.1)' }}>
+              No accounts added yet. Add an account above to get started.
+            </div>
+          )}
 
           {activeAccounts.map(acc => {
             const accTransactions = activeTransactions.filter(t => t.accountId === acc.id);
@@ -1095,31 +1091,33 @@ export default function BudgetApp() {
           <div style={{ backgroundColor: 'white', padding: '14px', borderRadius: '10px', boxShadow: '0 1px 3px rgba(0,0,0,0.1)' }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px', flexWrap: 'wrap', gap: '8px' }}>
               <h3 style={{ margin: 0, fontSize: '1rem' }}>All Transactions</h3>
-              {activeTransactions.length > 0 && (
-                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                  <button
-                    onClick={handleSelectAllTx}
-                    style={{ backgroundColor: '#e5e7eb', color: '#374151', border: 'none', padding: '4px 8px', borderRadius: '4px', fontSize: '0.8rem', cursor: 'pointer', fontWeight: '600' }}
-                  >
-                    {selectedTxIds.length === activeTransactions.length ? 'Deselect All' : 'Select All'}
-                  </button>
-                  {selectedTxIds.length > 0 && (
-                    <button
-                      onClick={handleBulkSoftDeleteTransactions}
-                      style={{ backgroundColor: '#dc2626', color: 'white', border: 'none', padding: '4px 10px', borderRadius: '4px', fontSize: '0.8rem', cursor: 'pointer', fontWeight: '600' }}
-                    >
-                      Delete Selected ({selectedTxIds.length})
-                    </button>
-                  )}
-                </div>
+              {selectedTxIds.length > 0 && (
+                <button
+                  onClick={handleDeleteSelectedTransactions}
+                  style={{ backgroundColor: '#dc2626', color: 'white', border: 'none', padding: '6px 12px', borderRadius: '6px', fontWeight: 'bold', cursor: 'pointer', fontSize: '0.85rem' }}
+                >
+                  Delete Selected ({selectedTxIds.length})
+                </button>
               )}
             </div>
 
+            {activeTransactions.length > 0 && (
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px', paddingBottom: '8px', borderBottom: '1px solid #e5e7eb', fontSize: '0.85rem', color: '#6b7280' }}>
+                <input
+                  type="checkbox"
+                  checked={selectedTxIds.length === activeTransactions.length && activeTransactions.length > 0}
+                  onChange={handleSelectAllTx}
+                  style={{ cursor: 'pointer' }}
+                />
+                <span>Select All</span>
+              </div>
+            )}
+
             {sortedTransactionDates.length === 0 ? (
-              <p style={{ color: '#6b7280', fontSize: '0.9rem' }}>No transactions recorded yet.</p>
+              <p style={{ color: '#6b7280', fontSize: '0.9rem', marginTop: '10px' }}>No transactions recorded yet.</p>
             ) : (
               sortedTransactionDates.map(dateStr => (
-                <div key={dateStr} style={{ marginBottom: '14px' }}>
+                <div key={dateStr} style={{ marginTop: '12px' }}>
                   <div style={{ fontSize: '0.8rem', fontWeight: 'bold', color: '#6b7280', borderBottom: '1px solid #e5e7eb', paddingBottom: '4px', marginBottom: '6px' }}>
                     {formatDate(dateStr, 'readable')}
                   </div>
@@ -1129,13 +1127,13 @@ export default function BudgetApp() {
                     const isSelected = selectedTxIds.includes(tx.id);
 
                     return (
-                      <div key={tx.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '8px 4px', borderBottom: '1px solid #f3f4f6', gap: '8px', backgroundColor: isSelected ? '#eff6ff' : 'transparent', borderRadius: '4px' }}>
+                      <div key={tx.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '8px 0', borderBottom: '1px solid #f3f4f6', gap: '8px' }}>
                         <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flex: 1, minWidth: 0 }}>
                           <input
                             type="checkbox"
                             checked={isSelected}
                             onChange={() => handleToggleSelectTx(tx.id)}
-                            style={{ cursor: 'pointer', width: '16px', height: '16px' }}
+                            style={{ cursor: 'pointer', flexShrink: 0 }}
                           />
                           <div style={{ minWidth: 0, flex: 1 }}>
                             <div style={{ fontWeight: '600', fontSize: '0.9rem', wordBreak: 'break-word' }}>{tx.payee}</div>
@@ -1207,6 +1205,12 @@ export default function BudgetApp() {
               </button>
             </form>
           </div>
+
+          {activeDebts.length === 0 && (
+            <div style={{ backgroundColor: 'white', padding: '20px', borderRadius: '10px', textAlign: 'center', color: '#6b7280', boxShadow: '0 1px 3px rgba(0,0,0,0.1)' }}>
+              No debts tracked yet.
+            </div>
+          )}
 
           <div style={{ display: 'grid', gridTemplateColumns: '1fr', gap: '10px' }}>
             {activeDebts.map(debt => (
