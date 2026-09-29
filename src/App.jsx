@@ -329,8 +329,6 @@ export default function BudgetApp() {
     return Number(env.assigned) - getEnvelopeSpent(env.id);
   };
 
-  const totalBankBalance = activeAccounts.reduce((sum, acc) => sum + getAccountBalance(acc.id), 0);
-
   const groupedTransactions = activeTransactions.reduce((acc, tx) => {
     const dateKey = tx.date || getTodayISO();
     if (!acc[dateKey]) acc[dateKey] = [];
@@ -542,53 +540,55 @@ export default function BudgetApp() {
   const totalTrashCount = deletedTx.length + deletedEnv.length + deletedAcc.length + deletedDebts.length;
 
   return (
-    <div style={{ maxWidth: '900px', margin: '0 auto', fontFamily: 'system-ui, -apple-system, sans-serif', padding: '16px', color: '#1f2937', backgroundColor: '#f9fafb', minHeight: '100vh' }}>
+    <div style={{ width: '100%', maxWidth: '900px', margin: '0 auto', fontFamily: 'system-ui, -apple-system, sans-serif', padding: '12px', boxSizing: 'border-box', color: '#1f2937', backgroundColor: '#f9fafb', minHeight: '100vh' }}>
       
       {/* App Header */}
-      <header style={{ backgroundColor: '#1e3a8a', color: 'white', padding: '20px', borderRadius: '12px', marginBottom: '20px' }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '10px' }}>
+      <header style={{ backgroundColor: '#1e3a8a', color: 'white', padding: '16px', borderRadius: '12px', marginBottom: '16px' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '12px' }}>
           <div>
-            <h1 style={{ margin: 0, fontSize: '1.6rem', fontWeight: '700' }}>Envelope Budgeting</h1>
-            <p style={{ margin: '4px 0 0 0', opacity: 0.85, fontSize: '0.9rem' }}>Real-time Cash Flow & Reconciliation</p>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginTop: '8px' }}>
-              <span style={{ fontSize: '0.8rem', opacity: 0.8 }}>Budget ID: <strong>{budgetId}</strong></span>
+            <h1 style={{ margin: 0, fontSize: '1.4rem', fontWeight: '700' }}>Envelope Budgeting</h1>
+            <p style={{ margin: '4px 0 0 0', opacity: 0.85, fontSize: '0.85rem' }}>Real-time Cash Flow & Reconciliation</p>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginTop: '8px', flexWrap: 'wrap' }}>
+              <span style={{ fontSize: '0.75rem', opacity: 0.8, wordBreak: 'break-all' }}>Budget ID: <strong>{budgetId}</strong></span>
               <button
                 onClick={copyShareLink}
-                style={{ backgroundColor: '#3b82f6', color: 'white', border: 'none', padding: '2px 8px', borderRadius: '4px', fontSize: '0.75rem', cursor: 'pointer', fontWeight: '600' }}
+                style={{ backgroundColor: '#3b82f6', color: 'white', border: 'none', padding: '4px 8px', borderRadius: '4px', fontSize: '0.75rem', cursor: 'pointer', fontWeight: '600' }}
               >
                 Copy Share Link
               </button>
             </div>
           </div>
-          <div style={{ textAlign: 'right', backgroundColor: '#3b82f6', padding: '10px 16px', borderRadius: '8px' }}>
-            <div style={{ fontSize: '0.8rem', textTransform: 'uppercase' }}>Ready to Assign</div>
-            <div style={{ fontSize: '1.6rem', fontWeight: 'bold' }}>${readyToAssign.toFixed(2)}</div>
+          <div style={{ textAlign: 'right', backgroundColor: '#3b82f6', padding: '10px 14px', borderRadius: '8px', minWidth: '130px' }}>
+            <div style={{ fontSize: '0.75rem', textTransform: 'uppercase' }}>Ready to Assign</div>
+            <div style={{ fontSize: '1.4rem', fontWeight: 'bold' }}>${readyToAssign.toFixed(2)}</div>
           </div>
         </div>
       </header>
 
       {/* Notification Toast */}
       {notification && (
-        <div style={{ backgroundColor: '#10b981', color: 'white', padding: '10px 16px', borderRadius: '8px', marginBottom: '16px' }}>
+        <div style={{ backgroundColor: '#10b981', color: 'white', padding: '10px 14px', borderRadius: '8px', marginBottom: '16px', fontSize: '0.9rem' }}>
           {notification}
         </div>
       )}
 
       {/* Main Nav */}
-      <nav style={{ display: 'flex', gap: '8px', overflowX: 'auto', paddingBottom: '8px', marginBottom: '20px', borderBottom: '2px solid #e5e7eb' }}>
+      <nav style={{ display: 'flex', gap: '6px', overflowX: 'auto', paddingBottom: '8px', marginBottom: '16px', borderBottom: '2px solid #e5e7eb', WebkitOverflowScrolling: 'touch' }}>
         {['budget', 'accounts', 'transactions', 'debts', 'trash'].map(tab => (
           <button
             key={tab}
             onClick={() => setActiveTab(tab)}
             style={{
-              padding: '10px 18px',
+              padding: '8px 14px',
               borderRadius: '8px',
               border: 'none',
               fontWeight: '600',
               textTransform: 'capitalize',
               cursor: 'pointer',
+              whiteSpace: 'nowrap',
               backgroundColor: activeTab === tab ? '#1e3a8a' : '#ffffff',
-              color: activeTab === tab ? '#ffffff' : '#4b5563'
+              color: activeTab === tab ? '#ffffff' : '#4b5563',
+              fontSize: '0.9rem'
             }}
           >
             {tab === 'trash' ? `Trash (${totalTrashCount})` : tab}
@@ -598,40 +598,40 @@ export default function BudgetApp() {
 
       {/* BUDGET TAB */}
       {activeTab === 'budget' && (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
           {/* Add Group & Envelope Forms */}
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px' }}>
-            <div style={{ backgroundColor: 'white', padding: '16px', borderRadius: '10px', boxShadow: '0 1px 3px rgba(0,0,0,0.1)' }}>
-              <h3 style={{ margin: '0 0 12px 0', fontSize: '1rem' }}>+ Add Group</h3>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: '16px' }}>
+            <div style={{ backgroundColor: 'white', padding: '14px', borderRadius: '10px', boxShadow: '0 1px 3px rgba(0,0,0,0.1)' }}>
+              <h3 style={{ margin: '0 0 10px 0', fontSize: '1rem' }}>+ Add Group</h3>
               <form onSubmit={handleAddGroup} style={{ display: 'flex', gap: '8px' }}>
                 <input
                   type="text"
                   placeholder="Group Name"
                   value={newGroup}
                   onChange={e => setNewGroup(e.target.value)}
-                  style={{ flex: 1, padding: '8px', border: '1px solid #d1d5db', borderRadius: '6px' }}
+                  style={{ flex: 1, padding: '8px', border: '1px solid #d1d5db', borderRadius: '6px', fontSize: '0.9rem' }}
                 />
-                <button type="submit" style={{ backgroundColor: '#2563eb', color: 'white', border: 'none', padding: '8px 14px', borderRadius: '6px', fontWeight: 'bold', cursor: 'pointer' }}>
+                <button type="submit" style={{ backgroundColor: '#2563eb', color: 'white', border: 'none', padding: '8px 14px', borderRadius: '6px', fontWeight: 'bold', cursor: 'pointer', fontSize: '0.9rem' }}>
                   Add
                 </button>
               </form>
             </div>
 
-            <div style={{ backgroundColor: 'white', padding: '16px', borderRadius: '10px', boxShadow: '0 1px 3px rgba(0,0,0,0.1)' }}>
-              <h3 style={{ margin: '0 0 12px 0', fontSize: '1rem' }}>+ Add Envelope</h3>
+            <div style={{ backgroundColor: 'white', padding: '14px', borderRadius: '10px', boxShadow: '0 1px 3px rgba(0,0,0,0.1)' }}>
+              <h3 style={{ margin: '0 0 10px 0', fontSize: '1rem' }}>+ Add Envelope</h3>
               <form onSubmit={handleAddEnvelope} style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-                <div style={{ display: 'flex', gap: '8px' }}>
+                <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
                   <input
                     type="text"
                     placeholder="Envelope Name"
                     value={newEnvName}
                     onChange={e => setNewEnvName(e.target.value)}
-                    style={{ flex: 1, padding: '8px', border: '1px solid #d1d5db', borderRadius: '6px' }}
+                    style={{ flex: '1 1 130px', padding: '8px', border: '1px solid #d1d5db', borderRadius: '6px', fontSize: '0.9rem' }}
                   />
                   <select
                     value={newEnvGroup}
                     onChange={e => setNewEnvGroup(e.target.value)}
-                    style={{ flex: 1, padding: '8px', border: '1px solid #d1d5db', borderRadius: '6px' }}
+                    style={{ flex: '1 1 130px', padding: '8px', border: '1px solid #d1d5db', borderRadius: '6px', fontSize: '0.9rem' }}
                   >
                     <option value="">Select Group</option>
                     {groups.map(g => (
@@ -643,7 +643,7 @@ export default function BudgetApp() {
                   <select
                     value={newEnvGoalType}
                     onChange={e => setNewEnvGoalType(e.target.value)}
-                    style={{ flex: 1, padding: '8px', border: '1px solid #d1d5db', borderRadius: '6px', fontSize: '0.85rem' }}
+                    style={{ flex: '1 1 140px', padding: '8px', border: '1px solid #d1d5db', borderRadius: '6px', fontSize: '0.85rem' }}
                   >
                     <option value="none">No Goal</option>
                     <option value="repeating">Repeating Goal (Bill/Subscription)</option>
@@ -656,16 +656,16 @@ export default function BudgetApp() {
                       placeholder="Target Amount ($)"
                       value={newEnvTargetAmount}
                       onChange={e => setNewEnvTargetAmount(e.target.value)}
-                      style={{ flex: 1, padding: '8px', border: '1px solid #d1d5db', borderRadius: '6px', fontSize: '0.85rem' }}
+                      style={{ flex: '1 1 100px', padding: '8px', border: '1px solid #d1d5db', borderRadius: '6px', fontSize: '0.85rem' }}
                     />
                   )}
                 </div>
                 {newEnvGoalType === 'repeating' && (
-                  <div style={{ display: 'flex', gap: '8px' }}>
+                  <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
                     <select
                       value={newEnvCadence}
                       onChange={e => setNewEnvCadence(e.target.value)}
-                      style={{ flex: 1, padding: '8px', border: '1px solid #d1d5db', borderRadius: '6px', fontSize: '0.85rem' }}
+                      style={{ flex: '1 1 100px', padding: '8px', border: '1px solid #d1d5db', borderRadius: '6px', fontSize: '0.85rem' }}
                     >
                       <option value="weekly">Weekly</option>
                       <option value="biweekly">Bi-weekly</option>
@@ -676,7 +676,7 @@ export default function BudgetApp() {
                       <select
                         value={newEnvRepeatDayOfWeek}
                         onChange={e => setNewEnvRepeatDayOfWeek(e.target.value)}
-                        style={{ flex: 1, padding: '8px', border: '1px solid #d1d5db', borderRadius: '6px', fontSize: '0.85rem' }}
+                        style={{ flex: '1 1 100px', padding: '8px', border: '1px solid #d1d5db', borderRadius: '6px', fontSize: '0.85rem' }}
                       >
                         {['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'].map(d => (
                           <option key={d} value={d}>{d}</option>
@@ -686,7 +686,7 @@ export default function BudgetApp() {
                       <select
                         value={newEnvRepeatDayOfMonth}
                         onChange={e => setNewEnvRepeatDayOfMonth(e.target.value)}
-                        style={{ flex: 1, padding: '8px', border: '1px solid #d1d5db', borderRadius: '6px', fontSize: '0.85rem' }}
+                        style={{ flex: '1 1 100px', padding: '8px', border: '1px solid #d1d5db', borderRadius: '6px', fontSize: '0.85rem' }}
                       >
                         <option value="last">Last day of month</option>
                         {Array.from({ length: 31 }, (_, i) => String(i + 1)).map(d => (
@@ -694,11 +694,11 @@ export default function BudgetApp() {
                         ))}
                       </select>
                     ) : newEnvCadence === 'yearly' ? (
-                      <div style={{ display: 'flex', gap: '4px', flex: 1 }}>
+                      <div style={{ display: 'flex', gap: '4px', flex: '1 1 100% flexWrap: wrap' }}>
                         <select
                           value={newEnvRepeatMonth}
                           onChange={e => setNewEnvRepeatMonth(e.target.value)}
-                          style={{ flex: 1, padding: '8px', border: '1px solid #d1d5db', borderRadius: '6px', fontSize: '0.85rem' }}
+                          style={{ flex: '2 1 90px', padding: '8px', border: '1px solid #d1d5db', borderRadius: '6px', fontSize: '0.85rem' }}
                         >
                           {['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'].map(m => (
                             <option key={m} value={m}>{m}</option>
@@ -710,13 +710,13 @@ export default function BudgetApp() {
                           max="31"
                           value={newEnvRepeatDayOfMonth}
                           onChange={e => setNewEnvRepeatDayOfMonth(e.target.value)}
-                          style={{ width: '60px', padding: '8px', border: '1px solid #d1d5db', borderRadius: '6px', fontSize: '0.85rem' }}
+                          style={{ flex: '1 1 50px', padding: '8px', border: '1px solid #d1d5db', borderRadius: '6px', fontSize: '0.85rem' }}
                           placeholder="Day"
                         />
                         <select
                           value={newEnvRepeatYear}
                           onChange={e => setNewEnvRepeatYear(e.target.value)}
-                          style={{ width: '90px', padding: '8px', border: '1px solid #d1d5db', borderRadius: '6px', fontSize: '0.85rem' }}
+                          style={{ flex: '2 1 80px', padding: '8px', border: '1px solid #d1d5db', borderRadius: '6px', fontSize: '0.85rem' }}
                         >
                           {Array.from({ length: 15 }, (_, i) => String(new Date().getFullYear() + i)).map(y => (
                             <option key={y} value={y}>{y}</option>
@@ -733,11 +733,11 @@ export default function BudgetApp() {
                       type="date"
                       value={newEnvTargetDate}
                       onChange={e => setNewEnvTargetDate(e.target.value)}
-                      style={{ width: '100%', padding: '8px', border: '1px solid #d1d5db', borderRadius: '6px', fontSize: '0.85rem' }}
+                      style={{ width: '100%', padding: '8px', border: '1px solid #d1d5db', borderRadius: '6px', fontSize: '0.85rem', boxSizing: 'border-box' }}
                     />
                   </div>
                 )}
-                <button type="submit" style={{ backgroundColor: '#2563eb', color: 'white', border: 'none', padding: '8px 14px', borderRadius: '6px', fontWeight: 'bold', cursor: 'pointer' }}>
+                <button type="submit" style={{ backgroundColor: '#2563eb', color: 'white', border: 'none', padding: '8px 14px', borderRadius: '6px', fontWeight: 'bold', cursor: 'pointer', fontSize: '0.9rem', marginTop: '4px' }}>
                   Create Envelope
                 </button>
               </form>
@@ -750,53 +750,53 @@ export default function BudgetApp() {
             const isCollapsed = collapsedGroups[groupName];
 
             return (
-              <div key={groupName} style={{ backgroundColor: 'white', borderRadius: '10px', padding: '16px', boxShadow: '0 1px 3px rgba(0,0,0,0.1)' }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '2px solid #e5e7eb', paddingBottom: '8px', marginBottom: '12px' }}>
+              <div key={groupName} style={{ backgroundColor: 'white', borderRadius: '10px', padding: '14px', boxShadow: '0 1px 3px rgba(0,0,0,0.1)' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '2px solid #e5e7eb', paddingBottom: '8px', marginBottom: '10px' }}>
                   <button
                     onClick={() => toggleGroupCollapse(groupName)}
-                    style={{ background: 'none', border: 'none', fontWeight: 'bold', fontSize: '1.1rem', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '6px', color: '#1e3a8a' }}
+                    style={{ background: 'none', border: 'none', fontWeight: 'bold', fontSize: '1rem', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '6px', color: '#1e3a8a', padding: 0 }}
                   >
                     <span>{isCollapsed ? '▶' : '▼'}</span> {groupName}
                   </button>
                   <button
                     onClick={() => handleRemoveGroup(groupName)}
-                    style={{ background: 'none', border: 'none', color: '#dc2626', cursor: 'pointer', fontSize: '0.85rem' }}
+                    style={{ background: 'none', border: 'none', color: '#dc2626', cursor: 'pointer', fontSize: '0.8rem' }}
                   >
                     Delete Group
                   </button>
                 </div>
 
                 {!isCollapsed && (
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
                     {groupEnvelopes.map(env => {
                       const spent = getEnvelopeSpent(env.id);
                       const remaining = getEnvelopeRemaining(env);
 
                       return (
-                        <div key={env.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '8px', backgroundColor: '#f9fafb', borderRadius: '6px', flexWrap: 'wrap', gap: '8px' }}>
-                          <div>
-                            <div style={{ fontWeight: '600' }}>{env.name}</div>
+                        <div key={env.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '10px', backgroundColor: '#f9fafb', borderRadius: '6px', flexWrap: 'wrap', gap: '10px' }}>
+                          <div style={{ flex: '1 1 160px' }}>
+                            <div style={{ fontWeight: '600', fontSize: '0.95rem' }}>{env.name}</div>
                             {env.goalType !== 'none' && (
                               <div style={{ fontSize: '0.75rem', color: '#6b7280' }}>
                                 {getScheduleText(env)} {env.targetAmount > 0 ? `(Target: $${Number(env.targetAmount).toFixed(2)})` : ''} {env.targetDate ? `by ${formatDate(env.targetDate, 'us')}` : ''}
                               </div>
                             )}
                           </div>
-                          <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-                            <div>
-                              <span style={{ fontSize: '0.8rem', color: '#6b7280' }}>Assigned: </span>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap', justifyContent: 'flex-end', flex: '1 1 200px' }}>
+                            <div style={{ fontSize: '0.85rem' }}>
+                              <span style={{ color: '#6b7280' }}>Ass.: </span>
                               <input
                                 type="number"
                                 value={env.assigned}
                                 onChange={e => handleAssignFunds(env.id, e.target.value)}
-                                style={{ width: '80px', padding: '4px', border: '1px solid #d1d5db', borderRadius: '4px' }}
+                                style={{ width: '70px', padding: '4px', border: '1px solid #d1d5db', borderRadius: '4px', fontSize: '0.85rem' }}
                               />
                             </div>
-                            <div>Spent: <strong>${spent.toFixed(2)}</strong></div>
-                            <div>Remaining: <strong style={{ color: remaining < 0 ? '#dc2626' : '#059669' }}>${remaining.toFixed(2)}</strong></div>
+                            <div style={{ fontSize: '0.85rem' }}>Spent: <strong>${spent.toFixed(2)}</strong></div>
+                            <div style={{ fontSize: '0.85rem' }}>Rem: <strong style={{ color: remaining < 0 ? '#dc2626' : '#059669' }}>${remaining.toFixed(2)}</strong></div>
                             <button
                               onClick={() => handleSoftDeleteEnvelope(env.id)}
-                              style={{ background: 'none', border: 'none', color: '#dc2626', cursor: 'pointer', fontSize: '0.85rem' }}
+                              style={{ background: 'none', border: 'none', color: '#dc2626', cursor: 'pointer', fontSize: '0.9rem', padding: '4px' }}
                             >
                               ✕
                             </button>
@@ -814,21 +814,21 @@ export default function BudgetApp() {
 
       {/* ACCOUNTS TAB */}
       {activeTab === 'accounts' && (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
-          <div style={{ backgroundColor: 'white', padding: '16px', borderRadius: '10px', boxShadow: '0 1px 3px rgba(0,0,0,0.1)' }}>
-            <h3 style={{ margin: '0 0 12px 0' }}>+ Add Account</h3>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+          <div style={{ backgroundColor: 'white', padding: '14px', borderRadius: '10px', boxShadow: '0 1px 3px rgba(0,0,0,0.1)' }}>
+            <h3 style={{ margin: '0 0 10px 0', fontSize: '1rem' }}>+ Add Account</h3>
             <form onSubmit={handleAddAccount} style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
               <input
                 type="text"
-                placeholder="Account Name (e.g., Checking)"
+                placeholder="Account Name"
                 value={newAccName}
                 onChange={e => setNewAccName(e.target.value)}
-                style={{ flex: 2, padding: '8px', border: '1px solid #d1d5db', borderRadius: '6px' }}
+                style={{ flex: '2 1 140px', padding: '8px', border: '1px solid #d1d5db', borderRadius: '6px', fontSize: '0.9rem' }}
               />
               <select
                 value={newAccType}
                 onChange={e => setNewAccType(e.target.value)}
-                style={{ flex: 1, padding: '8px', border: '1px solid #d1d5db', borderRadius: '6px' }}
+                style={{ flex: '1 1 100px', padding: '8px', border: '1px solid #d1d5db', borderRadius: '6px', fontSize: '0.9rem' }}
               >
                 <option value="Checking">Checking</option>
                 <option value="Savings">Savings</option>
@@ -838,12 +838,12 @@ export default function BudgetApp() {
               <input
                 type="number"
                 step="0.01"
-                placeholder="Initial Balance ($)"
+                placeholder="Initial Bal ($)"
                 value={newAccBalance}
                 onChange={e => setNewAccBalance(e.target.value)}
-                style={{ flex: 1, padding: '8px', border: '1px solid #d1d5db', borderRadius: '6px' }}
+                style={{ flex: '1 1 100px', padding: '8px', border: '1px solid #d1d5db', borderRadius: '6px', fontSize: '0.9rem' }}
               />
-              <button type="submit" style={{ backgroundColor: '#2563eb', color: 'white', border: 'none', padding: '8px 16px', borderRadius: '6px', fontWeight: 'bold', cursor: 'pointer' }}>
+              <button type="submit" style={{ backgroundColor: '#2563eb', color: 'white', border: 'none', padding: '8px 14px', borderRadius: '6px', fontWeight: 'bold', cursor: 'pointer', fontSize: '0.9rem', width: '100%' }}>
                 Add Account
               </button>
             </form>
@@ -857,96 +857,98 @@ export default function BudgetApp() {
             const isTxCollapsed = collapsedAccountTx[acc.id];
 
             return (
-              <div key={acc.id} style={{ backgroundColor: 'white', borderRadius: '10px', padding: '20px', boxShadow: '0 1px 3px rgba(0,0,0,0.1)' }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexWrap: 'wrap', gap: '12px' }}>
+              <div key={acc.id} style={{ backgroundColor: 'white', borderRadius: '10px', padding: '14px', boxShadow: '0 1px 3px rgba(0,0,0,0.1)' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexWrap: 'wrap', gap: '10px' }}>
                   <div>
-                    <h3 style={{ margin: '0 0 4px 0', fontSize: '1.2rem' }}>{acc.name} <span style={{ fontSize: '0.85rem', color: '#6b7280', fontWeight: 'normal' }}>({acc.type})</span></h3>
-                    <p style={{ margin: '0 0 6px 0', fontSize: '0.9rem', color: '#4b5563' }}>
-                      Cleared: <strong>${clearedBal.toFixed(2)}</strong> | Working Balance: <strong>${workingBal.toFixed(2)}</strong>
+                    <h3 style={{ margin: '0 0 4px 0', fontSize: '1.1rem' }}>{acc.name} <span style={{ fontSize: '0.8rem', color: '#6b7280', fontWeight: 'normal' }}>({acc.type})</span></h3>
+                    <p style={{ margin: '0 0 4px 0', fontSize: '0.85rem', color: '#4b5563' }}>
+                      Cleared: <strong>${clearedBal.toFixed(2)}</strong> | Working: <strong>${workingBal.toFixed(2)}</strong>
                     </p>
                     {acc.lastReconciledDate && (
-                      <p style={{ margin: 0, fontSize: '0.8rem', color: '#059669', fontWeight: '600' }}>
-                        ✓ Last Reconciled: {formatDate(acc.lastReconciledDate, 'us')} (${Number(acc.lastReconciledBalance).toFixed(2)})
+                      <p style={{ margin: 0, fontSize: '0.75rem', color: '#059669', fontWeight: '600' }}>
+                        ✓ Reconciled {formatDate(acc.lastReconciledDate, 'us')} (${Number(acc.lastReconciledBalance).toFixed(2)})
                       </p>
                     )}
                   </div>
-                  <div style={{ display: 'flex', gap: '8px' }}>
+                  <div style={{ display: 'flex', gap: '6px' }}>
                     <button
                       onClick={() => startReconcile(acc.id)}
-                      style={{ backgroundColor: '#059669', color: 'white', border: 'none', padding: '6px 12px', borderRadius: '6px', fontWeight: 'bold', cursor: 'pointer', fontSize: '0.85rem' }}
+                      style={{ backgroundColor: '#059669', color: 'white', border: 'none', padding: '6px 10px', borderRadius: '6px', fontWeight: 'bold', cursor: 'pointer', fontSize: '0.8rem' }}
                     >
                       Reconcile
                     </button>
                     <button
                       onClick={() => handleSoftDeleteAccount(acc.id)}
-                      style={{ backgroundColor: '#fee2e2', color: '#dc2626', border: 'none', padding: '6px 12px', borderRadius: '6px', fontWeight: 'bold', cursor: 'pointer', fontSize: '0.85rem' }}
+                      style={{ backgroundColor: '#fee2e2', color: '#dc2626', border: 'none', padding: '6px 10px', borderRadius: '6px', fontWeight: 'bold', cursor: 'pointer', fontSize: '0.8rem' }}
                     >
                       Delete
                     </button>
                   </div>
                 </div>
 
-                {/* Reconcile Modal / Form Area */}
+                {/* Reconcile Area */}
                 {isReconciling && (
-                  <div style={{ marginTop: '16px', backgroundColor: '#f0fdf4', padding: '16px', borderRadius: '8px', border: '1px solid #bbf7d0' }}>
-                    <h4 style={{ margin: '0 0 8px 0', color: '#166534' }}>Reconcile {acc.name}</h4>
-                    <p style={{ margin: '0 0 12px 0', fontSize: '0.85rem', color: '#15803d' }}>
-                      Enter the current ending balance from your bank statement. Transactions marked with a cleared "C" are included.
+                  <div style={{ marginTop: '12px', backgroundColor: '#f0fdf4', padding: '12px', borderRadius: '8px', border: '1px solid #bbf7d0' }}>
+                    <h4 style={{ margin: '0 0 6px 0', color: '#166534', fontSize: '0.95rem' }}>Reconcile {acc.name}</h4>
+                    <p style={{ margin: '0 0 10px 0', fontSize: '0.8rem', color: '#15803d' }}>
+                      Enter your bank statement ending balance.
                     </p>
-                    <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+                    <div style={{ display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap' }}>
                       <input
                         type="number"
                         step="0.01"
                         value={targetBankBalance}
                         onChange={e => setTargetBankBalance(e.target.value)}
-                        placeholder="Statement Balance ($)"
-                        style={{ padding: '8px', border: '1px solid #86efac', borderRadius: '6px', width: '200px' }}
+                        placeholder="Statement Bal ($)"
+                        style={{ padding: '8px', border: '1px solid #86efac', borderRadius: '6px', flex: '1 1 130px', fontSize: '0.85rem' }}
                       />
-                      <button
-                        onClick={() => handleFinishReconciliation(acc.id)}
-                        style={{ backgroundColor: '#16a34a', color: 'white', border: 'none', padding: '8px 14px', borderRadius: '6px', fontWeight: 'bold', cursor: 'pointer' }}
-                      >
-                        Finish Reconciling
-                      </button>
-                      <button
-                        onClick={() => setReconcilingAccId(null)}
-                        style={{ backgroundColor: '#e5e7eb', color: '#374151', border: 'none', padding: '8px 14px', borderRadius: '6px', fontWeight: 'bold', cursor: 'pointer' }}
-                      >
-                        Cancel
-                      </button>
+                      <div style={{ display: 'flex', gap: '6px', flex: '1 1 130px' }}>
+                        <button
+                          onClick={() => handleFinishReconciliation(acc.id)}
+                          style={{ backgroundColor: '#16a34a', color: 'white', border: 'none', padding: '8px 12px', borderRadius: '6px', fontWeight: 'bold', cursor: 'pointer', fontSize: '0.85rem', flex: 1 }}
+                        >
+                          Finish
+                        </button>
+                        <button
+                          onClick={() => setReconcilingAccId(null)}
+                          style={{ backgroundColor: '#e5e7eb', color: '#374151', border: 'none', padding: '8px 12px', borderRadius: '6px', fontWeight: 'bold', cursor: 'pointer', fontSize: '0.85rem' }}
+                        >
+                          Cancel
+                        </button>
+                      </div>
                     </div>
                   </div>
                 )}
 
-                {/* Account Recent Activity Table */}
-                <div style={{ marginTop: '16px', borderTop: '1px solid #e5e7eb', paddingTop: '12px' }}>
+                {/* Account Activity Table */}
+                <div style={{ marginTop: '12px', borderTop: '1px solid #e5e7eb', paddingTop: '10px' }}>
                   <button
                     onClick={() => toggleAccountTxCollapse(acc.id)}
-                    style={{ background: 'none', border: 'none', color: '#2563eb', fontWeight: 'bold', cursor: 'pointer', padding: 0, marginBottom: '8px', fontSize: '0.9rem' }}
+                    style={{ background: 'none', border: 'none', color: '#2563eb', fontWeight: 'bold', cursor: 'pointer', padding: 0, marginBottom: '6px', fontSize: '0.85rem' }}
                   >
-                    {isTxCollapsed ? `Show Recent Activity (${accTransactions.length})` : `Hide Recent Activity (${accTransactions.length})`}
+                    {isTxCollapsed ? `Show Activity (${accTransactions.length})` : `Hide Activity (${accTransactions.length})`}
                   </button>
 
                   {!isTxCollapsed && (
-                    <div style={{ overflowX: 'auto' }}>
-                      <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.9rem' }}>
+                    <div style={{ overflowX: 'auto', WebkitOverflowScrolling: 'touch' }}>
+                      <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.85rem', minWidth: '300px' }}>
                         <thead>
                           <tr style={{ borderBottom: '1px solid #e5e7eb', textAlign: 'left', color: '#6b7280' }}>
-                            <th style={{ padding: '8px 4px', width: '60px' }}>Cleared</th>
-                            <th style={{ padding: '8px 4px' }}>Date</th>
-                            <th style={{ padding: '8px 4px' }}>Payee</th>
-                            <th style={{ padding: '8px 4px', textAlign: 'right' }}>Amount</th>
+                            <th style={{ padding: '6px 4px', width: '45px' }}>Cleared</th>
+                            <th style={{ padding: '6px 4px' }}>Date</th>
+                            <th style={{ padding: '6px 4px' }}>Payee</th>
+                            <th style={{ padding: '6px 4px', textAlign: 'right' }}>Amount</th>
                           </tr>
                         </thead>
                         <tbody>
                           {accTransactions.length === 0 ? (
                             <tr>
-                              <td colSpan="4" style={{ padding: '12px', textAlign: 'center', color: '#9ca3af' }}>No transactions for this account yet.</td>
+                              <td colSpan="4" style={{ padding: '10px', textAlign: 'center', color: '#9ca3af' }}>No transactions.</td>
                             </tr>
                           ) : (
                             accTransactions.map(t => (
                               <tr key={t.id} style={{ borderBottom: '1px solid #f3f4f6' }}>
-                                <td style={{ padding: '8px 4px' }}>
+                                <td style={{ padding: '6px 4px' }}>
                                   <button
                                     onClick={() => handleToggleCleared(t.id)}
                                     style={{
@@ -954,18 +956,18 @@ export default function BudgetApp() {
                                       color: t.cleared ? 'white' : '#6b7280',
                                       border: 'none',
                                       borderRadius: '4px',
-                                      padding: '2px 8px',
+                                      padding: '2px 6px',
                                       fontWeight: 'bold',
                                       cursor: 'pointer',
-                                      fontSize: '0.75rem'
+                                      fontSize: '0.7rem'
                                     }}
                                   >
                                     C
                                   </button>
                                 </td>
-                                <td style={{ padding: '8px 4px' }}>{formatDate(t.date, 'us')}</td>
-                                <td style={{ padding: '8px 4px' }}>{t.payee}</td>
-                                <td style={{ padding: '8px 4px', textAlign: 'right', fontWeight: 'bold', color: t.type === 'income' ? '#059669' : '#1f2937' }}>
+                                <td style={{ padding: '6px 4px', whiteSpace: 'nowrap' }}>{formatDate(t.date, 'us')}</td>
+                                <td style={{ padding: '6px 4px' }}>{t.payee}</td>
+                                <td style={{ padding: '6px 4px', textAlign: 'right', fontWeight: 'bold', color: t.type === 'income' ? '#059669' : '#1f2937', whiteSpace: 'nowrap' }}>
                                   {t.type === 'income' ? '+' : '-'}${Number(t.amount).toFixed(2)}
                                 </td>
                               </tr>
@@ -984,16 +986,16 @@ export default function BudgetApp() {
 
       {/* TRANSACTIONS TAB */}
       {activeTab === 'transactions' && (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
-          <div style={{ backgroundColor: 'white', padding: '16px', borderRadius: '10px', boxShadow: '0 1px 3px rgba(0,0,0,0.1)' }}>
-            <h3 style={{ margin: '0 0 12px 0' }}>+ Add Transaction</h3>
-            <form onSubmit={handleAddTransaction} style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+          <div style={{ backgroundColor: 'white', padding: '14px', borderRadius: '10px', boxShadow: '0 1px 3px rgba(0,0,0,0.1)' }}>
+            <h3 style={{ margin: '0 0 10px 0', fontSize: '1rem' }}>+ Add Transaction</h3>
+            <form onSubmit={handleAddTransaction} style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(130px, 1fr))', gap: '10px' }}>
               <input
                 type="text"
                 placeholder="Payee"
                 value={txPayee}
                 onChange={e => handlePayeeChange(e.target.value)}
-                style={{ padding: '8px', border: '1px solid #d1d5db', borderRadius: '6px' }}
+                style={{ padding: '8px', border: '1px solid #d1d5db', borderRadius: '6px', fontSize: '0.9rem', gridColumn: 'span 2' }}
               />
               <input
                 type="number"
@@ -1001,12 +1003,12 @@ export default function BudgetApp() {
                 placeholder="Amount ($)"
                 value={txAmount}
                 onChange={e => setTxAmount(e.target.value)}
-                style={{ padding: '8px', border: '1px solid #d1d5db', borderRadius: '6px' }}
+                style={{ padding: '8px', border: '1px solid #d1d5db', borderRadius: '6px', fontSize: '0.9rem' }}
               />
               <select
                 value={txType}
                 onChange={e => setTxType(e.target.value)}
-                style={{ padding: '8px', border: '1px solid #d1d5db', borderRadius: '6px' }}
+                style={{ padding: '8px', border: '1px solid #d1d5db', borderRadius: '6px', fontSize: '0.9rem' }}
               >
                 <option value="expense">Expense</option>
                 <option value="income">Income</option>
@@ -1014,7 +1016,7 @@ export default function BudgetApp() {
               <select
                 value={txAccountId}
                 onChange={e => setTxAccountId(e.target.value)}
-                style={{ padding: '8px', border: '1px solid #d1d5db', borderRadius: '6px' }}
+                style={{ padding: '8px', border: '1px solid #d1d5db', borderRadius: '6px', fontSize: '0.9rem', gridColumn: 'span 2' }}
               >
                 <option value="">Select Account</option>
                 {activeAccounts.map(acc => (
@@ -1025,7 +1027,7 @@ export default function BudgetApp() {
                 <select
                   value={txEnvelopeId}
                   onChange={e => setTxEnvelopeId(e.target.value)}
-                  style={{ padding: '8px', border: '1px solid #d1d5db', borderRadius: '6px', gridColumn: 'span 2' }}
+                  style={{ padding: '8px', border: '1px solid #d1d5db', borderRadius: '6px', fontSize: '0.9rem', gridColumn: 'span 2' }}
                 >
                   <option value="">Select Envelope (Optional)</option>
                   {activeEnvelopes.map(env => (
@@ -1037,29 +1039,29 @@ export default function BudgetApp() {
                 type="date"
                 value={txDate}
                 onChange={e => setTxDate(e.target.value)}
-                style={{ padding: '8px', border: '1px solid #d1d5db', borderRadius: '6px' }}
+                style={{ padding: '8px', border: '1px solid #d1d5db', borderRadius: '6px', fontSize: '0.9rem' }}
               />
               <input
                 type="text"
-                placeholder="Notes (optional)"
+                placeholder="Notes"
                 value={txNotes}
                 onChange={e => setTxNotes(e.target.value)}
-                style={{ padding: '8px', border: '1px solid #d1d5db', borderRadius: '6px' }}
+                style={{ padding: '8px', border: '1px solid #d1d5db', borderRadius: '6px', fontSize: '0.9rem' }}
               />
-              <button type="submit" style={{ gridColumn: 'span 2', backgroundColor: '#2563eb', color: 'white', border: 'none', padding: '10px', borderRadius: '6px', fontWeight: 'bold', cursor: 'pointer' }}>
+              <button type="submit" style={{ gridColumn: '1 / -1', backgroundColor: '#2563eb', color: 'white', border: 'none', padding: '10px', borderRadius: '6px', fontWeight: 'bold', cursor: 'pointer', fontSize: '0.9rem' }}>
                 Save Transaction
               </button>
             </form>
           </div>
 
-          <div style={{ backgroundColor: 'white', padding: '16px', borderRadius: '10px', boxShadow: '0 1px 3px rgba(0,0,0,0.1)' }}>
-            <h3 style={{ margin: '0 0 12px 0' }}>All Transactions</h3>
+          <div style={{ backgroundColor: 'white', padding: '14px', borderRadius: '10px', boxShadow: '0 1px 3px rgba(0,0,0,0.1)' }}>
+            <h3 style={{ margin: '0 0 10px 0', fontSize: '1rem' }}>All Transactions</h3>
             {sortedTransactionDates.length === 0 ? (
-              <p style={{ color: '#6b7280' }}>No transactions recorded yet.</p>
+              <p style={{ color: '#6b7280', fontSize: '0.9rem' }}>No transactions recorded yet.</p>
             ) : (
               sortedTransactionDates.map(dateStr => (
-                <div key={dateStr} style={{ marginBottom: '16px' }}>
-                  <div style={{ fontSize: '0.85rem', fontWeight: 'bold', color: '#6b7280', borderBottom: '1px solid #e5e7eb', paddingBottom: '4px', marginBottom: '8px' }}>
+                <div key={dateStr} style={{ marginBottom: '14px' }}>
+                  <div style={{ fontSize: '0.8rem', fontWeight: 'bold', color: '#6b7280', borderBottom: '1px solid #e5e7eb', paddingBottom: '4px', marginBottom: '6px' }}>
                     {formatDate(dateStr, 'readable')}
                   </div>
                   {groupedTransactions[dateStr].map(tx => {
@@ -1067,20 +1069,20 @@ export default function BudgetApp() {
                     const env = envelopes.find(e => e.id === tx.envelopeId);
 
                     return (
-                      <div key={tx.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '8px 0', borderBottom: '1px solid #f3f4f6' }}>
-                        <div>
-                          <div style={{ fontWeight: '600' }}>{tx.payee}</div>
-                          <div style={{ fontSize: '0.75rem', color: '#6b7280' }}>
+                      <div key={tx.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '8px 0', borderBottom: '1px solid #f3f4f6', gap: '8px' }}>
+                        <div style={{ flex: 1, minWidth: 0 }}>
+                          <div style={{ fontWeight: '600', fontSize: '0.9rem', wordBreak: 'break-word' }}>{tx.payee}</div>
+                          <div style={{ fontSize: '0.75rem', color: '#6b7280', wordBreak: 'break-word' }}>
                             {acc?.name} {env ? `• ${env.name}` : ''} {tx.notes ? `• ${tx.notes}` : ''}
                           </div>
                         </div>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-                          <span style={{ fontWeight: 'bold', color: tx.type === 'income' ? '#059669' : '#1f2937' }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexShrink: 0 }}>
+                          <span style={{ fontWeight: 'bold', color: tx.type === 'income' ? '#059669' : '#1f2937', fontSize: '0.9rem' }}>
                             {tx.type === 'income' ? '+' : '-'}${Number(tx.amount).toFixed(2)}
                           </span>
                           <button
                             onClick={() => handleSoftDeleteTransaction(tx.id)}
-                            style={{ background: 'none', border: 'none', color: '#dc2626', cursor: 'pointer' }}
+                            style={{ background: 'none', border: 'none', color: '#dc2626', cursor: 'pointer', padding: '4px' }}
                           >
                             ✕
                           </button>
@@ -1097,24 +1099,24 @@ export default function BudgetApp() {
 
       {/* DEBTS TAB */}
       {activeTab === 'debts' && (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
-          <div style={{ backgroundColor: 'white', padding: '16px', borderRadius: '10px', boxShadow: '0 1px 3px rgba(0,0,0,0.1)' }}>
-            <h3 style={{ margin: '0 0 12px 0' }}>+ Track Debt</h3>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+          <div style={{ backgroundColor: 'white', padding: '14px', borderRadius: '10px', boxShadow: '0 1px 3px rgba(0,0,0,0.1)' }}>
+            <h3 style={{ margin: '0 0 10px 0', fontSize: '1rem' }}>+ Track Debt</h3>
             <form onSubmit={handleAddDebt} style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
               <input
                 type="text"
                 placeholder="Debt Name"
                 value={newDebtName}
                 onChange={e => setNewDebtName(e.target.value)}
-                style={{ flex: 2, padding: '8px', border: '1px solid #d1d5db', borderRadius: '6px' }}
+                style={{ flex: '2 1 130px', padding: '8px', border: '1px solid #d1d5db', borderRadius: '6px', fontSize: '0.9rem' }}
               />
               <input
                 type="number"
                 step="0.01"
-                placeholder="Total Balance ($)"
+                placeholder="Balance ($)"
                 value={newDebtTotal}
                 onChange={e => setNewDebtTotal(e.target.value)}
-                style={{ flex: 1, padding: '8px', border: '1px solid #d1d5db', borderRadius: '6px' }}
+                style={{ flex: '1 1 90px', padding: '8px', border: '1px solid #d1d5db', borderRadius: '6px', fontSize: '0.9rem' }}
               />
               <input
                 type="number"
@@ -1122,34 +1124,34 @@ export default function BudgetApp() {
                 placeholder="APR (%)"
                 value={newDebtAPR}
                 onChange={e => setNewDebtAPR(e.target.value)}
-                style={{ flex: 1, padding: '8px', border: '1px solid #d1d5db', borderRadius: '6px' }}
+                style={{ flex: '1 1 70px', padding: '8px', border: '1px solid #d1d5db', borderRadius: '6px', fontSize: '0.9rem' }}
               />
               <input
                 type="number"
                 step="0.01"
-                placeholder="Min Payment ($)"
+                placeholder="Min Pay ($)"
                 value={newDebtMin}
                 onChange={e => setNewDebtMin(e.target.value)}
-                style={{ flex: 1, padding: '8px', border: '1px solid #d1d5db', borderRadius: '6px' }}
+                style={{ flex: '1 1 90px', padding: '8px', border: '1px solid #d1d5db', borderRadius: '6px', fontSize: '0.9rem' }}
               />
-              <button type="submit" style={{ backgroundColor: '#2563eb', color: 'white', border: 'none', padding: '8px 16px', borderRadius: '6px', fontWeight: 'bold', cursor: 'pointer' }}>
+              <button type="submit" style={{ backgroundColor: '#2563eb', color: 'white', border: 'none', padding: '8px 14px', borderRadius: '6px', fontWeight: 'bold', cursor: 'pointer', fontSize: '0.9rem', width: '100%' }}>
                 Add Debt
               </button>
             </form>
           </div>
 
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr', gap: '12px' }}>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr', gap: '10px' }}>
             {activeDebts.map(debt => (
-              <div key={debt.id} style={{ backgroundColor: 'white', padding: '16px', borderRadius: '10px', boxShadow: '0 1px 3px rgba(0,0,0,0.1)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <div key={debt.id} style={{ backgroundColor: 'white', padding: '14px', borderRadius: '10px', boxShadow: '0 1px 3px rgba(0,0,0,0.1)', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '8px' }}>
                 <div>
-                  <h4 style={{ margin: '0 0 4px 0' }}>{debt.name}</h4>
-                  <p style={{ margin: 0, fontSize: '0.85rem', color: '#6b7280' }}>
-                    Balance: <strong>${Number(debt.balance).toFixed(2)}</strong> \vert{} APR: <strong>{debt.APR}\%</strong> \vert{} Min Payment: <strong>${Number(debt.minimumPayment).toFixed(2)}</strong>
+                  <h4 style={{ margin: '0 0 4px 0', fontSize: '1rem' }}>{debt.name}</h4>
+                  <p style={{ margin: 0, fontSize: '0.8rem', color: '#6b7280' }}>
+                    Bal: <strong>${Number(debt.balance).toFixed(2)}</strong> \vert{} APR: <strong>{debt.APR}\%</strong> \vert{} Min: <strong>${Number(debt.minimumPayment).toFixed(2)}</strong>
                   </p>
                 </div>
                 <button
                   onClick={() => handleSoftDeleteDebt(debt.id)}
-                  style={{ backgroundColor: '#fee2e2', color: '#dc2626', border: 'none', padding: '6px 12px', borderRadius: '6px', fontWeight: 'bold', cursor: 'pointer', fontSize: '0.85rem' }}
+                  style={{ backgroundColor: '#fee2e2', color: '#dc2626', border: 'none', padding: '6px 10px', borderRadius: '6px', fontWeight: 'bold', cursor: 'pointer', fontSize: '0.8rem' }}
                 >
                   Delete
                 </button>
@@ -1161,45 +1163,45 @@ export default function BudgetApp() {
 
       {/* TRASH TAB */}
       {activeTab === 'trash' && (
-        <div style={{ backgroundColor: 'white', padding: '20px', borderRadius: '10px', boxShadow: '0 1px 3px rgba(0,0,0,0.1)' }}>
-          <h3 style={{ margin: '0 0 16px 0' }}>Trash / Deleted Items</h3>
+        <div style={{ backgroundColor: 'white', padding: '14px', borderRadius: '10px', boxShadow: '0 1px 3px rgba(0,0,0,0.1)' }}>
+          <h3 style={{ margin: '0 0 12px 0', fontSize: '1rem' }}>Trash / Deleted Items</h3>
           {totalTrashCount === 0 ? (
-            <p style={{ color: '#6b7280' }}>Trash is empty.</p>
+            <p style={{ color: '#6b7280', fontSize: '0.9rem' }}>Trash is empty.</p>
           ) : (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
               {deletedTx.map(t => (
-                <div key={t.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '8px', backgroundColor: '#f9fafb', borderRadius: '6px' }}>
-                  <div>[Transaction] {t.payee} (${t.amount})</div>
-                  <div style={{ display: 'flex', gap: '8px' }}>
-                    <button onClick={() => restoreItem('tx', t.id)} style={{ padding: '4px 8px', cursor: 'pointer' }}>Restore</button>
-                    <button onClick={() => permDeleteItem('tx', t.id)} style={{ padding: '4px 8px', color: 'red', cursor: 'pointer' }}>Delete Forever</button>
+                <div key={t.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '8px', backgroundColor: '#f9fafb', borderRadius: '6px', gap: '8px', flexWrap: 'wrap' }}>
+                  <div style={{ fontSize: '0.85rem', wordBreak: 'break-word' }}>[Transaction] {t.payee} (${t.amount})</div>
+                  <div style={{ display: 'flex', gap: '6px' }}>
+                    <button onClick={() => restoreItem('tx', t.id)} style={{ padding: '4px 8px', cursor: 'pointer', fontSize: '0.8rem' }}>Restore</button>
+                    <button onClick={() => permDeleteItem('tx', t.id)} style={{ padding: '4px 8px', color: 'red', cursor: 'pointer', fontSize: '0.8rem' }}>Delete Forever</button>
                   </div>
                 </div>
               ))}
               {deletedEnv.map(e => (
-                <div key={e.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '8px', backgroundColor: '#f9fafb', borderRadius: '6px' }}>
-                  <div>[Envelope] {e.name} ({e.group})</div>
-                  <div style={{ display: 'flex', gap: '8px' }}>
-                    <button onClick={() => restoreItem('env', e.id)} style={{ padding: '4px 8px', cursor: 'pointer' }}>Restore</button>
-                    <button onClick={() => permDeleteItem('env', e.id)} style={{ padding: '4px 8px', color: 'red', cursor: 'pointer' }}>Delete Forever</button>
+                <div key={e.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '8px', backgroundColor: '#f9fafb', borderRadius: '6px', gap: '8px', flexWrap: 'wrap' }}>
+                  <div style={{ fontSize: '0.85rem', wordBreak: 'break-word' }}>[Envelope] {e.name} ({e.group})</div>
+                  <div style={{ display: 'flex', gap: '6px' }}>
+                    <button onClick={() => restoreItem('env', e.id)} style={{ padding: '4px 8px', cursor: 'pointer', fontSize: '0.8rem' }}>Restore</button>
+                    <button onClick={() => permDeleteItem('env', e.id)} style={{ padding: '4px 8px', color: 'red', cursor: 'pointer', fontSize: '0.8rem' }}>Delete Forever</button>
                   </div>
                 </div>
               ))}
               {deletedAcc.map(a => (
-                <div key={a.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '8px', backgroundColor: '#f9fafb', borderRadius: '6px' }}>
-                  <div>[Account] {a.name}</div>
-                  <div style={{ display: 'flex', gap: '8px' }}>
-                    <button onClick={() => restoreItem('acc', a.id)} style={{ padding: '4px 8px', cursor: 'pointer' }}>Restore</button>
-                    <button onClick={() => permDeleteItem('acc', a.id)} style={{ padding: '4px 8px', color: 'red', cursor: 'pointer' }}>Delete Forever</button>
+                <div key={a.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '8px', backgroundColor: '#f9fafb', borderRadius: '6px', gap: '8px', flexWrap: 'wrap' }}>
+                  <div style={{ fontSize: '0.85rem', wordBreak: 'break-word' }}>[Account] {a.name}</div>
+                  <div style={{ display: 'flex', gap: '6px' }}>
+                    <button onClick={() => restoreItem('acc', a.id)} style={{ padding: '4px 8px', cursor: 'pointer', fontSize: '0.8rem' }}>Restore</button>
+                    <button onClick={() => permDeleteItem('acc', a.id)} style={{ padding: '4px 8px', color: 'red', cursor: 'pointer', fontSize: '0.8rem' }}>Delete Forever</button>
                   </div>
                 </div>
               ))}
               {deletedDebts.map(d => (
-                <div key={d.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '8px', backgroundColor: '#f9fafb', borderRadius: '6px' }}>
-                  <div>[Debt] {d.name}</div>
-                  <div style={{ display: 'flex', gap: '8px' }}>
-                    <button onClick={() => restoreItem('debt', d.id)} style={{ padding: '4px 8px', cursor: 'pointer' }}>Restore</button>
-                    <button onClick={() => permDeleteItem('debt', d.id)} style={{ padding: '4px 8px', color: 'red', cursor: 'pointer' }}>Delete Forever</button>
+                <div key={d.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '8px', backgroundColor: '#f9fafb', borderRadius: '6px', gap: '8px', flexWrap: 'wrap' }}>
+                  <div style={{ fontSize: '0.85rem', wordBreak: 'break-word' }}>[Debt] {d.name}</div>
+                  <div style={{ display: 'flex', gap: '6px' }}>
+                    <button onClick={() => restoreItem('debt', d.id)} style={{ padding: '4px 8px', cursor: 'pointer', fontSize: '0.8rem' }}>Restore</button>
+                    <button onClick={() => permDeleteItem('debt', d.id)} style={{ padding: '4px 8px', color: 'red', cursor: 'pointer', fontSize: '0.8rem' }}>Delete Forever</button>
                   </div>
                 </div>
               ))}
