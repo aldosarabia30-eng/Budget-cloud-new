@@ -1,4 +1,17 @@
 import React, { useState, useEffect } from 'react';
+import { supabase } from './supabaseClient';
+
+// Helper to get or generate Budget ID from URL query parameters
+const getBudgetIdFromUrl = () => {
+  const params = new URLSearchParams(window.location.search);
+  let id = params.get('budgetId');
+  if (!id) {
+    id = 'default-budget';
+    const newUrl = `${window.location.pathname}?budgetId=${id}`;
+    window.history.replaceState({ path: newUrl }, '', newUrl);
+  }
+  return id;
+};
 
 // Helper to get local date string YYYY-MM-DD
 const getTodayISO = () => {
@@ -55,8 +68,7 @@ const getScheduleText = (env) => {
 };
 
 export default function BudgetApp() {
-  const STORAGE_KEY = 'envelope_budget_app_data';
-
+  const [budgetId, setBudgetId] = useState(getBudgetIdFromUrl());
   const [readyToAssign, setReadyToAssign] = useState(1250.0);
 
   const [accounts, setAccounts] = useState([
@@ -123,11 +135,20 @@ export default function BudgetApp() {
   const [newDebtAPR, setNewDebtAPR] = useState('');
   const [newDebtMin, setNewDebtMin] = useState('');
 
+  // Fetch budget data from Supabase & Subscribe to Real-time Changes
   useEffect(() => {
-    try {
-      const savedData = localStorage.getItem(STORAGE_KEY);
-      if (savedData) {
-        const parsed = JSON.parse(savedData);
+    const fetchBudgetData = async () => {
+      if (!budgetId) return;
+      const { data, error } = await supabase
+        .from('user_budgets')
+        .select('data')
+        .eq('id', budgetId)
+        .single();
+
+      if (error) {
+        console.error('Error fetching budget data from Supabase:', error);
+      } else if (data && data.data) {
+        const parsed = data.data;
         if (parsed.readyToAssign !== undefined) setReadyToAssign(parsed.readyToAssign);
         if (parsed.accounts) setAccounts(parsed.accounts);
         if (parsed.groups) setGroups(parsed.groups);
@@ -137,15 +158,54 @@ export default function BudgetApp() {
         if (parsed.transactions) setTransactions(parsed.transactions);
         if (parsed.debts) setDebts(parsed.debts);
       }
-    } catch (e) {
-      console.error('Failed to load budget data', e);
-    }
-  }, []);
+    };
 
+    fetchBudgetData();
+
+    const channel = supabase
+      .channel(`public:user_budgets:id=eq.${budgetId}`)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'user_budgets', filter: `id=eq.${budgetId}` }, (payload) => {
+        if (payload.new && payload.new.data) {
+          const updated = payload.new.data;
+          if (updated.readyToAssign !== undefined) setReadyToAssign(updated.readyToAssign);
+          if (updated.accounts) setAccounts(updated.accounts);
+          if (updated.groups) setGroups(updated.groups);
+          if (updated.collapsedGroups) setCollapsedGroups(updated.collapsedGroups);
+          if (updated.collapsedAccountTx) setCollapsedAccountTx(updated.collapsedAccountTx);
+          if (updated.envelopes) setEnvelopes(updated.envelopes);
+          if (updated.transactions) setTransactions(updated.transactions);
+          if (updated.debts) setDebts(updated.debts);
+        }
+      })
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, [budgetId]);
+
+  // Save budget changes to Supabase
   useEffect(() => {
-    const dataToSave = { readyToAssign, accounts, groups, collapsedGroups, collapsedAccountTx, envelopes, transactions, debts };
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(dataToSave));
-  }, [readyToAssign, accounts, groups, collapsedGroups, collapsedAccountTx, envelopes, transactions, debts]);
+    const saveBudgetData = async () => {
+      if (!budgetId) return;
+      const dataToSave = { readyToAssign, accounts, groups, collapsedGroups, collapsedAccountTx, envelopes, transactions, debts };
+      const { error } = await supabase
+        .from('user_budgets')
+        .upsert({ id: budgetId, data: dataToSave });
+
+      if (error) {
+        console.error('Error saving budget data to Supabase:', error);
+      }
+    };
+
+    saveBudgetData();
+  }, [budgetId, readyToAssign, accounts, groups, collapsedGroups, collapsedAccountTx, envelopes, transactions, debts]);
+
+  const copyShareLink = () => {
+    const shareUrl = `${window.location.origin}${window.location.pathname}?budgetId=${budgetId}`;
+    navigator.clipboard.writeText(shareUrl);
+    showNotification('Share link copied to clipboard!');
+  };
 
   const showNotification = (msg) => {
     setNotification(msg);
@@ -482,6 +542,15 @@ export default function BudgetApp() {
           <div>
             <h1 style={{ margin: 0, fontSize: '1.6rem', fontWeight: '700' }}>Envelope Budgeting</h1>
             <p style={{ margin: '4px 0 0 0', opacity: 0.85, fontSize: '0.9rem' }}>Real-time Cash Flow & Reconciliation</p>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginTop: '8px' }}>
+              <span style={{ fontSize: '0.8rem', opacity: 0.8 }}>Budget ID: <strong>{budgetId}</strong></span>
+              <button
+                onClick={copyShareLink}
+                style={{ backgroundColor: '#3b82f6', color: 'white', border: 'none', padding: '2px 8px', borderRadius: '4px', fontSize: '0.75rem', cursor: 'pointer', fontWeight: '600' }}
+              >
+                Copy Share Link
+              </button>
+            </div>
           </div>
           <div style={{ textAlign: 'right', backgroundColor: '#3b82f6', padding: '10px 16px', borderRadius: '8px' }}>
             <div style={{ fontSize: '0.8rem', textTransform: 'uppercase' }}>Ready to Assign</div>
@@ -716,21 +785,21 @@ export default function BudgetApp() {
                                     step="0.01"
                                     value={env.assigned}
                                     onChange={e => handleAssignFunds(env.id, e.target.value)}
-                                    style={{ width: '100px', padding: '4px 8px', border: '1px solid #d1d5db', borderRadius: '4px', fontWeight: 'bold' }}
+                                    style={{ width: '100px', padding: '6px', border: '1px solid #d1d5db', borderRadius: '4px' }}
                                   />
                                 </td>
                                 <td style={{ padding: '10px 12px', textAlign: 'right', color: spent > 0 ? '#dc2626' : '#6b7280' }}>
                                   ${spent.toFixed(2)}
                                 </td>
-                                <td style={{ padding: '10px 12px', textAlign: 'right', fontWeight: 'bold', color: remaining < 0 ? '#dc2626' : '#059669' }}>
+                                <td style={{ padding: '10px 12px', textAlign: 'right', fontWeight: 'bold', color: remaining < 0 ? '#dc2626' : '#16a34a' }}>
                                   ${remaining.toFixed(2)}
                                 </td>
                                 <td style={{ padding: '10px 12px', textAlign: 'center' }}>
                                   <button
                                     onClick={() => handleSoftDeleteEnvelope(env.id)}
-                                    style={{ backgroundColor: '#fee2e2', color: '#dc2626', border: 'none', padding: '4px 8px', borderRadius: '4px', cursor: 'pointer', fontSize: '0.75rem' }}
+                                    style={{ backgroundColor: 'transparent', color: '#dc2626', border: 'none', cursor: 'pointer', fontSize: '0.8rem' }}
                                   >
-                                    Trash
+                                    Delete
                                   </button>
                                 </td>
                               </tr>
@@ -751,16 +820,20 @@ export default function BudgetApp() {
       {activeTab === 'accounts' && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
           <div style={{ backgroundColor: 'white', padding: '16px', borderRadius: '10px', boxShadow: '0 1px 3px rgba(0,0,0,0.1)' }}>
-            <h3 style={{ margin: '0 0 12px 0' }}>+ Add Account</h3>
-            <form onSubmit={handleAddAccount} style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: '10px' }}>
+            <h3 style={{ margin: '0 0 12px 0' }}>+ Add Bank Account</h3>
+            <form onSubmit={handleAddAccount} style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
               <input
                 type="text"
                 placeholder="Account Name (e.g. Chase Checking)"
                 value={newAccName}
                 onChange={e => setNewAccName(e.target.value)}
-                style={{ padding: '8px', border: '1px solid #d1d5db', borderRadius: '6px' }}
+                style={{ flex: 2, minWidth: '200px', padding: '8px', border: '1px solid #d1d5db', borderRadius: '6px' }}
               />
-              <select value={newAccType} onChange={e => setNewAccType(e.target.value)} style={{ padding: '8px', border: '1px solid #d1d5db', borderRadius: '6px' }}>
+              <select
+                value={newAccType}
+                onChange={e => setNewAccType(e.target.value)}
+                style={{ flex: 1, minWidth: '120px', padding: '8px', border: '1px solid #d1d5db', borderRadius: '6px' }}
+              >
                 <option value="Checking">Checking</option>
                 <option value="Savings">Savings</option>
                 <option value="Credit Card">Credit Card</option>
@@ -772,172 +845,144 @@ export default function BudgetApp() {
                 placeholder="Initial Balance ($)"
                 value={newAccBalance}
                 onChange={e => setNewAccBalance(e.target.value)}
-                style={{ padding: '8px', border: '1px solid #d1d5db', borderRadius: '6px' }}
+                style={{ flex: 1, minWidth: '120px', padding: '8px', border: '1px solid #d1d5db', borderRadius: '6px' }}
               />
-              <button type="submit" style={{ backgroundColor: '#2563eb', color: 'white', border: 'none', padding: '8px', borderRadius: '6px', fontWeight: 'bold', cursor: 'pointer' }}>
+              <button type="submit" style={{ backgroundColor: '#2563eb', color: 'white', border: 'none', padding: '8px 16px', borderRadius: '6px', fontWeight: 'bold', cursor: 'pointer' }}>
                 Add Account
               </button>
             </form>
           </div>
 
-          <div style={{ backgroundColor: 'white', borderRadius: '10px', padding: '16px', boxShadow: '0 1px 3px rgba(0,0,0,0.1)' }}>
+          <div style={{ backgroundColor: 'white', padding: '16px', borderRadius: '10px', boxShadow: '0 1px 3px rgba(0,0,0,0.1)' }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
-              <h3 style={{ margin: 0 }}>Linked Accounts</h3>
-              <div style={{ fontWeight: 'bold', fontSize: '1.1rem', color: '#1e3a8a' }}>
-                Total Bank Balance: ${totalBankBalance.toFixed(2)}
-              </div>
+              <h3 style={{ margin: 0 }}>Your Bank Accounts</h3>
+              <div style={{ fontWeight: 'bold', color: '#1e3a8a' }}>Total Assets: ${totalBankBalance.toFixed(2)}</div>
             </div>
 
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
-              {activeAccounts.map(acc => {
-                const balance = getAccountBalance(acc.id);
-                const clearedBal = getClearedBalance(acc.id);
-                const accTxList = activeTransactions.filter(t => t.accountId === acc.id);
-                const isCollapsed = collapsedAccountTx[acc.id];
-                const isReconciling = reconcilingAccId === acc.id;
+            {activeAccounts.length === 0 ? (
+              <p style={{ color: '#9ca3af', textAlign: 'center' }}>No accounts active.</p>
+            ) : (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+                {activeAccounts.map(acc => {
+                  const currentBal = getAccountBalance(acc.id);
+                  const clearedBal = getClearedBalance(acc.id);
+                  const accTx = activeTransactions.filter(t => t.accountId === acc.id);
+                  const isTxCollapsed = collapsedAccountTx[acc.id];
+                  const isReconciling = reconcilingAccId === acc.id;
 
-                const targetNum = parseFloat(targetBankBalance);
-                const diff = isNaN(targetNum) ? 0 : targetNum - balance;
-
-                return (
-                  <div key={acc.id} style={{ border: '1px solid #e5e7eb', borderRadius: '8px', padding: '16px', backgroundColor: '#f9fafb' }}>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '10px' }}>
-                      <div>
-                        <div style={{ fontSize: '0.8rem', color: '#6b7280', textTransform: 'uppercase', fontWeight: 'bold' }}>{acc.type}</div>
-                        <div style={{ fontSize: '1.2rem', fontWeight: 'bold', margin: '2px 0' }}>{acc.name}</div>
-                        <div style={{ fontSize: '0.8rem', color: '#6b7280' }}>
-                          Cleared: <strong>${clearedBal.toFixed(2)}</strong> | Total: <strong>${balance.toFixed(2)}</strong>
-                        </div>
-                        {acc.lastReconciledDate && (
-                          <div style={{ fontSize: '0.75rem', color: '#059669', marginTop: '2px' }}>
-                            ✓ Reconciled {formatDate(acc.lastReconciledDate, 'readable')} (${Number(acc.lastReconciledBalance).toFixed(2)})
+                  return (
+                    <div key={acc.id} style={{ border: '1px solid #e5e7eb', borderRadius: '8px', padding: '14px', backgroundColor: '#ffffff' }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexWrap: 'wrap', gap: '8px' }}>
+                        <div>
+                          <div style={{ fontWeight: 'bold', fontSize: '1.1rem', color: '#111827' }}>
+                            {acc.name} <span style={{ fontSize: '0.8rem', color: '#6b7280', fontWeight: 'normal' }}>({acc.type})</span>
                           </div>
-                        )}
-                      </div>
-                      <div style={{ textAlign: 'right', display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: '6px' }}>
-                        <div style={{ fontSize: '1.4rem', fontWeight: 'bold', color: balance >= 0 ? '#059669' : '#dc2626' }}>
-                          ${balance.toFixed(2)}
+                          <div style={{ fontSize: '0.8rem', color: '#6b7280', marginTop: '4px' }}>
+                            Cleared: ${clearedBal.toFixed(2)} | Working Balance: <strong style={{ color: '#1e3a8a' }}>${currentBal.toFixed(2)}</strong>
+                          </div>
+                          {acc.lastReconciledDate && (
+                            <div style={{ fontSize: '0.75rem', color: '#10b981', marginTop: '2px' }}>
+                              ✓ Last Reconciled: {formatDate(acc.lastReconciledDate, 'readable')} (${acc.lastReconciledBalance?.toFixed(2)})
+                            </div>
+                          )}
                         </div>
-                        <div style={{ display: 'flex', gap: '8px' }}>
+
+                        <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
                           <button
                             onClick={() => startReconcile(acc.id)}
-                            style={{ backgroundColor: '#059669', color: 'white', border: 'none', padding: '4px 10px', borderRadius: '4px', cursor: 'pointer', fontSize: '0.8rem', fontWeight: '600' }}
+                            style={{ backgroundColor: '#059669', color: 'white', border: 'none', padding: '6px 12px', borderRadius: '6px', fontSize: '0.85rem', fontWeight: '600', cursor: 'pointer' }}
                           >
-                            ⚖ Reconcile Account
-                          </button>
-                          <button
-                            onClick={() => toggleAccountTxCollapse(acc.id)}
-                            style={{ backgroundColor: '#e0e7ff', color: '#1e3a8a', border: 'none', padding: '4px 10px', borderRadius: '4px', cursor: 'pointer', fontSize: '0.8rem', fontWeight: '600' }}
-                          >
-                            {isCollapsed ? `► Show Tx (${accTxList.length})` : `▼ Hide Tx (${accTxList.length})`}
+                            Reconcile
                           </button>
                           <button
                             onClick={() => handleSoftDeleteAccount(acc.id)}
-                            style={{ backgroundColor: '#fee2e2', color: '#dc2626', border: 'none', padding: '4px 8px', borderRadius: '4px', cursor: 'pointer', fontSize: '0.75rem' }}
+                            style={{ backgroundColor: 'transparent', color: '#dc2626', border: 'none', cursor: 'pointer', fontSize: '0.85rem' }}
                           >
-                            Trash
+                            Delete
                           </button>
                         </div>
                       </div>
-                    </div>
 
-                    {/* RECONCILIATION MODAL / PANEL */}
-                    {isReconciling && (
-                      <div style={{ marginTop: '16px', padding: '14px', backgroundColor: '#ecfdf5', borderRadius: '8px', border: '1px solid #10b981' }}>
-                        <h4 style={{ margin: '0 0 8px 0', color: '#065f46' }}>Reconcile {acc.name}</h4>
-                        <p style={{ margin: '0 0 12px 0', fontSize: '0.85rem', color: '#047857' }}>
-                          Enter the current statement balance from your bank. Toggle transactions as <strong>Cleared (C)</strong> to match your statement.
-                        </p>
-                        <div style={{ display: 'flex', gap: '12px', alignItems: 'center', flexWrap: 'wrap' }}>
-                          <label style={{ fontSize: '0.85rem', fontWeight: 'bold', color: '#065f46' }}>
-                            Bank Statement Balance ($):
+                      {/* Reconciliation Drawer */}
+                      {isReconciling && (
+                        <div style={{ marginTop: '12px', padding: '12px', backgroundColor: '#ecfdf5', borderRadius: '6px', border: '1px solid #a7f3d0' }}>
+                          <div style={{ fontWeight: 'bold', color: '#065f46', marginBottom: '8px', fontSize: '0.9rem' }}>
+                            Reconcile Account: Enter Current Bank Statement Balance
+                          </div>
+                          <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
                             <input
                               type="number"
                               step="0.01"
                               value={targetBankBalance}
                               onChange={e => setTargetBankBalance(e.target.value)}
-                              style={{ marginLeft: '8px', padding: '6px 10px', border: '1px solid #10b981', borderRadius: '6px', fontWeight: 'bold', width: '120px' }}
+                              placeholder="Statement Balance ($)"
+                              style={{ padding: '6px', border: '1px solid #d1d5db', borderRadius: '4px', flex: 1 }}
                             />
-                          </label>
-                          <div style={{ fontSize: '0.85rem' }}>
-                            Difference: <strong style={{ color: Math.abs(diff) < 0.01 ? '#059669' : '#dc2626' }}>${diff.toFixed(2)}</strong>
+                            <button
+                              onClick={() => handleFinishReconciliation(acc.id)}
+                              style={{ backgroundColor: '#059669', color: 'white', border: 'none', padding: '6px 12px', borderRadius: '4px', fontWeight: 'bold', cursor: 'pointer' }}
+                            >
+                              Finish
+                            </button>
+                            <button
+                              onClick={() => setReconcilingAccId(null)}
+                              style={{ backgroundColor: '#e5e7eb', color: '#374151', border: 'none', padding: '6px 12px', borderRadius: '4px', cursor: 'pointer' }}
+                            >
+                              Cancel
+                            </button>
                           </div>
                         </div>
+                      )}
 
-                        <div style={{ display: 'flex', gap: '8px', marginTop: '12px' }}>
-                          <button
-                            onClick={() => handleFinishReconciliation(acc.id)}
-                            style={{ backgroundColor: '#059669', color: 'white', border: 'none', padding: '6px 14px', borderRadius: '6px', fontWeight: 'bold', cursor: 'pointer', fontSize: '0.85rem' }}
-                          >
-                            {Math.abs(diff) < 0.01 ? 'Finish Reconciliation' : 'Create Adjustment & Finish'}
-                          </button>
-                          <button
-                            onClick={() => setReconcilingAccId(null)}
-                            style={{ backgroundColor: '#e5e7eb', color: '#374151', border: 'none', padding: '6px 12px', borderRadius: '6px', cursor: 'pointer', fontSize: '0.85rem' }}
-                          >
-                            Cancel
-                          </button>
+                      {/* Account Transactions Accordion */}
+                      <div style={{ marginTop: '12px', borderTop: '1px solid #f3f4f6', paddingTop: '8px' }}>
+                        <div
+                          onClick={() => toggleAccountTxCollapse(acc.id)}
+                          style={{ cursor: 'pointer', fontSize: '0.85rem', color: '#2563eb', fontWeight: '600', display: 'flex', justifyContent: 'space-between' }}
+                        >
+                          <span>{isTxCollapsed ? 'Show' : 'Hide'} Recent Activity ({accTx.length})</span>
                         </div>
-                      </div>
-                    )}
 
-                    {!isCollapsed && (
-                      <div style={{ marginTop: '16px', paddingTop: '12px', borderTop: '1px solid #e5e7eb' }}>
-                        <h4 style={{ margin: '0 0 10px 0', fontSize: '0.9rem', color: '#4b5563' }}>Transactions</h4>
-                        {accTxList.length === 0 ? (
-                          <p style={{ color: '#9ca3af', fontStyle: 'italic', fontSize: '0.85rem', margin: 0 }}>No transactions recorded for this account.</p>
-                        ) : (
-                          <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-                            {accTxList.map(tx => {
-                              const envName = tx.type === 'expense' 
-                                ? (envelopes.find(e => e.id === tx.envelopeId)?.name || 'Uncategorized') 
-                                : 'Income / Ready to Assign';
-
-                              return (
-                                <div key={tx.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '8px 12px', backgroundColor: tx.reconciled ? '#f3f4f6' : 'white', borderRadius: '6px', border: '1px solid #e5e7eb', fontSize: '0.85rem', flexWrap: 'wrap', gap: '8px' }}>
-                                  <div>
-                                    <span style={{ fontWeight: '600', marginRight: '8px' }}>{tx.payee}</span>
-                                    <span style={{ color: '#6b7280', fontSize: '0.75rem' }}>({formatDate(tx.date, 'readable')})</span>
-                                    <span style={{ marginLeft: '8px', backgroundColor: tx.type === 'income' ? '#d1fae5' : '#e5e7eb', color: tx.type === 'income' ? '#065f46' : '#4b5563', padding: '2px 6px', borderRadius: '10px', fontSize: '0.75rem' }}>
-                                      {envName}
-                                    </span>
-                                    {tx.notes && <span style={{ marginLeft: '8px', color: '#9ca3af', fontSize: '0.75rem' }}>— {tx.notes}</span>}
-                                  </div>
-                                  <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-                                    <span style={{ fontWeight: 'bold', color: tx.type === 'income' ? '#059669' : '#1f2937' }}>
-                                      {tx.type === 'income' ? '+' : '-'}${Number(tx.amount).toFixed(2)}
-                                    </span>
-                                    <button
-                                      onClick={() => handleToggleCleared(tx.id)}
-                                      title={tx.reconciled ? "Reconciled with Bank Statement" : "Toggle Cleared Status"}
-                                      style={{
-                                        backgroundColor: tx.reconciled ? '#10b981' : tx.cleared ? '#3b82f6' : '#e5e7eb',
-                                        color: tx.cleared || tx.reconciled ? 'white' : '#6b7280',
-                                        border: 'none',
-                                        padding: '2px 8px',
-                                        borderRadius: '4px',
-                                        cursor: tx.reconciled ? 'default' : 'pointer',
-                                        fontSize: '0.75rem',
-                                        fontWeight: 'bold'
-                                      }}
-                                    >
-                                      {tx.reconciled ? 'R' : tx.cleared ? 'C' : 'U'}
-                                    </button>
-                                    <button onClick={() => handleSoftDeleteTransaction(tx.id)} style={{ backgroundColor: '#fee2e2', color: '#dc2626', border: 'none', padding: '2px 6px', borderRadius: '4px', cursor: 'pointer', fontSize: '0.7rem' }}>
-                                      Trash
-                                    </button>
-                                  </div>
-                                </div>
-                              );
-                            })}
+                        {!isTxCollapsed && accTx.length > 0 && (
+                          <div style={{ marginTop: '8px', overflowX: 'auto' }}>
+                            <table style={{ width: '100%', fontSize: '0.85rem', borderCollapse: 'collapse' }}>
+                              <thead>
+                                <tr style={{ borderBottom: '1px solid #e5e7eb', color: '#6b7280', textAlign: 'left' }}>
+                                  <th style={{ padding: '4px' }}>Cleared</th>
+                                  <th style={{ padding: '4px' }}>Date</th>
+                                  <th style={{ padding: '4px' }}>Payee</th>
+                                  <th style={{ padding: '4px', textAlign: 'right' }}>Amount</th>
+                                </tr>
+                              </thead>
+                              <tbody>
+                                {accTx.map(t => (
+                                  <tr key={t.id} style={{ borderBottom: '1px solid #f9fafb' }}>
+                                    <td style={{ padding: '4px' }}>
+                                      <input
+                                        type="checkbox"
+                                        checked={t.cleared || t.reconciled}
+                                        disabled={t.reconciled}
+                                        onChange={() => handleToggleCleared(t.id)}
+                                      />
+                                      {t.reconciled && <span style={{ color: '#059669', marginLeft: '4px', fontSize: '0.75rem' }}>✓</span>}
+                                    </td>
+                                    <td style={{ padding: '4px', color: '#6b7280' }}>{formatDate(t.date, 'us')}</td>
+                                    <td style={{ padding: '4px' }}>{t.payee}</td>
+                                    <td style={{ padding: '4px', textAlign: 'right', fontWeight: 'bold', color: t.type === 'income' ? '#16a34a' : '#dc2626' }}>
+                                      {t.type === 'income' ? '+' : '-'}${Number(t.amount).toFixed(2)}
+                                    </td>
+                                  </tr>
+                                ))}
+                              </tbody>
+                            </table>
                           </div>
                         )}
                       </div>
-                    )}
-                  </div>
-                );
-              })}
-            </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
           </div>
         </div>
       )}
@@ -949,8 +994,14 @@ export default function BudgetApp() {
             <h3 style={{ margin: '0 0 12px 0' }}>+ Record Transaction</h3>
             <form onSubmit={handleAddTransaction} style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: '10px' }}>
               <input
+                type="date"
+                value={txDate}
+                onChange={e => setTxDate(e.target.value)}
+                style={{ padding: '8px', border: '1px solid #d1d5db', borderRadius: '6px' }}
+              />
+              <input
                 type="text"
-                placeholder="Payee (e.g., Target, Electric Co)"
+                placeholder="Payee/Source"
                 value={txPayee}
                 onChange={e => handlePayeeChange(e.target.value)}
                 style={{ padding: '8px', border: '1px solid #d1d5db', borderRadius: '6px' }}
@@ -963,97 +1014,101 @@ export default function BudgetApp() {
                 onChange={e => setTxAmount(e.target.value)}
                 style={{ padding: '8px', border: '1px solid #d1d5db', borderRadius: '6px' }}
               />
-              <select value={txType} onChange={e => setTxType(e.target.value)} style={{ padding: '8px', border: '1px solid #d1d5db', borderRadius: '6px' }}>
-                <option value="expense">Expense</option>
-                <option value="income">Income / Inflow</option>
+              <select
+                value={txType}
+                onChange={e => setTxType(e.target.value)}
+                style={{ padding: '8px', border: '1px solid #d1d5db', borderRadius: '6px' }}
+              >
+                <option value="expense">Expense (-)</option>
+                <option value="income">Income (+)</option>
               </select>
-              <select value={txAccountId} onChange={e => setTxAccountId(e.target.value)} style={{ padding: '8px', border: '1px solid #d1d5db', borderRadius: '6px' }}>
+              <select
+                value={txAccountId}
+                onChange={e => setTxAccountId(e.target.value)}
+                style={{ padding: '8px', border: '1px solid #d1d5db', borderRadius: '6px' }}
+              >
                 <option value="">Select Account...</option>
                 {activeAccounts.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}
               </select>
-              
+
               {txType === 'expense' && (
-                <select value={txEnvelopeId} onChange={e => setTxEnvelopeId(e.target.value)} style={{ padding: '8px', border: '1px solid #d1d5db', borderRadius: '6px' }}>
-                  <option value="">Select Envelope...</option>
+                <select
+                  value={txEnvelopeId}
+                  onChange={e => setTxEnvelopeId(e.target.value)}
+                  style={{ padding: '8px', border: '1px solid #d1d5db', borderRadius: '6px' }}
+                >
+                  <option value="">Unassigned / General</option>
                   {activeEnvelopes.map(env => <option key={env.id} value={env.id}>{env.name}</option>)}
                 </select>
               )}
 
               <input
-                type="date"
-                value={txDate}
-                onChange={e => setTxDate(e.target.value)}
-                style={{ padding: '8px', border: '1px solid #d1d5db', borderRadius: '6px' }}
-              />
-              <input
                 type="text"
                 placeholder="Notes (optional)"
                 value={txNotes}
                 onChange={e => setTxNotes(e.target.value)}
-                style={{ padding: '8px', border: '1px solid #d1d5db', borderRadius: '6px', gridColumn: '1 / -1' }}
+                style={{ padding: '8px', border: '1px solid #d1d5db', borderRadius: '6px', gridColumn: 'span 2' }}
               />
-              <button type="submit" style={{ backgroundColor: '#2563eb', color: 'white', border: 'none', padding: '10px', borderRadius: '6px', fontWeight: 'bold', cursor: 'pointer', gridColumn: '1 / -1' }}>
-                Save Transaction
+
+              <button type="submit" style={{ backgroundColor: '#2563eb', color: 'white', border: 'none', padding: '8px 16px', borderRadius: '6px', fontWeight: 'bold', cursor: 'pointer' }}>
+                Add Transaction
               </button>
             </form>
           </div>
 
+          {/* Grouped Transaction History */}
           <div style={{ backgroundColor: 'white', padding: '16px', borderRadius: '10px', boxShadow: '0 1px 3px rgba(0,0,0,0.1)' }}>
-            <h3 style={{ margin: '0 0 16px 0' }}>Transaction Register</h3>
+            <h3 style={{ margin: '0 0 16px 0' }}>Transaction Ledger</h3>
+
             {sortedTransactionDates.length === 0 ? (
-              <p style={{ color: '#6b7280', fontStyle: 'italic', margin: 0 }}>No transactions recorded yet.</p>
+              <p style={{ color: '#9ca3af', textAlign: 'center' }}>No transactions logged.</p>
             ) : (
-              sortedTransactionDates.map(date => (
-                <div key={date} style={{ marginBottom: '24px' }}>
-                  <div style={{ fontWeight: 'bold', paddingBottom: '8px', borderBottom: '2px solid #e5e7eb', marginBottom: '12px', color: '#1e3a8a' }}>
-                    {formatDate(date, 'readable')}
+              sortedTransactionDates.map(dateKey => (
+                <div key={dateKey} style={{ marginBottom: '16px' }}>
+                  <div style={{ backgroundColor: '#f3f4f6', padding: '6px 12px', fontWeight: 'bold', borderRadius: '4px', fontSize: '0.85rem', color: '#4b5563', marginBottom: '6px' }}>
+                    {formatDate(dateKey, 'readable')}
                   </div>
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-                    {groupedTransactions[date].map(tx => {
-                      const accName = accounts.find(a => a.id === tx.accountId)?.name || 'Unknown Account';
-                      const envName = tx.type === 'expense' 
-                        ? (envelopes.find(e => e.id === tx.envelopeId)?.name || 'Uncategorized') 
-                        : 'Income / Ready to Assign';
-                      
-                      return (
-                        <div key={tx.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '10px', backgroundColor: tx.reconciled ? '#f3f4f6' : '#f9fafb', borderRadius: '8px', border: '1px solid #f3f4f6', fontSize: '0.9rem', flexWrap: 'wrap', gap: '8px' }}>
-                          <div style={{ flex: 1, minWidth: '180px' }}>
-                            <div style={{ fontWeight: '600' }}>{tx.payee}</div>
-                            <div style={{ fontSize: '0.8rem', color: '#6b7280', marginTop: '2px' }}>
-                              <span>Account: <strong>{accName}</strong></span>
-                              <span style={{ marginLeft: '8px', backgroundColor: tx.type === 'income' ? '#d1fae5' : '#e5e7eb', color: tx.type === 'income' ? '#065f46' : '#4b5563', padding: '2px 8px', borderRadius: '12px', fontSize: '0.75rem', fontWeight: '500' }}>
-                                {envName}
-                              </span>
-                              {tx.notes && <span style={{ marginLeft: '8px', fontStyle: 'italic' }}>— {tx.notes}</span>}
-                            </div>
-                          </div>
-                          <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-                            <span style={{ fontWeight: 'bold', fontSize: '1rem', color: tx.type === 'income' ? '#059669' : '#1f2937' }}>
-                              {tx.type === 'income' ? '+' : '-'}${Number(tx.amount).toFixed(2)}
-                            </span>
-                            <button
-                              onClick={() => handleToggleCleared(tx.id)}
-                              title={tx.reconciled ? "Reconciled with Bank Statement" : "Toggle Cleared Status"}
-                              style={{
-                                backgroundColor: tx.reconciled ? '#10b981' : tx.cleared ? '#3b82f6' : '#e5e7eb',
-                                color: tx.cleared || tx.reconciled ? 'white' : '#6b7280',
-                                border: 'none',
-                                padding: '3px 8px',
-                                borderRadius: '4px',
-                                cursor: tx.reconciled ? 'default' : 'pointer',
-                                fontSize: '0.75rem',
-                                fontWeight: 'bold'
-                              }}
-                            >
-                              {tx.reconciled ? 'R' : tx.cleared ? 'C' : 'U'}
-                            </button>
-                            <button onClick={() => handleSoftDeleteTransaction(tx.id)} style={{ backgroundColor: '#fee2e2', color: '#dc2626', border: 'none', padding: '4px 8px', borderRadius: '4px', cursor: 'pointer', fontSize: '0.75rem' }}>
-                              Trash
-                            </button>
-                          </div>
-                        </div>
-                      );
-                    })}
+                  <div style={{ overflowX: 'auto' }}>
+                    <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.9rem' }}>
+                      <tbody>
+                        {groupedTransactions[dateKey].map(tx => {
+                          const acc = accounts.find(a => a.id === tx.accountId);
+                          const env = envelopes.find(e => e.id === tx.envelopeId);
+
+                          return (
+                            <tr key={tx.id} style={{ borderBottom: '1px solid #f3f4f6' }}>
+                              <td style={{ padding: '8px', width: '30px' }}>
+                                <input
+                                  type="checkbox"
+                                  checked={tx.cleared || tx.reconciled}
+                                  disabled={tx.reconciled}
+                                  onChange={() => handleToggleCleared(tx.id)}
+                                />
+                              </td>
+                              <td style={{ padding: '8px', fontWeight: '600' }}>
+                                {tx.payee}
+                                {tx.notes && <div style={{ fontSize: '0.75rem', color: '#6b7280' }}>{tx.notes}</div>}
+                              </td>
+                              <td style={{ padding: '8px', fontSize: '0.8rem', color: '#4b5563' }}>
+                                {acc ? acc.name : 'Unknown Account'}
+                                {env && <span style={{ marginLeft: '6px', backgroundColor: '#e0e7ff', color: '#1e3a8a', padding: '2px 6px', borderRadius: '4px' }}>{env.name}</span>}
+                              </td>
+                              <td style={{ padding: '8px', textAlign: 'right', fontWeight: 'bold', color: tx.type === 'income' ? '#16a34a' : '#dc2626' }}>
+                                {tx.type === 'income' ? '+' : '-'}${Number(tx.amount).toFixed(2)}
+                              </td>
+                              <td style={{ padding: '8px', textAlign: 'center', width: '60px' }}>
+                                <button
+                                  onClick={() => handleSoftDeleteTransaction(tx.id)}
+                                  style={{ backgroundColor: 'transparent', color: '#dc2626', border: 'none', cursor: 'pointer', fontSize: '0.8rem' }}
+                                >
+                                  Delete
+                                </button>
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
                   </div>
                 </div>
               ))
@@ -1066,41 +1121,67 @@ export default function BudgetApp() {
       {activeTab === 'debts' && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
           <div style={{ backgroundColor: 'white', padding: '16px', borderRadius: '10px', boxShadow: '0 1px 3px rgba(0,0,0,0.1)' }}>
-            <h3 style={{ margin: '0 0 12px 0' }}>+ Track New Debt</h3>
-            <form onSubmit={handleAddDebt} style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: '10px' }}>
-              <input type="text" placeholder="Debt Name (e.g., Visa Card)" value={newDebtName} onChange={e => setNewDebtName(e.target.value)} style={{ padding: '8px', border: '1px solid #d1d5db', borderRadius: '6px' }} />
-              <input type="number" step="0.01" placeholder="Total Balance ($)" value={newDebtTotal} onChange={e => setNewDebtTotal(e.target.value)} style={{ padding: '8px', border: '1px solid #d1d5db', borderRadius: '6px' }} />
-              <input type="number" step="0.01" placeholder="Interest Rate (APR %)" value={newDebtAPR} onChange={e => setNewDebtAPR(e.target.value)} style={{ padding: '8px', border: '1px solid #d1d5db', borderRadius: '6px' }} />
-              <input type="number" step="0.01" placeholder="Minimum Payment ($)" value={newDebtMin} onChange={e => setNewDebtMin(e.target.value)} style={{ padding: '8px', border: '1px solid #d1d5db', borderRadius: '6px' }} />
-              <button type="submit" style={{ backgroundColor: '#2563eb', color: 'white', border: 'none', padding: '8px', borderRadius: '6px', fontWeight: 'bold', cursor: 'pointer' }}>Add Debt</button>
+            <h3 style={{ margin: '0 0 12px 0' }}>+ Track Debt / Loan</h3>
+            <form onSubmit={handleAddDebt} style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: '10px' }}>
+              <input
+                type="text"
+                placeholder="Debt Name (e.g. Visa)"
+                value={newDebtName}
+                onChange={e => setNewDebtName(e.target.value)}
+                style={{ padding: '8px', border: '1px solid #d1d5db', borderRadius: '6px' }}
+              />
+              <input
+                type="number"
+                step="0.01"
+                placeholder="Total Balance ($)"
+                value={newDebtTotal}
+                onChange={e => setNewDebtTotal(e.target.value)}
+                style={{ padding: '8px', border: '1px solid #d1d5db', borderRadius: '6px' }}
+              />
+              <input
+                type="number"
+                step="0.01"
+                placeholder="APR (%)"
+                value={newDebtAPR}
+                onChange={e => setNewDebtAPR(e.target.value)}
+                style={{ padding: '8px', border: '1px solid #d1d5db', borderRadius: '6px' }}
+              />
+              <input
+                type="number"
+                step="0.01"
+                placeholder="Min Payment ($)"
+                value={newDebtMin}
+                onChange={e => setNewDebtMin(e.target.value)}
+                style={{ padding: '8px', border: '1px solid #d1d5db', borderRadius: '6px' }}
+              />
+              <button type="submit" style={{ backgroundColor: '#2563eb', color: 'white', border: 'none', padding: '8px 16px', borderRadius: '6px', fontWeight: 'bold', cursor: 'pointer' }}>
+                Track Debt
+              </button>
             </form>
           </div>
 
           <div style={{ backgroundColor: 'white', padding: '16px', borderRadius: '10px', boxShadow: '0 1px 3px rgba(0,0,0,0.1)' }}>
-            <h3 style={{ margin: '0 0 16px 0' }}>Active Debts</h3>
+            <h3 style={{ margin: '0 0 16px 0' }}>Debt Payoff Overview</h3>
             {activeDebts.length === 0 ? (
-              <p style={{ color: '#6b7280', fontStyle: 'italic', margin: 0 }}>No debts tracked.</p>
+              <p style={{ color: '#9ca3af', textAlign: 'center' }}>No debts currently tracked.</p>
             ) : (
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: '16px' }}>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(250px, 1fr))', gap: '16px' }}>
                 {activeDebts.map(debt => (
-                  <div key={debt.id} style={{ border: '1px solid #e5e7eb', borderRadius: '8px', padding: '16px', backgroundColor: '#f9fafb' }}>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '12px' }}>
-                      <div style={{ fontSize: '1.2rem', fontWeight: 'bold', color: '#1f2937' }}>{debt.name}</div>
-                      <button onClick={() => handleSoftDeleteDebt(debt.id)} style={{ backgroundColor: '#fee2e2', color: '#dc2626', border: 'none', padding: '4px 8px', borderRadius: '4px', cursor: 'pointer', fontSize: '0.75rem' }}>Trash</button>
+                  <div key={debt.id} style={{ border: '1px solid #e5e7eb', borderRadius: '8px', padding: '14px', backgroundColor: '#fff' }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                      <h4 style={{ margin: 0, color: '#111827' }}>{debt.name}</h4>
+                      <button
+                        onClick={() => handleSoftDeleteDebt(debt.id)}
+                        style={{ backgroundColor: 'transparent', color: '#dc2626', border: 'none', cursor: 'pointer', fontSize: '0.8rem' }}
+                      >
+                        Delete
+                      </button>
                     </div>
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', fontSize: '0.9rem' }}>
-                      <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                        <span style={{ color: '#6b7280' }}>Remaining Balance:</span>
-                        <span style={{ fontWeight: 'bold', color: '#dc2626' }}>${Number(debt.balance).toFixed(2)}</span>
-                      </div>
-                      <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                        <span style={{ color: '#6b7280' }}>Interest Rate (APR):</span>
-                        <span style={{ fontWeight: '600' }}>{debt.APR}%</span>
-                      </div>
-                      <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                        <span style={{ color: '#6b7280' }}>Minimum Payment:</span>
-                        <span style={{ fontWeight: '600' }}>${Number(debt.minimumPayment).toFixed(2)}</span>
-                      </div>
+                    <div style={{ fontSize: '1.4rem', fontWeight: 'bold', color: '#dc2626', margin: '8px 0' }}>
+                      ${Number(debt.balance).toFixed(2)}
+                    </div>
+                    <div style={{ fontSize: '0.85rem', color: '#4b5563' }}>
+                      APR: {debt.APR}% | Min Payment: ${Number(debt.minimumPayment).toFixed(2)}
                     </div>
                   </div>
                 ))}
@@ -1112,29 +1193,22 @@ export default function BudgetApp() {
 
       {/* TRASH TAB */}
       {activeTab === 'trash' && (
-        <div style={{ backgroundColor: 'white', padding: '20px', borderRadius: '10px', boxShadow: '0 1px 3px rgba(0,0,0,0.1)' }}>
-          <h2 style={{ margin: '0 0 20px 0', color: '#1f2937' }}>Trash Bin</h2>
-          <p style={{ color: '#6b7280', fontSize: '0.9rem', marginBottom: '20px' }}>
-            Items here are hidden from your budget. Restoring an item returns it to its original location. Permanently deleting an item cannot be undone.
-          </p>
+        <div style={{ backgroundColor: 'white', padding: '16px', borderRadius: '10px', boxShadow: '0 1px 3px rgba(0,0,0,0.1)' }}>
+          <h3 style={{ margin: '0 0 16px 0' }}>Trash / Deleted Items</h3>
 
           {totalTrashCount === 0 ? (
-            <div style={{ padding: '20px', textAlign: 'center', color: '#9ca3af', fontStyle: 'italic', backgroundColor: '#f9fafb', borderRadius: '8px' }}>
-              Trash is empty.
-            </div>
+            <p style={{ color: '#9ca3af', textAlign: 'center' }}>Trash is empty.</p>
           ) : (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
               {deletedTx.length > 0 && (
                 <div>
-                  <h4 style={{ margin: '0 0 8px 0', borderBottom: '1px solid #e5e7eb', paddingBottom: '4px' }}>Transactions</h4>
-                  {deletedTx.map(tx => (
-                    <div key={tx.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '8px', backgroundColor: '#f9fafb', borderBottom: '1px solid #e5e7eb', fontSize: '0.9rem' }}>
-                      <div>
-                        <strong>{tx.payee}</strong> <span style={{ color: '#6b7280' }}>({formatDate(tx.date, 'us')})</span> — ${tx.amount.toFixed(2)}
-                      </div>
+                  <h4 style={{ margin: '0 0 8px 0', color: '#4b5563' }}>Transactions</h4>
+                  {deletedTx.map(t => (
+                    <div key={t.id} style={{ display: 'flex', justifyContent: 'space-between', padding: '8px', borderBottom: '1px solid #f3f4f6', fontSize: '0.85rem' }}>
+                      <span>{t.payee} (${Number(t.amount).toFixed(2)})</span>
                       <div style={{ display: 'flex', gap: '8px' }}>
-                        <button onClick={() => restoreItem('tx', tx.id)} style={{ backgroundColor: '#d1fae5', color: '#065f46', border: 'none', padding: '4px 10px', borderRadius: '4px', cursor: 'pointer', fontSize: '0.75rem', fontWeight: 'bold' }}>Restore</button>
-                        <button onClick={() => permDeleteItem('tx', tx.id)} style={{ backgroundColor: '#fee2e2', color: '#dc2626', border: 'none', padding: '4px 10px', borderRadius: '4px', cursor: 'pointer', fontSize: '0.75rem', fontWeight: 'bold' }}>Delete Forever</button>
+                        <button onClick={() => restoreItem('tx', t.id)} style={{ color: '#2563eb', border: 'none', background: 'none', cursor: 'pointer' }}>Restore</button>
+                        <button onClick={() => permDeleteItem('tx', t.id)} style={{ color: '#dc2626', border: 'none', background: 'none', cursor: 'pointer' }}>Delete Permanently</button>
                       </div>
                     </div>
                   ))}
@@ -1143,13 +1217,13 @@ export default function BudgetApp() {
 
               {deletedEnv.length > 0 && (
                 <div>
-                  <h4 style={{ margin: '0 0 8px 0', borderBottom: '1px solid #e5e7eb', paddingBottom: '4px' }}>Envelopes</h4>
-                  {deletedEnv.map(env => (
-                    <div key={env.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '8px', backgroundColor: '#f9fafb', borderBottom: '1px solid #e5e7eb', fontSize: '0.9rem' }}>
-                      <div><strong>{env.name}</strong> <span style={{ color: '#6b7280' }}>(Group: {env.group})</span></div>
+                  <h4 style={{ margin: '0 0 8px 0', color: '#4b5563' }}>Envelopes</h4>
+                  {deletedEnv.map(e => (
+                    <div key={e.id} style={{ display: 'flex', justifyContent: 'space-between', padding: '8px', borderBottom: '1px solid #f3f4f6', fontSize: '0.85rem' }}>
+                      <span>{e.name} ({e.group})</span>
                       <div style={{ display: 'flex', gap: '8px' }}>
-                        <button onClick={() => restoreItem('env', env.id)} style={{ backgroundColor: '#d1fae5', color: '#065f46', border: 'none', padding: '4px 10px', borderRadius: '4px', cursor: 'pointer', fontSize: '0.75rem', fontWeight: 'bold' }}>Restore</button>
-                        <button onClick={() => permDeleteItem('env', env.id)} style={{ backgroundColor: '#fee2e2', color: '#dc2626', border: 'none', padding: '4px 10px', borderRadius: '4px', cursor: 'pointer', fontSize: '0.75rem', fontWeight: 'bold' }}>Delete Forever</button>
+                        <button onClick={() => restoreItem('env', e.id)} style={{ color: '#2563eb', border: 'none', background: 'none', cursor: 'pointer' }}>Restore</button>
+                        <button onClick={() => permDeleteItem('env', e.id)} style={{ color: '#dc2626', border: 'none', background: 'none', cursor: 'pointer' }}>Delete Permanently</button>
                       </div>
                     </div>
                   ))}
@@ -1158,13 +1232,13 @@ export default function BudgetApp() {
 
               {deletedAcc.length > 0 && (
                 <div>
-                  <h4 style={{ margin: '0 0 8px 0', borderBottom: '1px solid #e5e7eb', paddingBottom: '4px' }}>Accounts</h4>
-                  {deletedAcc.map(acc => (
-                    <div key={acc.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '8px', backgroundColor: '#f9fafb', borderBottom: '1px solid #e5e7eb', fontSize: '0.9rem' }}>
-                      <div><strong>{acc.name}</strong> <span style={{ color: '#6b7280' }}>({acc.type})</span></div>
+                  <h4 style={{ margin: '0 0 8px 0', color: '#4b5563' }}>Accounts</h4>
+                  {deletedAcc.map(a => (
+                    <div key={a.id} style={{ display: 'flex', justifyContent: 'space-between', padding: '8px', borderBottom: '1px solid #f3f4f6', fontSize: '0.85rem' }}>
+                      <span>{a.name} ({a.type})</span>
                       <div style={{ display: 'flex', gap: '8px' }}>
-                        <button onClick={() => restoreItem('acc', acc.id)} style={{ backgroundColor: '#d1fae5', color: '#065f46', border: 'none', padding: '4px 10px', borderRadius: '4px', cursor: 'pointer', fontSize: '0.75rem', fontWeight: 'bold' }}>Restore</button>
-                        <button onClick={() => permDeleteItem('acc', acc.id)} style={{ backgroundColor: '#fee2e2', color: '#dc2626', border: 'none', padding: '4px 10px', borderRadius: '4px', cursor: 'pointer', fontSize: '0.75rem', fontWeight: 'bold' }}>Delete Forever</button>
+                        <button onClick={() => restoreItem('acc', a.id)} style={{ color: '#2563eb', border: 'none', background: 'none', cursor: 'pointer' }}>Restore</button>
+                        <button onClick={() => permDeleteItem('acc', a.id)} style={{ color: '#dc2626', border: 'none', background: 'none', cursor: 'pointer' }}>Delete Permanently</button>
                       </div>
                     </div>
                   ))}
@@ -1173,13 +1247,13 @@ export default function BudgetApp() {
 
               {deletedDebts.length > 0 && (
                 <div>
-                  <h4 style={{ margin: '0 0 8px 0', borderBottom: '1px solid #e5e7eb', paddingBottom: '4px' }}>Debts</h4>
-                  {deletedDebts.map(debt => (
-                    <div key={debt.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '8px', backgroundColor: '#f9fafb', borderBottom: '1px solid #e5e7eb', fontSize: '0.9rem' }}>
-                      <div><strong>{debt.name}</strong></div>
+                  <h4 style={{ margin: '0 0 8px 0', color: '#4b5563' }}>Debts</h4>
+                  {deletedDebts.map(d => (
+                    <div key={d.id} style={{ display: 'flex', justifyContent: 'space-between', padding: '8px', borderBottom: '1px solid #f3f4f6', fontSize: '0.85rem' }}>
+                      <span>{d.name} (${Number(d.balance).toFixed(2)})</span>
                       <div style={{ display: 'flex', gap: '8px' }}>
-                        <button onClick={() => restoreItem('debt', debt.id)} style={{ backgroundColor: '#d1fae5', color: '#065f46', border: 'none', padding: '4px 10px', borderRadius: '4px', cursor: 'pointer', fontSize: '0.75rem', fontWeight: 'bold' }}>Restore</button>
-                        <button onClick={() => permDeleteItem('debt', debt.id)} style={{ backgroundColor: '#fee2e2', color: '#dc2626', border: 'none', padding: '4px 10px', borderRadius: '4px', cursor: 'pointer', fontSize: '0.75rem', fontWeight: 'bold' }}>Delete Forever</button>
+                        <button onClick={() => restoreItem('debt', d.id)} style={{ color: '#2563eb', border: 'none', background: 'none', cursor: 'pointer' }}>Restore</button>
+                        <button onClick={() => permDeleteItem('debt', d.id)} style={{ color: '#dc2626', border: 'none', background: 'none', cursor: 'pointer' }}>Delete Permanently</button>
                       </div>
                     </div>
                   ))}
