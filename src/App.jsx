@@ -636,6 +636,95 @@ export default function BudgetApp() {
                     ))}
                   </select>
                 </div>
+                <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+                  <select
+                    value={newEnvGoalType}
+                    onChange={e => setNewEnvGoalType(e.target.value)}
+                    style={{ flex: 1, padding: '8px', border: '1px solid #d1d5db', borderRadius: '6px', fontSize: '0.85rem' }}
+                  >
+                    <option value="none">No Goal</option>
+                    <option value="repeating">Repeating Goal (Bill/Subscription)</option>
+                    <option value="target_by_date">Target Balance by Date</option>
+                  </select>
+                  {newEnvGoalType !== 'none' && (
+                    <input
+                      type="number"
+                      step="0.01"
+                      placeholder="Target Amount ($)"
+                      value={newEnvTargetAmount}
+                      onChange={e => setNewEnvTargetAmount(e.target.value)}
+                      style={{ flex: 1, padding: '8px', border: '1px solid #d1d5db', borderRadius: '6px', fontSize: '0.85rem' }}
+                    />
+                  )}
+                </div>
+                {newEnvGoalType === 'repeating' && (
+                  <div style={{ display: 'flex', gap: '8px' }}>
+                    <select
+                      value={newEnvCadence}
+                      onChange={e => setNewEnvCadence(e.target.value)}
+                      style={{ flex: 1, padding: '8px', border: '1px solid #d1d5db', borderRadius: '6px', fontSize: '0.85rem' }}
+                    >
+                      <option value="weekly">Weekly</option>
+                      <option value="biweekly">Bi-weekly</option>
+                      <option value="monthly">Monthly</option>
+                      <option value="yearly">Yearly</option>
+                    </select>
+                    {newEnvCadence === 'weekly' || newEnvCadence === 'biweekly' ? (
+                      <select
+                        value={newEnvRepeatDayOfWeek}
+                        onChange={e => setNewEnvRepeatDayOfWeek(e.target.value)}
+                        style={{ flex: 1, padding: '8px', border: '1px solid #d1d5db', borderRadius: '6px', fontSize: '0.85rem' }}
+                      >
+                        {['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'].map(d => (
+                          <option key={d} value={d}>{d}</option>
+                        ))}
+                      </select>
+                    ) : newEnvCadence === 'monthly' ? (
+                      <select
+                        value={newEnvRepeatDayOfMonth}
+                        onChange={e => setNewEnvRepeatDayOfMonth(e.target.value)}
+                        style={{ flex: 1, padding: '8px', border: '1px solid #d1d5db', borderRadius: '6px', fontSize: '0.85rem' }}
+                      >
+                        <option value="last">Last day of month</option>
+                        {Array.from({ length: 31 }, (_, i) => String(i + 1)).map(d => (
+                          <option key={d} value={d}>Day {d}</option>
+                        ))}
+                      </select>
+                    ) : newEnvCadence === 'yearly' ? (
+                      <div style={{ display: 'flex', gap: '4px', flex: 1 }}>
+                        <select
+                          value={newEnvRepeatMonth}
+                          onChange={e => setNewEnvRepeatMonth(e.target.value)}
+                          style={{ flex: 1, padding: '8px', border: '1px solid #d1d5db', borderRadius: '6px', fontSize: '0.85rem' }}
+                        >
+                          {['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'].map(m => (
+                            <option key={m} value={m}>{m}</option>
+                          ))}
+                        </select>
+                        <input
+                          type="number"
+                          min="1"
+                          max="31"
+                          value={newEnvRepeatDayOfMonth}
+                          onChange={e => setNewEnvRepeatDayOfMonth(e.target.value)}
+                          style={{ width: '60px', padding: '8px', border: '1px solid #d1d5db', borderRadius: '6px', fontSize: '0.85rem' }}
+                          placeholder="Day"
+                        />
+                      </div>
+                    ) : null}
+                  </div>
+                )}
+                {newEnvGoalType === 'target_by_date' && (
+                  <div>
+                    <label style={{ display: 'block', fontSize: '0.75rem', color: '#6b7280', marginBottom: '2px' }}>Target Date</label>
+                    <input
+                      type="date"
+                      value={newEnvTargetDate}
+                      onChange={e => setNewEnvTargetDate(e.target.value)}
+                      style={{ width: '100%', padding: '8px', border: '1px solid #d1d5db', borderRadius: '6px', fontSize: '0.85rem' }}
+                    />
+                  </div>
+                )}
                 <button type="submit" style={{ backgroundColor: '#2563eb', color: 'white', border: 'none', padding: '8px 14px', borderRadius: '6px', fontWeight: 'bold', cursor: 'pointer' }}>
                   Create Envelope
                 </button>
@@ -676,7 +765,9 @@ export default function BudgetApp() {
                           <div>
                             <div style={{ fontWeight: '600' }}>{env.name}</div>
                             {env.goalType !== 'none' && (
-                              <div style={{ fontSize: '0.75rem', color: '#6b7280' }}>{getScheduleText(env)}</div>
+                              <div style={{ fontSize: '0.75rem', color: '#6b7280' }}>
+                                {getScheduleText(env)} {env.targetAmount > 0 ? `(Target: $${Number(env.targetAmount).toFixed(2)})` : ''} {env.targetDate ? `by ${formatDate(env.targetDate, 'us')}` : ''}
+                              </div>
                             )}
                           </div>
                           <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
