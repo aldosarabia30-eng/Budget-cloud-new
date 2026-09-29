@@ -136,6 +136,9 @@ export default function BudgetApp() {
   const [txDate, setTxDate] = useState(getTodayISO());
   const [txNotes, setTxNotes] = useState('');
 
+  // CSV Import State
+  const [csvAccountId, setCsvAccountId] = useState('');
+
   const [newDebtName, setNewDebtName] = useState('');
   const [newDebtTotal, setNewDebtTotal] = useState('');
   const [newDebtAPR, setNewDebtAPR] = useState('');
@@ -475,6 +478,75 @@ export default function BudgetApp() {
     showNotification('Transaction recorded.');
   };
 
+  const handleCsvImport = (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    if (!csvAccountId) {
+      showNotification('Please select a target account before importing CSV.');
+      e.target.value = null;
+      return;
+    }
+
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      const text = event.target.result;
+      const lines = text.split('\n');
+      if (lines.length < 2) {
+        showNotification('CSV file appears empty or invalid.');
+        return;
+      }
+
+      const newTxList = [];
+      let importedCount = 0;
+      let incomeAdjustment = 0;
+
+      for (let i = 1; i < lines.length; i++) {
+        const line = lines[i].trim();
+        if (!line) continue;
+        const cols = line.split(',').map(c => c.trim().replace(/^"|"$/g, ''));
+        if (cols.length >= 3) {
+          const date = cols[0] || getTodayISO();
+          const payee = cols[1] || 'Imported Transaction';
+          const rawAmount = parseFloat(cols[2].replace(/[^0-9.-]+/g, '')) || 0;
+          const type = rawAmount >= 0 ? 'income' : 'expense';
+          const amount = Math.abs(rawAmount);
+
+          if (amount > 0) {
+            newTxList.push({
+              id: 'tx-' + Date.now() + '-' + i,
+              date: date,
+              payee: payee,
+              amount: amount,
+              type: type,
+              accountId: csvAccountId,
+              envelopeId: '',
+              notes: 'Imported from CSV',
+              isDeleted: false,
+              cleared: true,
+              reconciled: false
+            });
+            if (type === 'income') {
+              incomeAdjustment += amount;
+            }
+            importedCount++;
+          }
+        }
+      }
+
+      if (importedCount > 0) {
+        setTransactions(prev => [...newTxList, ...prev]);
+        if (incomeAdjustment > 0) {
+          setReadyToAssign(prev => prev + incomeAdjustment);
+        }
+        showNotification(`Successfully imported ${importedCount} transactions!`);
+      } else {
+        showNotification('Could not parse any valid transactions from CSV.');
+      }
+      e.target.value = null;
+    };
+    reader.readAsText(file);
+  };
+
   const handleSoftDeleteTransaction = (txId) => {
     const tx = transactions.find(t => t.id === txId);
     if (!tx) return;
@@ -694,7 +766,7 @@ export default function BudgetApp() {
                         ))}
                       </select>
                     ) : newEnvCadence === 'yearly' ? (
-                      <div style={{ display: 'flex', gap: '4px', flex: '1 1 100% flexWrap: wrap' }}>
+                      <div style={{ display: 'flex', gap: '4px', flex: '1 1 100%' }}>
                         <select
                           value={newEnvRepeatMonth}
                           onChange={e => setNewEnvRepeatMonth(e.target.value)}
@@ -987,6 +1059,33 @@ export default function BudgetApp() {
       {/* TRANSACTIONS TAB */}
       {activeTab === 'transactions' && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+          
+          {/* CSV Import Card */}
+          <div style={{ backgroundColor: '#eff6ff', padding: '14px', borderRadius: '10px', border: '1px solid #bfdbfe' }}>
+            <h3 style={{ margin: '0 0 6px 0', fontSize: '1rem', color: '#1e40af' }}>📥 Import Transactions (CSV)</h3>
+            <p style={{ margin: '0 0 10px 0', fontSize: '0.8rem', color: '#3b82f6' }}>
+              Upload a CSV file with columns formatted as: <code style={{ background: '#dbeafe', padding: '2px 4px', borderRadius: '4px' }}>Date, Payee, Amount</code> (Negative for expenses, positive for income).
+            </p>
+            <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', alignItems: 'center' }}>
+              <select
+                value={csvAccountId}
+                onChange={e => setCsvAccountId(e.target.value)}
+                style={{ padding: '8px', border: '1px solid #93c5fd', borderRadius: '6px', fontSize: '0.85rem', flex: '1 1 160px', backgroundColor: 'white' }}
+              >
+                <option value="">Select Target Account</option>
+                {activeAccounts.map(acc => (
+                  <option key={acc.id} value={acc.id}>{acc.name}</option>
+                ))}
+              </select>
+              <input
+                type="file"
+                accept=".csv"
+                onChange={handleCsvImport}
+                style={{ fontSize: '0.85rem', flex: '2 1 200px' }}
+              />
+            </div>
+          </div>
+
           <div style={{ backgroundColor: 'white', padding: '14px', borderRadius: '10px', boxShadow: '0 1px 3px rgba(0,0,0,0.1)' }}>
             <h3 style={{ margin: '0 0 10px 0', fontSize: '1rem' }}>+ Add Transaction</h3>
             <form onSubmit={handleAddTransaction} style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(130px, 1fr))', gap: '10px' }}>
