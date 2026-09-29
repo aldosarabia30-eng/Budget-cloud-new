@@ -61,7 +61,7 @@ const getOrdinalSuffix = (num) => {
 
 const getScheduleText = (env) => {
   if (env.goalType !== 'repeating') return '';
-  const { cadence, repeatDayOfWeek, repeatDayOfMonth, repeatMonth } = env;
+  const { cadence, repeatDayOfWeek, repeatDayOfMonth, repeatMonth, repeatYear } = env;
   if (cadence === 'weekly') return `Every week on ${repeatDayOfWeek || 'Monday'}`;
   if (cadence === 'biweekly') return `Every 2 weeks on ${repeatDayOfWeek || 'Monday'}`;
   if (cadence === 'monthly') {
@@ -69,7 +69,7 @@ const getScheduleText = (env) => {
     return `Every month on the ${repeatDayOfMonth}${getOrdinalSuffix(repeatDayOfMonth)}`;
   }
   if (cadence === 'yearly') {
-    return `Every year on ${repeatMonth || 'January'} ${repeatDayOfMonth || '1'}${getOrdinalSuffix(repeatDayOfMonth || '1')}`;
+    return `Every year on ${repeatMonth || 'January'} ${repeatDayOfMonth || '1'}${getOrdinalSuffix(repeatDayOfMonth || '1')}${repeatYear ? ` (${repeatYear})` : ''}`;
   }
   return `Every ${cadence}`;
 };
@@ -122,6 +122,7 @@ export default function BudgetApp() {
   const [newEnvRepeatDayOfWeek, setNewEnvRepeatDayOfWeek] = useState('Monday');
   const [newEnvRepeatDayOfMonth, setNewEnvRepeatDayOfMonth] = useState('1');
   const [newEnvRepeatMonth, setNewEnvRepeatMonth] = useState('January');
+  const [newEnvRepeatYear, setNewEnvRepeatYear] = useState(String(new Date().getFullYear()));
 
   const [newAccName, setNewAccName] = useState('');
   const [newAccType, setNewAccType] = useState('Checking');
@@ -387,7 +388,8 @@ export default function BudgetApp() {
       cadence: newEnvCadence,
       repeatDayOfWeek: newEnvRepeatDayOfWeek,
       repeatDayOfMonth: newEnvRepeatDayOfMonth,
-      repeatMonth: newEnvRepeatMonth
+      repeatMonth: newEnvRepeatMonth,
+      repeatYear: newEnvRepeatYear
     };
 
     setEnvelopes([...envelopes, newEnv]);
@@ -395,6 +397,7 @@ export default function BudgetApp() {
     setNewEnvGoalType('none');
     setNewEnvTargetAmount('');
     setNewEnvTargetDate('');
+    setNewEnvRepeatYear(String(new Date().getFullYear()));
     showNotification(`Envelope '${newEnv.name}' created.`);
   };
 
@@ -710,6 +713,15 @@ export default function BudgetApp() {
                           style={{ width: '60px', padding: '8px', border: '1px solid #d1d5db', borderRadius: '6px', fontSize: '0.85rem' }}
                           placeholder="Day"
                         />
+                        <select
+                          value={newEnvRepeatYear}
+                          onChange={e => setNewEnvRepeatYear(e.target.value)}
+                          style={{ width: '90px', padding: '8px', border: '1px solid #d1d5db', borderRadius: '6px', fontSize: '0.85rem' }}
+                        >
+                          {Array.from({ length: 15 }, (_, i) => String(new Date().getFullYear() + i)).map(y => (
+                            <option key={y} value={y}>{y}</option>
+                          ))}
+                        </select>
                       </div>
                     ) : null}
                   </div>
