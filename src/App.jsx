@@ -112,7 +112,7 @@ const buildEnvTimeline = (budgetMap, spendMap, throughKey) => {
 // A split line with an empty envelopeId is the uncategorized part. Returns the envelope-charged parts only.
 const isSplitTx = (t) => !!t && t.type === 'expense' && Array.isArray(t.splits) && t.splits.length > 0;
 const txParts = (t) => {
-  if (!t || t.type !== 'expense') return [];
+  if (!t || t.type !== 'expense' || t.isTransfer) return [];
   if (isSplitTx(t)) {
     return t.splits
       .filter(s => s.envelopeId)
@@ -121,6 +121,46 @@ const txParts = (t) => {
   return t.envelopeId ? [{ envelopeId: t.envelopeId, amount: Number(t.amount) || 0 }] : [];
 };
 // ---- end split transaction helpers ----
+
+// ---- transfer helpers ----
+// A transfer between two accounts is stored as two linked transactions that share a transferId:
+// the money-out leg (type 'expense') in the source account and the money-in leg (type 'income') in the
+// destination. Both carry isTransfer, so account balances move but budgets and reports ignore them.
+const centsOf = (n) => Math.round((Number(n) || 0) * 100);
+const dayNumber = (iso) => {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(iso || '');
+  return m ? Math.round(Date.UTC(+m[1], +m[2] - 1, +m[3]) / 86400000) : NaN;
+};
+// Can these two existing transactions be linked as one transfer?
+const canLinkAsTransfer = (a, b) =>
+  !!a && !!b && a.id !== b.id &&
+  !a.isDeleted && !b.isDeleted && !a.isTransfer && !b.isTransfer &&
+  a.type !== b.type && a.accountId !== b.accountId &&
+  centsOf(a.amount) === centsOf(b.amount) && centsOf(a.amount) > 0;
+// Suggest likely pairs (same amount, opposite direction, different accounts, dates within a few days).
+const findTransferMatches = (txs, maxDays = 3) => {
+  const live = txs.filter(t => !t.isDeleted && !t.isTransfer && t.payee !== 'Reconciliation Adjustment');
+  const outs = live.filter(t => t.type === 'expense');
+  const ins = live.filter(t => t.type === 'income');
+  const cands = [];
+  outs.forEach(o => ins.forEach(i => {
+    if (!canLinkAsTransfer(o, i)) return;
+    const gap = Math.abs(dayNumber(o.date) - dayNumber(i.date));
+    if (gap <= maxDays) cands.push({ out: o, in: i, gap });
+  }));
+  cands.sort((x, y) => x.gap - y.gap);
+  const usedO = new Set();
+  const usedI = new Set();
+  const pairs = [];
+  cands.forEach(c => {
+    if (usedO.has(c.out.id) || usedI.has(c.in.id)) return;
+    usedO.add(c.out.id);
+    usedI.add(c.in.id);
+    pairs.push(c);
+  });
+  return pairs.sort((x, y) => String(y.out.date).localeCompare(String(x.out.date)));
+};
+// ---- end transfer helpers ----
 
 // Older saves kept one lump "assigned" amount per envelope. Move it into the month the envelope was
 // first used (or this month), so balances are unchanged at the moment of upgrade.
@@ -414,6 +454,8 @@ export default function BudgetApp() {
   const [txAmount, setTxAmount] = useState('');
   const [txType, setTxType] = useState('expense');
   const [txAccountId, setTxAccountId] = useState('');
+  const [txToAccountId, setTxToAccountId] = useState(''); // destination account when the type is Transfer
+  const [txSplitLines, setTxSplitLines] = useState(null); // split editor inside the add form: null = off
   const [txEnvelopeId, setTxEnvelopeId] = useState('');
   const [splitTxId, setSplitTxId] = useState(null); // transaction whose split editor is open
   const [splitDraft, setSplitDraft] = useState([]); // [{ envelopeId, amount: string }]
@@ -720,7 +762,7 @@ export default function BudgetApp() {
 
   // Does this transaction add to Ready to Assign? Only income into a live, non-credit-card account.
   const countsTowardRTA = (tx) => {
-    if (tx.type !== 'income') return false;
+    if (tx.type !== 'income' || tx.isTransfer) return false;
     const acc = accounts.find(a => a.id === tx.accountId);
     return !!acc && !acc.isDeleted && !isCreditCard(acc);
   };
@@ -887,6 +929,9 @@ export default function BudgetApp() {
     const pct = Math.min(100, Math.max(0, (funded / target) * 100));
     return { target, funded, left, pct };
   };
+
+  // Likely transfers hiding as separate expense/income pairs (e.g. after importing both accounts)
+  const transferMatches = useMemo(() => findTransferMatches(activeTransactions), [transactions]);
 
   const groupedTransactions = activeTransactions.reduce((acc, tx) => {
     const dateKey = tx.date || getTodayISO();
@@ -1072,31 +1117,122 @@ export default function BudgetApp() {
     setTxAmount('');
     setTxNotes('');
     setTxEnvelopeId('');
+    setTxToAccountId('');
+    setTxSplitLines(null);
     setTxDate(getTodayISO());
   };
 
+  // The other leg of a transfer (if it still exists)
+  const transferPartner = (tx) =>
+    tx && tx.isTransfer && tx.transferId
+      ? transactions.find(t => t.id !== tx.id && t.transferId === tx.transferId)
+      : null;
+
   const startEditTx = (tx) => {
     setEditingTxId(tx.id);
-    setTxPayee(tx.payee);
     setTxAmount(String(tx.amount));
-    setTxType(tx.type);
-    setTxAccountId(tx.accountId);
-    setTxEnvelopeId(tx.envelopeId || '');
     setTxDate(tx.date || getTodayISO());
     setTxNotes(tx.notes || '');
+    setTxSplitLines(null);
+    const partner = transferPartner(tx);
+    if (tx.isTransfer && partner) {
+      // Show a transfer as From -> To, whichever leg was clicked
+      const outLeg = tx.type === 'expense' ? tx : partner;
+      const inLeg = tx.type === 'expense' ? partner : tx;
+      setTxType('transfer');
+      setTxPayee('');
+      setTxAccountId(outLeg.accountId);
+      setTxToAccountId(inLeg.accountId);
+      setTxEnvelopeId('');
+    } else {
+      setTxType(tx.type);
+      setTxPayee(tx.payee);
+      setTxAccountId(tx.accountId);
+      setTxToAccountId('');
+      setTxEnvelopeId(tx.envelopeId || '');
+    }
     scrollToTop();
+  };
+
+  // Merge lines with the same envelope; returns { lines, error }
+  const cleanSplitLines = (draft, total) => {
+    const lines = draft.filter(l => l.envelopeId || (parseFloat(l.amount) || 0) !== 0);
+    if (lines.some(l => !(parseFloat(l.amount) > 0))) return { error: 'Every split line needs an amount above $0.' };
+    const merged = [];
+    lines.forEach(l => {
+      const amount = round2(parseFloat(l.amount));
+      const hit = merged.find(m => m.envelopeId === l.envelopeId);
+      if (hit) hit.amount = round2(hit.amount + amount);
+      else merged.push({ envelopeId: l.envelopeId, amount });
+    });
+    const sum = merged.reduce((s, m) => s + m.amount, 0);
+    if (Math.abs(round2(sum) - round2(Number(total))) > 0.004) {
+      return { error: `Split lines must add up to $${Number(total).toFixed(2)}.` };
+    }
+    return { lines: merged };
   };
 
   const handleAddTransaction = (e) => {
     e.preventDefault();
-    if (!txPayee.trim() || !txAmount || !txAccountId) {
-      showNotification('Please fill in Payee, Amount, and Account.');
+    const isTransferForm = txType === 'transfer';
+    if ((!isTransferForm && !txPayee.trim()) || !txAmount || !txAccountId) {
+      showNotification(isTransferForm ? 'Please fill in Amount and both accounts.' : 'Please fill in Payee, Amount, and Account.');
       return;
     }
 
     const amt = parseFloat(txAmount);
     if (isNaN(amt)) {
       showNotification('Please enter a valid amount.');
+      return;
+    }
+
+    // ----- Transfers between two accounts -----
+    if (isTransferForm) {
+      const from = accounts.find(a => a.id === txAccountId);
+      const to = accounts.find(a => a.id === txToAccountId);
+      if (!from || !to) {
+        showNotification('Choose the account the money comes from and the one it goes to.');
+        return;
+      }
+      if (from.id === to.id) {
+        showNotification('A transfer needs two different accounts.');
+        return;
+      }
+      if (!(amt > 0)) {
+        showNotification('Enter a transfer amount above $0.');
+        return;
+      }
+      const date = txDate || getTodayISO();
+      const editing = editingTxId ? transactions.find(t => t.id === editingTxId) : null;
+      const oldPartner = editing ? transferPartner(editing) : null;
+      if (editing && editing.isTransfer && oldPartner) {
+        const outOld = editing.type === 'expense' ? editing : oldPartner;
+        const inOld = editing.type === 'expense' ? oldPartner : editing;
+        const moneyChanged = Number(outOld.amount) !== amt || outOld.accountId !== from.id || inOld.accountId !== to.id;
+        const patch = (leg, accountId, other) => {
+          const next = { ...leg, date, amount: amt, accountId, transferAccountId: other.id, payee: 'Transfer: ' + other.name, notes: txNotes };
+          if (moneyChanged && leg.reconciled) { next.reconciled = false; next.cleared = true; }
+          return next;
+        };
+        setTransactions(prev => prev.map(t => {
+          if (t.id === outOld.id) return patch(t, from.id, to);
+          if (t.id === inOld.id) return patch(t, to.id, from);
+          return t;
+        }));
+        cancelEditTx();
+        showNotification('Transfer updated.');
+        return;
+      }
+      const transferId = 'xfer-' + Date.now();
+      const base = { date, amount: amt, envelopeId: '', notes: txNotes, isDeleted: false, cleared: false, reconciled: false, isTransfer: true, transferId };
+      const outLeg = { ...base, id: 'tx-' + Date.now() + '-o', type: 'expense', accountId: from.id, transferAccountId: to.id, payee: 'Transfer: ' + to.name };
+      const inLeg = { ...base, id: 'tx-' + Date.now() + '-i', type: 'income', accountId: to.id, transferAccountId: from.id, payee: 'Transfer: ' + from.name };
+      // Turning an ordinary transaction into a transfer replaces it with the new pair
+      const replacing = editing && !(editing.isTransfer && oldPartner) ? editing.id : null;
+      setTransactions(prev => [outLeg, inLeg, ...prev.filter(t => t.id !== replacing)]);
+      cancelEditTx();
+      setTxDate(getTodayISO());
+      showNotification(`Transferred $${amt.toFixed(2)} from ${from.name} to ${to.name}.`);
       return;
     }
 
@@ -1117,6 +1253,13 @@ export default function BudgetApp() {
         envelopeId: txType === 'expense' ? txEnvelopeId : '',
         notes: txNotes
       };
+      // A transfer edited as a normal transaction (its partner is gone) becomes an ordinary one
+      if (old.isTransfer) {
+        delete updated.isTransfer;
+        delete updated.transferId;
+        delete updated.transferAccountId;
+        delete updated.origPayee;
+      }
       // Keep a split only while the amount and type stay the same; otherwise the parts no longer add up.
       let splitCleared = false;
       if (isSplitTx(old)) {
@@ -1143,6 +1286,20 @@ export default function BudgetApp() {
       return;
     }
 
+    // Optional split across envelopes (new expenses only)
+    let splits = null;
+    if (txType === 'expense' && txSplitLines) {
+      const res = cleanSplitLines(txSplitLines, amt);
+      if (res.error) {
+        showNotification(res.error);
+        return;
+      }
+      if (res.lines.length > 1) splits = res.lines;
+    }
+    const singleEnv = txType === 'expense'
+      ? (txSplitLines && !splits ? ((cleanSplitLines(txSplitLines, amt).lines || [])[0]?.envelopeId || '') : txEnvelopeId)
+      : '';
+
     const newTx = {
       id: 'tx-' + Date.now(),
       date: txDate || getTodayISO(),
@@ -1150,20 +1307,92 @@ export default function BudgetApp() {
       amount: amt,
       type: txType,
       accountId: txAccountId,
-      envelopeId: txType === 'expense' ? txEnvelopeId : '',
+      envelopeId: splits ? '' : singleEnv,
       notes: txNotes,
       isDeleted: false,
       cleared: false,
       reconciled: false
     };
+    if (splits) newTx.splits = splits;
 
     setTransactions([newTx, ...transactions]);
 
     setTxPayee('');
     setTxAmount('');
     setTxNotes('');
+    setTxSplitLines(null);
     setTxDate(getTodayISO());
-    showNotification('Transaction recorded.');
+    showNotification(splits ? `Transaction recorded, split across ${splits.length} envelopes.` : 'Transaction recorded.');
+  };
+
+  // ----- Linking existing transactions as transfers -----
+  const linkAsTransfer = (a, b) => {
+    if (!canLinkAsTransfer(a, b)) return false;
+    const accA = accounts.find(x => x.id === a.accountId);
+    const accB = accounts.find(x => x.id === b.accountId);
+    const transferId = 'xfer-' + Date.now() + '-' + Math.random().toString(36).slice(2, 6);
+    const strip = ({ splits, ...rest }) => rest;
+    const mk = (t, other) => ({
+      ...strip(t),
+      envelopeId: '',
+      isTransfer: true,
+      transferId,
+      transferAccountId: other.id,
+      origPayee: t.payee,
+      payee: 'Transfer: ' + other.name
+    });
+    setTransactions(prev => prev.map(t => (t.id === a.id ? mk(t, accB) : t.id === b.id ? mk(t, accA) : t)));
+    return true;
+  };
+
+  const handleLinkSelected = () => {
+    if (selectedTxIds.length !== 2) {
+      showNotification('Select exactly two transactions to link as a transfer.');
+      return;
+    }
+    const a = transactions.find(t => t.id === selectedTxIds[0]);
+    const b = transactions.find(t => t.id === selectedTxIds[1]);
+    if (!canLinkAsTransfer(a, b)) {
+      showNotification('To link them, one must be money out and the other money in, with the same amount, in different accounts.');
+      return;
+    }
+    linkAsTransfer(a, b);
+    setSelectedTxIds([]);
+    showNotification('Linked as a transfer. It no longer counts as income or spending.');
+  };
+
+  const handleLinkMatch = (pair) => {
+    if (linkAsTransfer(pair.out, pair.in)) showNotification('Linked as a transfer.');
+  };
+
+  const handleLinkAllMatches = () => {
+    const pairs = transferMatches;
+    if (!pairs.length) return;
+    const strip = ({ splits, ...rest }) => rest;
+    const stamp = Date.now();
+    const byId = new Map();
+    pairs.forEach((p, i) => {
+      const transferId = `xfer-${stamp}-${i}`;
+      const accOut = accounts.find(x => x.id === p.out.accountId);
+      const accIn = accounts.find(x => x.id === p.in.accountId);
+      byId.set(p.out.id, { ...strip(p.out), envelopeId: '', isTransfer: true, transferId, transferAccountId: p.in.accountId, origPayee: p.out.payee, payee: 'Transfer: ' + (accIn ? accIn.name : '') });
+      byId.set(p.in.id, { ...strip(p.in), envelopeId: '', isTransfer: true, transferId, transferAccountId: p.out.accountId, origPayee: p.in.payee, payee: 'Transfer: ' + (accOut ? accOut.name : '') });
+    });
+    setTransactions(prev => prev.map(t => byId.get(t.id) || t));
+    showNotification(`Linked ${pairs.length} transfer${pairs.length === 1 ? '' : 's'}.`);
+  };
+
+  // Turn a transfer back into two ordinary transactions
+  const handleUnlinkTransfer = (tx) => {
+    const partner = transferPartner(tx);
+    const ids = new Set([tx.id, partner && partner.id].filter(Boolean));
+    setTransactions(prev => prev.map(t => {
+      if (!ids.has(t.id)) return t;
+      const { isTransfer, transferId, transferAccountId, origPayee, ...rest } = t;
+      return { ...rest, payee: origPayee || t.payee };
+    }));
+    if (editingTxId && ids.has(editingTxId)) cancelEditTx();
+    showNotification('Unlinked. Both sides are now ordinary transactions (the money-in one counts as income).');
   };
 
   // ----- CSV import -----
@@ -1299,6 +1528,67 @@ export default function BudgetApp() {
     if (rest > 0) updateSplitLine(i, { amount: String(rest) });
   };
 
+  // Lines editor used by the Add Transaction form (the list's own editor keeps its state in splitDraft)
+  const renderFormSplit = (draft, setDraft, total) => {
+    const set = (i, patch) => setDraft(draft.map((l, idx) => (idx === i ? { ...l, ...patch } : l)));
+    const left = round2((parseFloat(total) || 0) - draft.reduce((s, l) => s + (parseFloat(l.amount) || 0), 0));
+    return (
+      <div data-testid="form-split" style={{ gridColumn: '1 / -1', padding: '10px', backgroundColor: '#f9fafb', border: '1px solid #e5e7eb', borderRadius: '8px' }}>
+        {draft.map((line, i) => (
+          <div key={i} style={{ display: 'flex', gap: '6px', marginBottom: '6px', alignItems: 'center' }}>
+            <select
+              value={line.envelopeId}
+              onChange={e => set(i, { envelopeId: e.target.value })}
+              aria-label={`New split line ${i + 1} envelope`}
+              style={{ flex: '1 1 auto', minWidth: 0, padding: '6px', border: '1px solid #d1d5db', borderRadius: '6px', fontSize: '0.85rem' }}
+            >
+              <option value="">No envelope</option>
+              {envelopeChoices.map(c => (
+                <optgroup key={c.label} label={c.label}>
+                  {c.list.map(e => (<option key={e.id} value={e.id}>{e.name}</option>))}
+                </optgroup>
+              ))}
+            </select>
+            <input
+              type="number"
+              step="0.01"
+              min="0"
+              value={line.amount}
+              onChange={e => set(i, { amount: e.target.value })}
+              aria-label={`New split line ${i + 1} amount`}
+              placeholder="0.00"
+              style={{ width: '90px', padding: '6px', border: '1px solid #d1d5db', borderRadius: '6px', fontSize: '0.85rem' }}
+            />
+            <button
+              type="button"
+              onClick={() => {
+                const others = draft.reduce((s, l, idx) => (idx === i ? s : s + (parseFloat(l.amount) || 0)), 0);
+                const rest = round2((parseFloat(total) || 0) - others);
+                if (rest > 0) set(i, { amount: String(rest) });
+              }}
+              aria-label={`Fill remainder on new split line ${i + 1}`}
+              title="Put the remaining amount on this line"
+              style={{ background: 'none', border: '1px solid #d1d5db', borderRadius: '6px', cursor: 'pointer', padding: '4px 6px', fontSize: '0.7rem', color: '#374151' }}
+            >
+              Rest
+            </button>
+            {draft.length > 2 && (
+              <button type="button" onClick={() => setDraft(draft.filter((_, idx) => idx !== i))} aria-label={`Remove new split line ${i + 1}`} style={{ background: 'none', border: 'none', color: '#dc2626', cursor: 'pointer', padding: '2px 4px' }}>✕</button>
+            )}
+          </div>
+        ))}
+        <div style={{ display: 'flex', gap: '10px', alignItems: 'center', flexWrap: 'wrap', fontSize: '0.8rem' }}>
+          <button type="button" onClick={() => setDraft([...draft, { envelopeId: '', amount: '' }])} style={{ background: 'white', border: '1px solid #d1d5db', borderRadius: '6px', padding: '4px 10px', cursor: 'pointer', fontSize: '0.8rem' }}>+ Add line</button>
+          <span style={{ color: !(parseFloat(total) > 0) ? '#6b7280' : Math.abs(left) < 0.005 ? '#059669' : '#b45309' }}>
+            {!(parseFloat(total) > 0)
+              ? 'Enter the amount first'
+              : Math.abs(left) < 0.005 ? 'Fully assigned' : left > 0 ? `$${left.toFixed(2)} left to assign` : `$${Math.abs(left).toFixed(2)} over`}
+          </span>
+        </div>
+      </div>
+    );
+  };
+
   const handleSaveSplit = () => {
     const tx = transactions.find(t => t.id === splitTxId);
     if (!tx) { closeSplit(); return; }
@@ -1342,7 +1632,7 @@ export default function BudgetApp() {
 
   const handleAssignTxEnvelope = (txId, envId) => {
     const env = envelopes.find(e => e.id === envId);
-    setTransactions(prev => prev.map(t => (t.id === txId && t.type === 'expense' ? withSingleEnvelope(t, envId) : t)));
+    setTransactions(prev => prev.map(t => (t.id === txId && t.type === 'expense' && !t.isTransfer ? withSingleEnvelope(t, envId) : t)));
     if (editingTxId === txId) setTxEnvelopeId(envId); // keep the edit form from restoring an old value
     showNotification(env ? `Filed under '${env.name}'.` : 'Envelope cleared.');
   };
@@ -1351,12 +1641,12 @@ export default function BudgetApp() {
     if (!envId) return;
     const ids = new Set(selectedTxIds);
     const env = envelopes.find(e => e.id === envId);
-    const count = transactions.filter(t => ids.has(t.id) && !t.isDeleted && t.type === 'expense').length;
+    const count = transactions.filter(t => ids.has(t.id) && !t.isDeleted && t.type === 'expense' && !t.isTransfer).length;
     if (count === 0) {
       showNotification('Select at least one expense to assign an envelope.');
       return;
     }
-    setTransactions(prev => prev.map(t => (ids.has(t.id) && !t.isDeleted && t.type === 'expense' ? withSingleEnvelope(t, envId) : t)));
+    setTransactions(prev => prev.map(t => (ids.has(t.id) && !t.isDeleted && t.type === 'expense' && !t.isTransfer ? withSingleEnvelope(t, envId) : t)));
     if (editingTxId && ids.has(editingTxId)) setTxEnvelopeId(envId);
     showNotification(`${count} transaction${count === 1 ? '' : 's'} filed under '${env ? env.name : 'envelope'}'.`);
   };
@@ -1364,10 +1654,12 @@ export default function BudgetApp() {
   const handleSoftDeleteTransaction = (txId) => {
     const tx = transactions.find(t => t.id === txId);
     if (!tx) return;
-    setTransactions(transactions.map(t => (t.id === txId ? { ...t, isDeleted: true } : t)));
-    setSelectedTxIds(prev => prev.filter(id => id !== txId)); // don't leave a stale selection behind
-    if (editingTxId === txId) cancelEditTx();
-    showNotification('Transaction moved to Trash.');
+    const partner = transferPartner(tx);
+    const ids = new Set([txId, partner && partner.id].filter(Boolean));
+    setTransactions(transactions.map(t => (ids.has(t.id) ? { ...t, isDeleted: true } : t)));
+    setSelectedTxIds(prev => prev.filter(id => !ids.has(id))); // don't leave a stale selection behind
+    if (ids.has(editingTxId)) cancelEditTx();
+    showNotification(partner ? 'Transfer moved to Trash (both sides).' : 'Transaction moved to Trash.');
   };
 
   // Multi-select transaction deletion handlers
@@ -1388,7 +1680,10 @@ export default function BudgetApp() {
   const handleDeleteSelectedTransactions = () => {
     if (selectedTxIds.length === 0) return;
 
-    setTransactions(prev => prev.map(t => selectedTxIds.includes(t.id) ? { ...t, isDeleted: true } : t));
+    // A transfer always goes to the Trash as a pair
+    const chosen = new Set(selectedTxIds);
+    const xfers = new Set(transactions.filter(t => chosen.has(t.id) && t.transferId).map(t => t.transferId));
+    setTransactions(prev => prev.map(t => (chosen.has(t.id) || (t.transferId && xfers.has(t.transferId)) ? { ...t, isDeleted: true } : t)));
     if (selectedTxIds.includes(editingTxId)) cancelEditTx();
     setSelectedTxIds([]);
     showNotification('Selected transactions moved to Trash.');
@@ -1540,7 +1835,9 @@ export default function BudgetApp() {
 
   const restoreItem = (type, id) => {
     if (type === 'tx') {
-      setTransactions(transactions.map(t => (t.id === id ? { ...t, isDeleted: false } : t)));
+      const one = transactions.find(t => t.id === id);
+      const xfer = one && one.transferId;
+      setTransactions(transactions.map(t => (t.id === id || (xfer && t.transferId === xfer) ? { ...t, isDeleted: false } : t)));
     } else if (type === 'env') {
       const env = envelopes.find(e => e.id === id);
       // If its group was deleted too, bring the group back so the envelope isn't invisible.
@@ -1557,7 +1854,11 @@ export default function BudgetApp() {
   };
 
   const permDeleteItem = (type, id) => {
-    if (type === 'tx') setTransactions(transactions.filter(t => t.id !== id));
+    if (type === 'tx') {
+      const one = transactions.find(t => t.id === id);
+      const xfer = one && one.transferId;
+      setTransactions(transactions.filter(t => t.id !== id && !(xfer && t.isDeleted && t.transferId === xfer)));
+    }
     if (type === 'env') setEnvelopes(envelopes.filter(e => e.id !== id));
     if (type === 'acc') setAccounts(accounts.filter(a => a.id !== id));
     if (type === 'debt') setDebts(debts.filter(d => d.id !== id));
@@ -1602,7 +1903,12 @@ export default function BudgetApp() {
     const accIds = idsOf('acc');
     const invIds = idsOf('inv');
     const debtIds = idsOf('debt');
-    if (txIds.size) setTransactions(prev => prev.filter(t => !(t.isDeleted && txIds.has(t.id))));
+    if (txIds.size) {
+      setTransactions(prev => {
+        const xfers = new Set(prev.filter(t => t.isDeleted && txIds.has(t.id) && t.transferId).map(t => t.transferId));
+        return prev.filter(t => !(t.isDeleted && (txIds.has(t.id) || (t.transferId && xfers.has(t.transferId)))));
+      });
+    }
     if (envIds.size) setEnvelopes(prev => prev.filter(e => !(e.isDeleted && envIds.has(e.id))));
     if (accIds.size) setAccounts(prev => prev.filter(a => !(a.isDeleted && accIds.has(a.id))));
     if (invIds.size) setInvestments(prev => prev.filter(i => !(i.isDeleted && invIds.has(i.id))));
@@ -2584,7 +2890,7 @@ export default function BudgetApp() {
       {/* REPORTS TAB */}
       {activeTab === 'reports' && (() => {
         const ADJ = 'Reconciliation Adjustment'; // bookkeeping entries, not real spending
-        const reportTx = activeTransactions.filter(t => t.payee !== ADJ && /^\d{4}-\d{2}-\d{2}$/.test(t.date || ''));
+        const reportTx = activeTransactions.filter(t => t.payee !== ADJ && !t.isTransfer && /^\d{4}-\d{2}-\d{2}$/.test(t.date || ''));
         const isMonth = reportMode === 'month';
         const inPeriod = (t, kind, key) => (kind === 'month' ? t.date.slice(0, 7) === key : t.date.slice(0, 4) === String(key));
         const shiftMonth = (key, delta) => {
@@ -2899,13 +3205,19 @@ export default function BudgetApp() {
           <div style={{ backgroundColor: 'white', padding: '14px', borderRadius: '10px', boxShadow: '0 1px 3px rgba(0,0,0,0.1)' }}>
             <h3 style={{ margin: '0 0 10px 0', fontSize: '1rem' }}>{editingTxId ? 'Edit Transaction' : '+ Add Transaction'}</h3>
             <form onSubmit={handleAddTransaction} style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(130px, 1fr))', gap: '10px' }}>
-              <input
-                type="text"
-                placeholder="Payee"
-                value={txPayee}
-                onChange={e => handlePayeeChange(e.target.value)}
-                style={{ padding: '8px', border: '1px solid #d1d5db', borderRadius: '6px', fontSize: '0.9rem', gridColumn: 'span 2' }}
-              />
+              {txType === 'transfer' ? (
+                <div style={{ gridColumn: 'span 2', fontSize: '0.8rem', color: '#6b7280', alignSelf: 'center' }}>
+                  Moves money between your accounts. It isn't income or spending, so budgets and reports don't change.
+                </div>
+              ) : (
+                <input
+                  type="text"
+                  placeholder="Payee"
+                  value={txPayee}
+                  onChange={e => handlePayeeChange(e.target.value)}
+                  style={{ padding: '8px', border: '1px solid #d1d5db', borderRadius: '6px', fontSize: '0.9rem', gridColumn: 'span 2' }}
+                />
+              )}
               <input
                 type="number"
                 step="0.01"
@@ -2916,28 +3228,58 @@ export default function BudgetApp() {
               />
               <select
                 value={txType}
-                onChange={e => setTxType(e.target.value)}
+                onChange={e => { setTxType(e.target.value); if (e.target.value !== 'expense') setTxSplitLines(null); }}
+                aria-label="Type"
+                disabled={!!editingTxId && txType === 'transfer'}
                 style={{ padding: '8px', border: '1px solid #d1d5db', borderRadius: '6px', fontSize: '0.9rem' }}
               >
                 <option value="expense">Expense</option>
                 <option value="income">Income</option>
+                <option value="transfer">Transfer</option>
               </select>
               <select
                 value={txAccountId}
                 onChange={e => setTxAccountId(e.target.value)}
+                aria-label={txType === 'transfer' ? 'From account' : 'Account'}
                 style={{ padding: '8px', border: '1px solid #d1d5db', borderRadius: '6px', fontSize: '0.9rem', gridColumn: 'span 2' }}
               >
-                <option value="">Select Account</option>
+                <option value="">{txType === 'transfer' ? 'From account' : 'Select Account'}</option>
                 {activeAccounts.map(acc => (
                   <option key={acc.id} value={acc.id}>{acc.name}</option>
                 ))}
               </select>
+              {txType === 'transfer' && (
+                <select
+                  value={txToAccountId}
+                  onChange={e => setTxToAccountId(e.target.value)}
+                  aria-label="To account"
+                  style={{ padding: '8px', border: '1px solid #d1d5db', borderRadius: '6px', fontSize: '0.9rem', gridColumn: 'span 2' }}
+                >
+                  <option value="">To account</option>
+                  {activeAccounts.filter(acc => acc.id !== txAccountId).map(acc => (
+                    <option key={acc.id} value={acc.id}>{acc.name}</option>
+                  ))}
+                </select>
+              )}
               {txType === 'expense' && editingTxId && isSplitTx(transactions.find(t => t.id === editingTxId)) && (
                 <div style={{ gridColumn: 'span 2', fontSize: '0.8rem', color: '#6b7280', padding: '6px 0' }}>
                   Split across several envelopes. Use the Split button in the list to change it. Changing the amount clears the split.
                 </div>
               )}
-              {txType === 'expense' && !(editingTxId && isSplitTx(transactions.find(t => t.id === editingTxId))) && (
+              {txType === 'expense' && !editingTxId && txSplitLines && renderFormSplit(txSplitLines, setTxSplitLines, txAmount)}
+              {txType === 'expense' && !editingTxId && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (txSplitLines) { setTxSplitLines(null); return; }
+                    setTxSplitLines([{ envelopeId: txEnvelopeId, amount: txAmount }, { envelopeId: '', amount: '' }]);
+                  }}
+                  style={{ gridColumn: '1 / -1', justifySelf: 'start', background: 'none', border: 'none', color: '#2563eb', cursor: 'pointer', padding: 0, fontSize: '0.85rem', fontWeight: '600' }}
+                >
+                  {txSplitLines ? 'Use a single envelope instead' : 'Split across envelopes'}
+                </button>
+              )}
+              {txType === 'expense' && !txSplitLines && !(editingTxId && isSplitTx(transactions.find(t => t.id === editingTxId))) && (
                 <select
                   value={txEnvelopeId}
                   onChange={e => setTxEnvelopeId(e.target.value)}
@@ -2978,6 +3320,44 @@ export default function BudgetApp() {
               </div>
             </form>
           </div>
+
+          {transferMatches.length > 0 && (
+            <div data-testid="transfer-matches" style={{ backgroundColor: '#eef2ff', border: '1px solid #c7d2fe', padding: '12px 14px', borderRadius: '10px' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
+                <div style={{ fontSize: '0.9rem', fontWeight: 'bold', color: '#3730a3' }}>
+                  {transferMatches.length} possible transfer{transferMatches.length === 1 ? '' : 's'} between your accounts
+                </div>
+                <button
+                  onClick={handleLinkAllMatches}
+                  style={{ backgroundColor: '#4f46e5', color: 'white', border: 'none', padding: '5px 10px', borderRadius: '6px', fontWeight: 'bold', cursor: 'pointer', fontSize: '0.8rem' }}
+                >
+                  Link all
+                </button>
+              </div>
+              <div style={{ fontSize: '0.75rem', color: '#4b5563', margin: '2px 0 8px' }}>
+                Same amount, opposite direction, within 3 days. Linked transfers stop counting as income or spending.
+              </div>
+              {transferMatches.slice(0, 6).map(m => (
+                <div key={m.out.id + m.in.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '8px', padding: '6px 0', borderTop: '1px solid #e0e7ff', fontSize: '0.8rem' }}>
+                  <div style={{ minWidth: 0, wordBreak: 'break-word' }}>
+                    <strong>${Number(m.out.amount).toFixed(2)}</strong>{' '}
+                    {accounts.find(a => a.id === m.out.accountId)?.name} → {accounts.find(a => a.id === m.in.accountId)?.name}
+                    <span style={{ color: '#6b7280' }}> ({m.out.payee} / {m.in.payee}, {formatDate(m.out.date, 'us')}{m.gap ? ` and ${formatDate(m.in.date, 'us')}` : ''})</span>
+                  </div>
+                  <button
+                    onClick={() => handleLinkMatch(m)}
+                    aria-label={`Link ${m.out.payee} and ${m.in.payee}`}
+                    style={{ backgroundColor: 'white', color: '#4f46e5', border: '1px solid #c7d2fe', padding: '4px 10px', borderRadius: '6px', fontWeight: 'bold', cursor: 'pointer', fontSize: '0.8rem', flexShrink: 0 }}
+                  >
+                    Link
+                  </button>
+                </div>
+              ))}
+              {transferMatches.length > 6 && (
+                <div style={{ fontSize: '0.75rem', color: '#6b7280', paddingTop: '6px' }}>+ {transferMatches.length - 6} more</div>
+              )}
+            </div>
+          )}
 
           {/* CSV import */}
           <div style={{ backgroundColor: 'white', padding: '14px', borderRadius: '10px', boxShadow: '0 1px 3px rgba(0,0,0,0.1)' }}>
@@ -3148,6 +3528,14 @@ export default function BudgetApp() {
               <h3 style={{ margin: 0, fontSize: '1rem' }}>All Transactions</h3>
               {selectedTxIds.length > 0 && (
                 <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap', alignItems: 'center' }}>
+                {selectedTxIds.length === 2 && (
+                  <button
+                    onClick={handleLinkSelected}
+                    style={{ backgroundColor: 'white', color: '#4f46e5', border: '1px solid #c7d2fe', padding: '6px 12px', borderRadius: '6px', fontWeight: 'bold', cursor: 'pointer', fontSize: '0.85rem' }}
+                  >
+                    Link as transfer
+                  </button>
+                )}
                 <select
                   value=""
                   onChange={e => handleAssignSelectedEnvelope(e.target.value)}
@@ -3212,6 +3600,20 @@ export default function BudgetApp() {
                             <div style={{ fontSize: '0.75rem', color: '#6b7280', wordBreak: 'break-word' }}>
                               {acc?.name} {tx.notes ? `• ${tx.notes}` : ''}
                             </div>
+                            {tx.isTransfer && (
+                              <div style={{ marginTop: '4px', display: 'flex', gap: '10px', alignItems: 'center', flexWrap: 'wrap' }}>
+                                <span data-testid="transfer-badge" style={{ fontSize: '0.7rem', fontWeight: '600', color: '#4f46e5', backgroundColor: '#eef2ff', padding: '2px 6px', borderRadius: '999px' }}>
+                                  Transfer {tx.type === 'expense' ? 'out' : 'in'}
+                                </span>
+                                <button
+                                  type="button"
+                                  onClick={() => handleUnlinkTransfer(tx)}
+                                  style={{ background: 'none', border: 'none', color: '#6b7280', cursor: 'pointer', padding: 0, fontSize: '0.75rem' }}
+                                >
+                                  Unlink
+                                </button>
+                              </div>
+                            )}
                             {isSplitTx(tx) && (
                               <div style={{ marginTop: '4px', display: 'flex', flexDirection: 'column', gap: '2px' }}>
                                 {tx.splits.map((s, i) => {
@@ -3224,7 +3626,7 @@ export default function BudgetApp() {
                                 })}
                               </div>
                             )}
-                            {tx.type === 'expense' && !isSplitTx(tx) && (
+                            {tx.type === 'expense' && !tx.isTransfer && !isSplitTx(tx) && (
                               <select
                                 value={tx.envelopeId || ''}
                                 onChange={e => handleAssignTxEnvelope(tx.id, e.target.value)}
@@ -3253,7 +3655,7 @@ export default function BudgetApp() {
                                 ))}
                               </select>
                             )}
-                            {tx.type === 'expense' && (
+                            {tx.type === 'expense' && !tx.isTransfer && (
                               <button
                                 type="button"
                                 onClick={() => (splitTxId === tx.id ? closeSplit() : openSplit(tx))}
@@ -3358,7 +3760,7 @@ export default function BudgetApp() {
                           </div>
                         </div>
                         <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexShrink: 0 }}>
-                          <span style={{ fontWeight: 'bold', color: tx.type === 'income' ? '#059669' : '#1f2937', fontSize: '0.9rem' }}>
+                          <span style={{ fontWeight: 'bold', color: tx.isTransfer ? '#6b7280' : tx.type === 'income' ? '#059669' : '#1f2937', fontSize: '0.9rem' }}>
                             {tx.type === 'income' ? '+' : '-'}${Number(tx.amount).toFixed(2)}
                           </span>
                           <button
