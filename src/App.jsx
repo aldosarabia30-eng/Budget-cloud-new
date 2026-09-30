@@ -1104,7 +1104,10 @@ export default function BudgetApp() {
   const [txSplitLines, setTxSplitLines] = useState(null); // split editor inside the add form: null = off
   const [txEnvelopeId, setTxEnvelopeId] = useState('');
   // Reconciled transactions are locked. Unlocking is per transaction and only lasts until the page is reloaded.
-  const [unlockedTxIds, setUnlockedTxIds] = useState([]);
+  const [unlockedTxIds, setUnlockedTxIds] = useState(() => {
+    try { const v = JSON.parse(sessionStorage.getItem('budget-unlocked-tx') || '[]'); return Array.isArray(v) ? v : []; } catch (e) { return []; }
+  });
+  useEffect(() => { try { sessionStorage.setItem('budget-unlocked-tx', JSON.stringify(unlockedTxIds)); } catch (e) { /* storage unavailable */ } }, [unlockedTxIds]);
   const [unlockAskId, setUnlockAskId] = useState(null); // row showing the "unlock?" question
   const [splitTxId, setSplitTxId] = useState(null); // transaction whose split editor is open
   const [splitDraft, setSplitDraft] = useState([]); // [{ envelopeId, amount: string }]
@@ -1622,7 +1625,7 @@ export default function BudgetApp() {
     }
     return false;
   };
-  const LOCKED_MSG = 'This transaction is reconciled and locked. Click the lock to unlock it first.';
+  const LOCKED_MSG = 'This transaction is reconciled and locked. Click the 🔒 to unlock it first.';
 
   // Likely transfers hiding as separate expense/income pairs (e.g. after importing both accounts)
   const transferMatches = useMemo(() => findTransferMatches(activeTransactions.filter(t => !isTxLocked(t))), [transactions, unlockedTxIds]);
@@ -3784,8 +3787,8 @@ export default function BudgetApp() {
                               <tr key={t.id} style={{ borderBottom: '1px solid #f3f4f6' }}>
                                 <td style={{ padding: '6px 4px' }}>
                                   <button
-                                    onClick={() => handleToggleCleared(t.id)}
-                                    title={isTxLocked(t) ? 'Reconciled and locked. Unlock it on the Transactions tab.' : 'Toggle cleared'}
+                                    onClick={() => (isTxLocked(t) ? unlockTx(t) : handleToggleCleared(t.id))}
+                                    title={isTxLocked(t) ? 'Reconciled and locked. Click to unlock.' : 'Toggle cleared'}
                                     aria-label={`${(t.cleared || t.reconciled) ? 'Cleared' : 'Uncleared'}: ${t.payee}`}
                                     style={{
                                       opacity: isTxLocked(t) ? 0.55 : 1,
@@ -4928,7 +4931,7 @@ export default function BudgetApp() {
                           </span>
                           {hasLock && (
                             <button
-                              onClick={() => (locked ? setUnlockAskId(unlockAskId === tx.id ? null : tx.id) : relockTx(tx))}
+                              onClick={() => (locked ? unlockTx(tx) : relockTx(tx))}
                               title={locked ? 'Reconciled and locked. Click to unlock.' : 'Unlocked. Click to lock again.'}
                               aria-label={locked ? 'Unlock transaction' : 'Lock transaction'}
                               style={{ background: 'none', border: 'none', cursor: 'pointer', padding: '2px', fontSize: '0.9rem' }}
