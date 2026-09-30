@@ -345,6 +345,10 @@ export default function BudgetApp() {
   // Multi-select transactions state
   const [selectedTxIds, setSelectedTxIds] = useState([]);
 
+  // Trash: bulk selection ('type:id' keys) and the pending bulk-delete confirmation
+  const [trashSelected, setTrashSelected] = useState([]);
+  const [trashConfirm, setTrashConfirm] = useState(null); // null | 'selected' | 'all'
+
   // Editing state (null = adding new)
   const [editingTxId, setEditingTxId] = useState(null);
   const [editingEnvId, setEditingEnvId] = useState(null);
@@ -588,6 +592,7 @@ export default function BudgetApp() {
   }, []);
 
   const openTab = (tab) => {
+    setTrashConfirm(null);
     if (tab === 'new' && editingEnvId) resetEnvForm(); // "+ New" always starts a fresh form
     setActiveTab(tab);
     if (isMobile) setSidebarOpen(false);
@@ -619,6 +624,12 @@ export default function BudgetApp() {
   const activeEnvelopes = envelopes.filter(e => !e.isDeleted);
   const activeDebts = debts.filter(d => !d.isDeleted);
   const activeInvestments = investments.filter(i => !i.isDeleted);
+
+  // Envelopes grouped for dropdowns (envelopes whose group no longer exists go under "Other")
+  const envelopeChoices = [
+    ...groups.map(g => ({ label: g, list: activeEnvelopes.filter(e => e.group === g) })),
+    { label: 'Other', list: activeEnvelopes.filter(e => !groups.includes(e.group)) }
+  ].filter(c => c.list.length > 0);
   const invTotals = activeInvestments.reduce(
     (t, i) => ({ value: t.value + Number(i.value), basis: t.basis + Number(i.costBasis) }),
     { value: 0, basis: 0 }
@@ -1131,6 +1142,28 @@ export default function BudgetApp() {
     showNotification(`Imported ${newTxs.length} transaction${newTxs.length === 1 ? '' : 's'}.`);
   };
 
+  // Assign (or clear) an envelope right from the transaction list, without opening the edit form
+  const handleAssignTxEnvelope = (txId, envId) => {
+    const env = envelopes.find(e => e.id === envId);
+    setTransactions(prev => prev.map(t => (t.id === txId && t.type === 'expense' ? { ...t, envelopeId: envId } : t)));
+    if (editingTxId === txId) setTxEnvelopeId(envId); // keep the edit form from restoring an old value
+    showNotification(env ? `Filed under '${env.name}'.` : 'Envelope cleared.');
+  };
+
+  const handleAssignSelectedEnvelope = (envId) => {
+    if (!envId) return;
+    const ids = new Set(selectedTxIds);
+    const env = envelopes.find(e => e.id === envId);
+    const count = transactions.filter(t => ids.has(t.id) && !t.isDeleted && t.type === 'expense').length;
+    if (count === 0) {
+      showNotification('Select at least one expense to assign an envelope.');
+      return;
+    }
+    setTransactions(prev => prev.map(t => (ids.has(t.id) && !t.isDeleted && t.type === 'expense' ? { ...t, envelopeId: envId } : t)));
+    if (editingTxId && ids.has(editingTxId)) setTxEnvelopeId(envId);
+    showNotification(`${count} transaction${count === 1 ? '' : 's'} filed under '${env ? env.name : 'envelope'}'.`);
+  };
+
   const handleSoftDeleteTransaction = (txId) => {
     const tx = transactions.find(t => t.id === txId);
     if (!tx) return;
@@ -1359,6 +1392,46 @@ export default function BudgetApp() {
   const deletedDebts = debts.filter(d => d.isDeleted);
   const deletedInv = investments.filter(i => i.isDeleted);
   const totalTrashCount = deletedTx.length + deletedEnv.length + deletedAcc.length + deletedDebts.length + deletedInv.length;
+
+  // ----- Trash bulk actions -----
+  const trashKey = (type, id) => `${type}:${id}`;
+  const allTrashKeys = [
+    ...deletedTx.map(t => trashKey('tx', t.id)),
+    ...deletedEnv.map(e => trashKey('env', e.id)),
+    ...deletedAcc.map(a => trashKey('acc', a.id)),
+    ...deletedInv.map(i => trashKey('inv', i.id)),
+    ...deletedDebts.map(d => trashKey('debt', d.id))
+  ];
+  // Ignore selections for items that have since left the trash (restored or deleted one by one)
+  const selectedTrashKeys = trashSelected.filter(k => allTrashKeys.includes(k));
+  const allTrashSelected = allTrashKeys.length > 0 && selectedTrashKeys.length === allTrashKeys.length;
+  const trashConfirmCount = trashConfirm === 'all' ? allTrashKeys.length : trashConfirm === 'selected' ? selectedTrashKeys.length : 0;
+
+  const toggleTrashItem = (key) => {
+    setTrashSelected(prev => (prev.includes(key) ? prev.filter(k => k !== key) : [...prev, key]));
+  };
+  const toggleTrashAll = () => {
+    setTrashSelected(allTrashSelected ? [] : allTrashKeys);
+  };
+
+  // Permanently removes the given trash items. Ready to Assign was already adjusted when each item
+  // was first deleted, so nothing else needs to change. Only items still in the trash are touched.
+  const permDeleteMany = (keys) => {
+    const idsOf = (type) => new Set(keys.filter(k => k.startsWith(type + ':')).map(k => k.slice(type.length + 1)));
+    const txIds = idsOf('tx');
+    const envIds = idsOf('env');
+    const accIds = idsOf('acc');
+    const invIds = idsOf('inv');
+    const debtIds = idsOf('debt');
+    if (txIds.size) setTransactions(prev => prev.filter(t => !(t.isDeleted && txIds.has(t.id))));
+    if (envIds.size) setEnvelopes(prev => prev.filter(e => !(e.isDeleted && envIds.has(e.id))));
+    if (accIds.size) setAccounts(prev => prev.filter(a => !(a.isDeleted && accIds.has(a.id))));
+    if (invIds.size) setInvestments(prev => prev.filter(i => !(i.isDeleted && invIds.has(i.id))));
+    if (debtIds.size) setDebts(prev => prev.filter(d => !(d.isDeleted && debtIds.has(d.id))));
+    setTrashSelected([]);
+    setTrashConfirm(null);
+    showNotification(`${keys.length} item${keys.length === 1 ? '' : 's'} permanently deleted.`);
+  };
 
   // Build the import preview: parse every row, flag duplicates, and suggest envelopes.
   const importPreview = useMemo(() => {
@@ -2823,12 +2896,29 @@ export default function BudgetApp() {
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px', flexWrap: 'wrap', gap: '8px' }}>
               <h3 style={{ margin: 0, fontSize: '1rem' }}>All Transactions</h3>
               {selectedTxIds.length > 0 && (
+                <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap', alignItems: 'center' }}>
+                <select
+                  value=""
+                  onChange={e => handleAssignSelectedEnvelope(e.target.value)}
+                  aria-label="Assign envelope to selected transactions"
+                  style={{ padding: '6px 8px', border: '1px solid #d1d5db', borderRadius: '6px', fontSize: '0.85rem' }}
+                >
+                  <option value="">Assign envelope…</option>
+                  {envelopeChoices.map(c => (
+                    <optgroup key={c.label} label={c.label}>
+                      {c.list.map(e => (
+                        <option key={e.id} value={e.id}>{e.name}</option>
+                      ))}
+                    </optgroup>
+                  ))}
+                </select>
                 <button
                   onClick={handleDeleteSelectedTransactions}
                   style={{ backgroundColor: '#dc2626', color: 'white', border: 'none', padding: '6px 12px', borderRadius: '6px', fontWeight: 'bold', cursor: 'pointer', fontSize: '0.85rem' }}
                 >
                   Delete Selected ({selectedTxIds.length})
                 </button>
+                </div>
               )}
             </div>
 
@@ -2869,8 +2959,37 @@ export default function BudgetApp() {
                           <div style={{ minWidth: 0, flex: 1 }}>
                             <div style={{ fontWeight: '600', fontSize: '0.9rem', wordBreak: 'break-word' }}>{tx.payee}</div>
                             <div style={{ fontSize: '0.75rem', color: '#6b7280', wordBreak: 'break-word' }}>
-                              {acc?.name} {env ? `• ${env.name}` : ''} {tx.notes ? `• ${tx.notes}` : ''}
+                              {acc?.name} {tx.notes ? `• ${tx.notes}` : ''}
                             </div>
+                            {tx.type === 'expense' && (
+                              <select
+                                value={tx.envelopeId || ''}
+                                onChange={e => handleAssignTxEnvelope(tx.id, e.target.value)}
+                                aria-label="Assign envelope"
+                                style={{
+                                  marginTop: '4px',
+                                  maxWidth: '100%',
+                                  padding: '3px 6px',
+                                  border: '1px solid ' + (tx.envelopeId ? '#d1d5db' : '#fbbf24'),
+                                  borderRadius: '6px',
+                                  fontSize: '0.75rem',
+                                  color: tx.envelopeId ? '#374151' : '#b45309',
+                                  backgroundColor: tx.envelopeId ? 'white' : '#fffbeb'
+                                }}
+                              >
+                                <option value="">No envelope</option>
+                                {tx.envelopeId && env && env.isDeleted && (
+                                  <option value={tx.envelopeId}>{env.name} (deleted)</option>
+                                )}
+                                {envelopeChoices.map(c => (
+                                  <optgroup key={c.label} label={c.label}>
+                                    {c.list.map(e => (
+                                      <option key={e.id} value={e.id}>{e.name}</option>
+                                    ))}
+                                  </optgroup>
+                                ))}
+                              </select>
+                            )}
                           </div>
                         </div>
                         <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexShrink: 0 }}>
@@ -2975,14 +3094,63 @@ export default function BudgetApp() {
       {/* TRASH TAB */}
       {activeTab === 'trash' && (
         <div style={{ backgroundColor: 'white', padding: '14px', borderRadius: '10px', boxShadow: '0 1px 3px rgba(0,0,0,0.1)' }}>
-          <h3 style={{ margin: '0 0 12px 0', fontSize: '1rem' }}>Trash / Deleted Items</h3>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '8px', flexWrap: 'wrap', marginBottom: '12px' }}>
+            <h3 style={{ margin: 0, fontSize: '1rem' }}>Trash / Deleted Items</h3>
+            {totalTrashCount > 0 && (
+              <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
+                {selectedTrashKeys.length > 0 && (
+                  <button
+                    onClick={() => setTrashConfirm('selected')}
+                    style={{ backgroundColor: '#dc2626', color: 'white', border: 'none', padding: '6px 12px', borderRadius: '6px', fontWeight: 'bold', cursor: 'pointer', fontSize: '0.85rem' }}
+                  >
+                    Delete Selected ({selectedTrashKeys.length})
+                  </button>
+                )}
+                <button
+                  onClick={() => setTrashConfirm('all')}
+                  style={{ backgroundColor: 'white', color: '#dc2626', border: '1px solid #fca5a5', padding: '6px 12px', borderRadius: '6px', fontWeight: 'bold', cursor: 'pointer', fontSize: '0.85rem' }}
+                >
+                  Empty Trash
+                </button>
+              </div>
+            )}
+          </div>
+
+          {trashConfirm && trashConfirmCount > 0 && (
+            <div style={{ backgroundColor: '#fef2f2', border: '1px solid #fecaca', borderRadius: '8px', padding: '10px 12px', marginBottom: '12px', fontSize: '0.85rem', color: '#991b1b' }}>
+              <div style={{ marginBottom: '8px' }}>
+                Permanently delete {trashConfirm === 'all' ? `all ${trashConfirmCount}` : trashConfirmCount} item{trashConfirmCount === 1 ? '' : 's'} in the trash? This can't be undone.
+              </div>
+              <div style={{ display: 'flex', gap: '6px' }}>
+                <button
+                  onClick={() => permDeleteMany(trashConfirm === 'all' ? allTrashKeys : selectedTrashKeys)}
+                  style={{ backgroundColor: '#dc2626', color: 'white', border: 'none', padding: '6px 12px', borderRadius: '6px', fontWeight: 'bold', cursor: 'pointer', fontSize: '0.85rem' }}
+                >
+                  Yes, delete forever
+                </button>
+                <button
+                  onClick={() => setTrashConfirm(null)}
+                  style={{ backgroundColor: '#e5e7eb', color: '#374151', border: 'none', padding: '6px 12px', borderRadius: '6px', fontWeight: 'bold', cursor: 'pointer', fontSize: '0.85rem' }}
+                >
+                  Cancel
+                </button>
+              </div>
+            </div>
+          )}
+
+          {totalTrashCount > 0 && (
+            <label style={{ display: 'flex', alignItems: 'center', gap: '8px', paddingBottom: '8px', marginBottom: '10px', borderBottom: '1px solid #e5e7eb', fontSize: '0.85rem', color: '#6b7280', cursor: 'pointer' }}>
+              <input type="checkbox" checked={allTrashSelected} onChange={toggleTrashAll} />
+              Select all ({allTrashKeys.length})
+            </label>
+          )}
           {totalTrashCount === 0 ? (
             <p style={{ color: '#6b7280', fontSize: '0.9rem' }}>Trash is empty.</p>
           ) : (
             <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
               {deletedTx.map(t => (
                 <div key={t.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '8px', backgroundColor: '#f9fafb', borderRadius: '6px', gap: '8px', flexWrap: 'wrap' }}>
-                  <div style={{ fontSize: '0.85rem', wordBreak: 'break-word' }}>[Transaction] {t.payee} (${t.amount})</div>
+                  <label style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '0.85rem', wordBreak: 'break-word', cursor: 'pointer', minWidth: 0, flex: '1 1 160px' }}><input type="checkbox" checked={trashSelected.includes(trashKey('tx', t.id))} onChange={() => toggleTrashItem(trashKey('tx', t.id))} style={{ flexShrink: 0 }} /><span>[Transaction] {t.payee} (${t.amount})</span></label>
                   <div style={{ display: 'flex', gap: '6px' }}>
                     <button onClick={() => restoreItem('tx', t.id)} style={{ padding: '4px 8px', cursor: 'pointer', fontSize: '0.8rem' }}>Restore</button>
                     <button onClick={() => permDeleteItem('tx', t.id)} style={{ padding: '4px 8px', color: 'red', cursor: 'pointer', fontSize: '0.8rem' }}>Delete Forever</button>
@@ -2991,7 +3159,7 @@ export default function BudgetApp() {
               ))}
               {deletedEnv.map(e => (
                 <div key={e.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '8px', backgroundColor: '#f9fafb', borderRadius: '6px', gap: '8px', flexWrap: 'wrap' }}>
-                  <div style={{ fontSize: '0.85rem', wordBreak: 'break-word' }}>[Envelope] {e.name} ({e.group})</div>
+                  <label style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '0.85rem', wordBreak: 'break-word', cursor: 'pointer', minWidth: 0, flex: '1 1 160px' }}><input type="checkbox" checked={trashSelected.includes(trashKey('env', e.id))} onChange={() => toggleTrashItem(trashKey('env', e.id))} style={{ flexShrink: 0 }} /><span>[Envelope] {e.name} ({e.group})</span></label>
                   <div style={{ display: 'flex', gap: '6px' }}>
                     <button onClick={() => restoreItem('env', e.id)} style={{ padding: '4px 8px', cursor: 'pointer', fontSize: '0.8rem' }}>Restore</button>
                     <button onClick={() => permDeleteItem('env', e.id)} style={{ padding: '4px 8px', color: 'red', cursor: 'pointer', fontSize: '0.8rem' }}>Delete Forever</button>
@@ -3000,7 +3168,7 @@ export default function BudgetApp() {
               ))}
               {deletedAcc.map(a => (
                 <div key={a.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '8px', backgroundColor: '#f9fafb', borderRadius: '6px', gap: '8px', flexWrap: 'wrap' }}>
-                  <div style={{ fontSize: '0.85rem', wordBreak: 'break-word' }}>[Account] {a.name}</div>
+                  <label style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '0.85rem', wordBreak: 'break-word', cursor: 'pointer', minWidth: 0, flex: '1 1 160px' }}><input type="checkbox" checked={trashSelected.includes(trashKey('acc', a.id))} onChange={() => toggleTrashItem(trashKey('acc', a.id))} style={{ flexShrink: 0 }} /><span>[Account] {a.name}</span></label>
                   <div style={{ display: 'flex', gap: '6px' }}>
                     <button onClick={() => restoreItem('acc', a.id)} style={{ padding: '4px 8px', cursor: 'pointer', fontSize: '0.8rem' }}>Restore</button>
                     <button onClick={() => permDeleteItem('acc', a.id)} style={{ padding: '4px 8px', color: 'red', cursor: 'pointer', fontSize: '0.8rem' }}>Delete Forever</button>
@@ -3009,7 +3177,7 @@ export default function BudgetApp() {
               ))}
               {deletedInv.map(i => (
                 <div key={i.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '8px', backgroundColor: '#f9fafb', borderRadius: '6px', gap: '8px', flexWrap: 'wrap' }}>
-                  <div style={{ fontSize: '0.85rem', wordBreak: 'break-word' }}>[Investment] {i.name}</div>
+                  <label style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '0.85rem', wordBreak: 'break-word', cursor: 'pointer', minWidth: 0, flex: '1 1 160px' }}><input type="checkbox" checked={trashSelected.includes(trashKey('inv', i.id))} onChange={() => toggleTrashItem(trashKey('inv', i.id))} style={{ flexShrink: 0 }} /><span>[Investment] {i.name}</span></label>
                   <div style={{ display: 'flex', gap: '6px' }}>
                     <button onClick={() => restoreItem('inv', i.id)} style={{ padding: '4px 8px', cursor: 'pointer', fontSize: '0.8rem' }}>Restore</button>
                     <button onClick={() => permDeleteItem('inv', i.id)} style={{ padding: '4px 8px', color: 'red', cursor: 'pointer', fontSize: '0.8rem' }}>Delete Forever</button>
@@ -3018,7 +3186,7 @@ export default function BudgetApp() {
               ))}
               {deletedDebts.map(d => (
                 <div key={d.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '8px', backgroundColor: '#f9fafb', borderRadius: '6px', gap: '8px', flexWrap: 'wrap' }}>
-                  <div style={{ fontSize: '0.85rem', wordBreak: 'break-word' }}>[Debt] {d.name}</div>
+                  <label style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '0.85rem', wordBreak: 'break-word', cursor: 'pointer', minWidth: 0, flex: '1 1 160px' }}><input type="checkbox" checked={trashSelected.includes(trashKey('debt', d.id))} onChange={() => toggleTrashItem(trashKey('debt', d.id))} style={{ flexShrink: 0 }} /><span>[Debt] {d.name}</span></label>
                   <div style={{ display: 'flex', gap: '6px' }}>
                     <button onClick={() => restoreItem('debt', d.id)} style={{ padding: '4px 8px', cursor: 'pointer', fontSize: '0.8rem' }}>Restore</button>
                     <button onClick={() => permDeleteItem('debt', d.id)} style={{ padding: '4px 8px', color: 'red', cursor: 'pointer', fontSize: '0.8rem' }}>Delete Forever</button>
