@@ -60,6 +60,7 @@ const TAB_LABELS = {
   transactions: 'Transactions',
   reports: 'Reports',
   debts: 'Debts',
+  import: 'Import',
   trash: 'Trash'
 };
 const NAV_LABELS = { ...TAB_LABELS, new: '+ New' };
@@ -184,6 +185,12 @@ const AssignedInput = ({ value, onCommit, ariaLabel }) => {
     />
   );
 };
+// Shows a transaction's effect on its account, e.g. "-$12.50" or "+$5.00" (refunds are expenses with a negative amount)
+const signedMoney = (tx) => {
+  const v = (tx.type === 'income' ? 1 : -1) * (Number(tx.amount) || 0);
+  return `${v < 0 ? '-' : '+'}$${Math.abs(v).toFixed(2)}`;
+};
+const plainMoney = (n) => `${Number(n) < 0 ? '-' : ''}$${Math.abs(Number(n) || 0).toFixed(2)}`;
 // ---- end split transaction helpers ----
 
 // ---- transfer helpers ----
@@ -225,6 +232,460 @@ const findTransferMatches = (txs, maxDays = 3) => {
   return pairs.sort((x, y) => String(y.out.date).localeCompare(String(x.out.date)));
 };
 // ---- end transfer helpers ----
+
+// ---- Actual Budget import ----
+// Reads the .zip that Actual's "Export data" produces (db.sqlite + metadata.json) entirely in the browser.
+// The SQLite file is read by a small built-in reader (table b-trees only), so no library or download is needed.
+
+// --- zip ---
+const zipEntries = (buf) => {
+  const dv = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
+  let eocd = -1;
+  for (let i = buf.length - 22; i >= Math.max(0, buf.length - 65557); i--) {
+    if (dv.getUint32(i, true) === 0x06054b50) { eocd = i; break; }
+  }
+  if (eocd < 0) throw new Error('This does not look like a .zip file.');
+  const count = dv.getUint16(eocd + 10, true);
+  let p = dv.getUint32(eocd + 16, true);
+  const out = new Map();
+  for (let n = 0; n < count; n++) {
+    if (dv.getUint32(p, true) !== 0x02014b50) break;
+    const method = dv.getUint16(p + 10, true);
+    const csize = dv.getUint32(p + 20, true);
+    const nameLen = dv.getUint16(p + 28, true);
+    const extraLen = dv.getUint16(p + 30, true);
+    const commentLen = dv.getUint16(p + 32, true);
+    const local = dv.getUint32(p + 42, true);
+    const name = new TextDecoder().decode(buf.subarray(p + 46, p + 46 + nameLen));
+    out.set(name, { method, csize, local });
+    p += 46 + nameLen + extraLen + commentLen;
+  }
+  return out;
+};
+const zipRead = async (buf, entries, name) => {
+  const e = entries.get(name);
+  if (!e) return null;
+  const dv = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
+  const start = e.local + 30 + dv.getUint16(e.local + 26, true) + dv.getUint16(e.local + 28, true);
+  const data = buf.subarray(start, start + e.csize);
+  if (e.method === 0) return data;
+  if (e.method !== 8) throw new Error('Unsupported zip compression.');
+  const stream = new Blob([data]).stream().pipeThrough(new DecompressionStream('deflate-raw'));
+  return new Uint8Array(await new Response(stream).arrayBuffer());
+};
+
+// --- sqlite (read-only, table b-trees) ---
+const sqliteOpen = (bytes) => {
+  const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const header = new TextDecoder().decode(bytes.subarray(0, 15));
+  if (header !== 'SQLite format 3') throw new Error('The export does not contain a SQLite database.');
+  let pageSize = dv.getUint16(16, false);
+  if (pageSize === 1) pageSize = 65536;
+  const usable = pageSize - bytes[20];
+  const textEnc = dv.getUint32(56, false); // 1 = UTF-8
+  if (textEnc !== 1) throw new Error('Unsupported database text encoding.');
+  const dec = new TextDecoder();
+  const pageStart = (n) => (n - 1) * pageSize;
+  const varint = (o) => {
+    let v = 0n;
+    for (let i = 0; i < 8; i++) {
+      const b = bytes[o + i];
+      v = (v << 7n) | BigInt(b & 0x7f);
+      if (!(b & 0x80)) return [v, i + 1];
+    }
+    v = (v << 8n) | BigInt(bytes[o + 8]);
+    return [v, 9];
+  };
+  const readRecord = (buf) => {
+    const bdv = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
+    const vi = (o) => {
+      let v = 0n;
+      for (let i = 0; i < 8; i++) {
+        const b = buf[o + i];
+        v = (v << 7n) | BigInt(b & 0x7f);
+        if (!(b & 0x80)) return [v, i + 1];
+      }
+      v = (v << 8n) | BigInt(buf[o + 8]);
+      return [v, 9];
+    };
+    const [hsz, hl] = vi(0);
+    const types = [];
+    let o = hl;
+    while (o < Number(hsz)) { const [t, l] = vi(o); types.push(Number(t)); o += l; }
+    let d = Number(hsz);
+    const vals = [];
+    for (const t of types) {
+      if (t === 0) vals.push(null);
+      else if (t >= 1 && t <= 6) {
+        const n = [0, 1, 2, 3, 4, 6, 8][t];
+        let v = 0n;
+        for (let i = 0; i < n; i++) v = (v << 8n) | BigInt(buf[d + i]);
+        if (buf[d] & 0x80) v -= 1n << BigInt(8 * n);
+        vals.push(Number(v)); d += n;
+      } else if (t === 7) { vals.push(bdv.getFloat64(d, false)); d += 8; }
+      else if (t === 8) vals.push(0);
+      else if (t === 9) vals.push(1);
+      else if (t >= 12 && t % 2 === 0) { const n = (t - 12) / 2; vals.push(buf.slice(d, d + n)); d += n; }
+      else if (t >= 13) { const n = (t - 13) / 2; vals.push(dec.decode(buf.subarray(d, d + n))); d += n; }
+      else throw new Error('Unreadable database record.');
+    }
+    return vals;
+  };
+  const payloadOf = (cell, total) => {
+    // cell = offset of payload start; handles overflow pages
+    const X = usable - 35;
+    if (total <= X) return bytes.slice(cell, cell + total);
+    const M = Math.floor(((usable - 12) * 32) / 255) - 23;
+    const K = M + ((total - M) % (usable - 4));
+    const local = K <= X ? K : M;
+    const out = new Uint8Array(total);
+    out.set(bytes.subarray(cell, cell + local), 0);
+    let got = local;
+    let next = dv.getUint32(cell + local, false);
+    while (next && got < total) {
+      const ps = pageStart(next);
+      const take = Math.min(usable - 4, total - got);
+      out.set(bytes.subarray(ps + 4, ps + 4 + take), got);
+      got += take;
+      next = dv.getUint32(ps, false);
+    }
+    return out;
+  };
+  const walk = (pageNo, onRow) => {
+    const ps = pageStart(pageNo);
+    const hb = ps + (pageNo === 1 ? 100 : 0);
+    const kind = bytes[hb];
+    const cells = dv.getUint16(hb + 3, false);
+    if (kind === 0x0d) {
+      for (let i = 0; i < cells; i++) {
+        const cp = ps + dv.getUint16(hb + 8 + i * 2, false);
+        const [size, l1] = varint(cp);
+        const [rowid, l2] = varint(cp + l1);
+        onRow(Number(rowid), readRecord(payloadOf(cp + l1 + l2, Number(size))));
+      }
+    } else if (kind === 0x05) {
+      for (let i = 0; i < cells; i++) {
+        const cp = ps + dv.getUint16(hb + 12 + i * 2, false);
+        walk(dv.getUint32(cp, false), onRow);
+      }
+      walk(dv.getUint32(hb + 8, false), onRow);
+    } else throw new Error('Unsupported database page.');
+  };
+  const splitTop = (s) => {
+    const parts = []; let depth = 0; let cur = ''; let q = '';
+    for (const ch of s) {
+      if (q) { cur += ch; if (ch === q) q = ''; continue; }
+      if (ch === "'" || ch === '"' || ch === '`') { q = ch; cur += ch; continue; }
+      if (ch === '[') { q = ']'; cur += ch; continue; }
+      if (ch === '(') depth++;
+      if (ch === ')') depth--;
+      if (ch === ',' && depth === 0) { parts.push(cur.trim()); cur = ''; } else cur += ch;
+    }
+    if (cur.trim()) parts.push(cur.trim());
+    return parts;
+  };
+  const tables = new Map();
+  walk(1, (rowid, r) => {
+    if (r[0] === 'table') tables.set(r[1], { root: r[3], sql: r[4] });
+  });
+  return {
+    tableNames: () => [...tables.keys()],
+    rows: (name) => {
+      const t = tables.get(name);
+      if (!t) return [];
+      const body = t.sql.slice(t.sql.indexOf('(') + 1, t.sql.lastIndexOf(')'));
+      const cols = [];
+      splitTop(body).forEach(def => {
+        if (/^(primary|unique|check|foreign|constraint)\b/i.test(def)) return;
+        const m = /^(?:"([^"]+)"|`([^`]+)`|\[([^\]]+)\]|([^\s]+))\s*(.*)$/s.exec(def);
+        if (!m) return;
+        // Columns added later with ALTER TABLE are missing from older rows; the schema's DEFAULT fills them in.
+        const dm = /default\s+('(?:[^']|'')*'|"[^"]*"|[-+]?\d+(?:\.\d+)?|null)/i.exec(m[5] || '');
+        let dflt = null;
+        if (dm) {
+          const lit = dm[1];
+          if (/^['"]/.test(lit)) dflt = lit.slice(1, -1).replace(/''/g, "'");
+          else if (/^null$/i.test(lit)) dflt = null;
+          else dflt = Number(lit);
+        }
+        cols.push({ name: m[1] || m[2] || m[3] || m[4], rowidAlias: /integer\s+primary\s+key/i.test(m[5] || ''), def: dflt });
+      });
+      const out = [];
+      walk(t.root, (rowid, vals) => {
+        const o = {};
+        cols.forEach((c, i) => { o[c.name] = c.rowidAlias && vals[i] === null ? rowid : (i < vals.length ? vals[i] : c.def); });
+        out.push(o);
+      });
+      return out;
+    }
+  };
+};
+
+const ACTUAL_TABLES = ['accounts', 'category_groups', 'categories', 'category_mapping', 'payees', 'transactions', 'zero_budgets'];
+
+// Open an Actual export (.zip as bytes) and pull out the tables the importer needs.
+const readActualExport = async (bytes) => {
+  const entries = zipEntries(bytes);
+  const dbBytes = await zipRead(bytes, entries, 'db.sqlite');
+  if (!dbBytes) throw new Error("No db.sqlite found. Use Actual's Settings > Export data.");
+  let meta = {};
+  try {
+    const m = await zipRead(bytes, entries, 'metadata.json');
+    if (m) meta = JSON.parse(new TextDecoder().decode(m));
+  } catch (e) { /* metadata is optional */ }
+  const db = sqliteOpen(dbBytes);
+  const tables = {};
+  ACTUAL_TABLES.forEach(n => { tables[n] = db.rows(n); });
+  if (!tables.transactions.length && !tables.accounts.length) throw new Error('That export has no accounts or transactions.');
+  return { tables, meta };
+};
+
+// Retirement and brokerage accounts are tracked on the Investments tab, not in the budget, so they start unticked.
+const looksLikeInvestment = (name) => /\b(ira|roth|401\s?k|403\s?b|hsa|brokerage|invest(ment|ments)?|retirement|crypto)\b/i.test(String(name || ''));
+
+const guessActualAccountType = (name) => {
+  const n = String(name || '').toLowerCase();
+  if (/card|credit|visa|mastercard|amex|discover|autograph|reflect|simplicity/.test(n)) return 'Credit Card';
+  if (/saving/.test(n)) return 'Savings';
+  if (/cash/.test(n) && !/cashback/.test(n)) return 'Cash';
+  return 'Checking';
+};
+
+const actualDate = (d) => {
+  const s = String(d || '');
+  return /^\d{8}$/.test(s) ? `${s.slice(0, 4)}-${s.slice(4, 6)}-${s.slice(6, 8)}` : '';
+};
+const cents = (n) => Math.round(Number(n) || 0) / 100;
+
+// What Actual has, and how each account will be treated by default.
+const describeActualExport = (tables) => {
+  const live = tables.transactions.filter(t => !t.tombstone);
+  const balance = {};
+  const counts = {};
+  live.forEach(t => {
+    if (t.isParent) return;
+    balance[t.acct] = (balance[t.acct] || 0) + (Number(t.amount) || 0);
+    if (!t.isChild) counts[t.acct] = (counts[t.acct] || 0) + 1;
+  });
+  const accounts = tables.accounts
+    .filter(a => !a.tombstone)
+    .map(a => {
+      const off = !!a.offbudget;
+      const bal = cents(balance[a.id]);
+      return {
+        id: a.id,
+        name: String(a.name || '').trim() || 'Account',
+        offBudget: off,
+        closed: !!a.closed,
+        balance: bal,
+        txCount: counts[a.id] || 0,
+        // on-budget accounts import as accounts; off-budget loans become Debts; anything else is skipped
+        include: off ? bal < 0 : !looksLikeInvestment(a.name),
+        investment: looksLikeInvestment(a.name),
+        type: guessActualAccountType(a.name)
+      };
+    });
+  const dates = live.map(t => Number(t.date)).filter(Boolean).sort((x, y) => x - y);
+  return {
+    accounts,
+    txCount: live.filter(t => !t.isParent && !t.isChild).length + live.filter(t => t.isParent).length * 0,
+    firstDate: dates.length ? actualDate(dates[0]) : '',
+    lastDate: dates.length ? actualDate(dates[dates.length - 1]) : '',
+    budgetCount: tables.zero_budgets.filter(z => Number(z.amount) !== 0).length
+  };
+};
+
+// Turn the Actual tables into this app's data. `choices[accountId] = { include, type }`.
+const buildActualImport = (tables, choices, stamp) => {
+  const warnings = [];
+  const round = (n) => Math.round(n * 100) / 100;
+  const nid = (() => { let i = 0; return (p) => `${p}-imp${stamp}-${++i}`; })();
+
+  const accs = new Map(tables.accounts.filter(a => !a.tombstone).map(a => [a.id, a]));
+  const choice = (id) => (choices && choices[id]) || {};
+  const isIncluded = (id) => { const a = accs.get(id); return !!a && !a.offbudget && choice(id).include !== false; };
+  const catMap = new Map(tables.category_mapping.map(m => [m.id, m.transferId]));
+  const resolveCat = (id) => { let x = id; for (let i = 0; i < 10 && catMap.has(x) && catMap.get(x) && catMap.get(x) !== x; i++) x = catMap.get(x); return x; };
+  const groupsById = new Map(tables.category_groups.map(g => [g.id, g]));
+  const cats = new Map(tables.categories.map(c => [c.id, c]));
+  const payees = new Map(tables.payees.map(p => [p.id, p]));
+
+  const live = tables.transactions.filter(t => !t.tombstone);
+  const byId = new Map(live.map(t => [t.id, t]));
+  const kids = new Map();
+  live.forEach(t => { if (t.isChild) { if (!kids.has(t.parent_id)) kids.set(t.parent_id, []); kids.get(t.parent_id).push(t); } });
+
+  // --- envelopes: every spending category that has activity or a budget
+  const catKind = (id) => {
+    if (!id) return 'none';
+    const c = cats.get(resolveCat(id));
+    if (!c) return 'none';
+    return c.is_income || (groupsById.get(c.cat_group) || {}).is_income ? 'income' : 'spend';
+  };
+  const used = new Set();
+  const noteUse = (cid) => { if (catKind(cid) === 'spend') used.add(resolveCat(cid)); };
+  live.forEach(t => { if (!t.isParent && isIncluded(t.acct)) noteUse(t.category); });
+  tables.zero_budgets.forEach(z => { if (Number(z.amount) !== 0) noteUse(z.category); });
+
+  const orderedCats = tables.categories
+    .filter(c => !c.tombstone && used.has(c.id))
+    .sort((a, b) => ((groupsById.get(a.cat_group) || {}).sort_order || 0) - ((groupsById.get(b.cat_group) || {}).sort_order || 0) || (a.sort_order || 0) - (b.sort_order || 0));
+  const envByCat = new Map();
+  const groups = [];
+  const envelopes = orderedCats.map(c => {
+    const g = groupsById.get(c.cat_group);
+    const groupName = String((g && g.name) || 'Other').trim() || 'Other';
+    if (!groups.includes(groupName)) groups.push(groupName);
+    const env = { id: nid('env'), name: String(c.name || '').trim() || 'Envelope', group: groupName, budget: {}, isDeleted: false, goalType: 'none', targetAmount: 0, targetDate: '' };
+    envByCat.set(c.id, env);
+    return env;
+  });
+  let budgetCount = 0;
+  tables.zero_budgets.forEach(z => {
+    const amt = cents(z.amount);
+    if (!amt) return;
+    const env = envByCat.get(resolveCat(z.category));
+    const m = String(z.month || '');
+    if (!env || !/^\d{6}$/.test(m)) return;
+    const key = `${m.slice(0, 4)}-${m.slice(4, 6)}`;
+    env.budget[key] = round((env.budget[key] || 0) + amt);
+    budgetCount++;
+  });
+  envelopes.forEach(e => Object.keys(e.budget).forEach(k => { if (!e.budget[k]) delete e.budget[k]; }));
+
+  // --- accounts
+  const outAccounts = [];
+  const accOut = new Map();
+  accs.forEach(a => {
+    if (!isIncluded(a.id)) return;
+    const type = choice(a.id).type || guessActualAccountType(a.name);
+    const acc = {
+      id: nid('acc'),
+      name: String(a.name || '').trim() + (a.closed ? ' (closed)' : ''),
+      type,
+      initialBalance: 0,
+      isDeleted: false,
+      lastReconciledDate: '',
+      lastReconciledBalance: null
+    };
+    outAccounts.push(acc);
+    accOut.set(a.id, acc);
+  });
+
+  const accName = (id) => String((accs.get(id) || {}).name || 'account').trim();
+  const payeeName = (t) => {
+    const p = payees.get(t.description);
+    if (p && p.transfer_acct) return 'Transfer: ' + accName(p.transfer_acct);
+    const n = p ? String(p.name || '').trim() : '';
+    return n || '(no payee)';
+  };
+  const partnerOf = (t) => {
+    const p = payees.get(t.description);
+    if (!p || !p.transfer_acct) return null;
+    const other = t.transferred_id ? byId.get(t.transferred_id) : null;
+    return other && other.acct === p.transfer_acct && !other.isChild ? other : null;
+  };
+
+  // --- transactions
+  const out = [];
+  const stats = { oneSidedTransfers: 0, linkedTransfers: 0, splits: 0, flattened: 0, refunds: 0, negativeCardIncome: 0, uncategorizedDeposits: 0 };
+  const done = new Set();
+  const flags = (t) => ({ cleared: !!(t.cleared || t.reconciled), reconciled: !!t.reconciled });
+  const base = (t, extra) => ({ date: actualDate(t.date), payee: payeeName(t), notes: String(t.notes || ''), isDeleted: false, ...flags(t), ...extra });
+
+  const plain = (t, srcNotes) => {
+    const acc = accOut.get(t.acct);
+    const amount = cents(t.amount);
+    const kind = catKind(t.category);
+    const isCard = acc.type === 'Credit Card';
+    const notes = srcNotes !== undefined ? srcNotes : String(t.notes || '');
+    if (kind === 'income') {
+      const tx = { id: nid('tx'), ...base(t, { notes }), type: 'income', amount, accountId: acc.id, envelopeId: '' };
+      if (isCard) { tx.budgetIncome = true; if (amount < 0) stats.negativeCardIncome++; }
+      out.push(tx);
+    } else if (kind === 'spend') {
+      const env = envByCat.get(resolveCat(t.category));
+      if (amount > 0) stats.refunds++;
+      out.push({ id: nid('tx'), ...base(t, { notes }), type: 'expense', amount: round(-amount), accountId: acc.id, envelopeId: env ? env.id : '' });
+    } else if (amount > 0 && !(payees.get(t.description) || {}).transfer_acct) {
+      // Money in with no category is not income in Actual, so it must not feed Ready to Assign here.
+      stats.uncategorizedDeposits++;
+      out.push({ id: nid('tx'), ...base(t, { notes }), type: 'income', amount, accountId: acc.id, envelopeId: '', isTransfer: true });
+    } else if ((payees.get(t.description) || {}).transfer_acct) {
+      stats.oneSidedTransfers++;
+      out.push({ id: nid('tx'), ...base(t, { notes }), type: amount < 0 ? 'expense' : 'income', amount: Math.abs(amount), accountId: acc.id, envelopeId: '', isTransfer: true, transferAccountId: '' });
+    } else {
+      out.push({ id: nid('tx'), ...base(t, { notes }), type: 'expense', amount: round(-amount), accountId: acc.id, envelopeId: '' });
+    }
+  };
+
+  live.slice().sort((a, b) => Number(b.date) - Number(a.date)).forEach(t => {
+    if (t.isChild || done.has(t.id) || !isIncluded(t.acct)) return;
+    const acc = accOut.get(t.acct);
+    const p = payees.get(t.description);
+
+    if (t.isParent) {
+      const ks = kids.get(t.id) || [];
+      const kinds = new Set(ks.map(k => catKind(k.category)));
+      const total = cents(t.amount);
+      if (ks.length && kinds.size === 1 && kinds.has('spend')) {
+        // A split of spending (or of a refund): keep it as one split transaction
+        const parts = [];
+        ks.forEach(k => {
+          const env = envByCat.get(resolveCat(k.category));
+          const envId = env ? env.id : '';
+          const amt = round(-cents(k.amount));
+          const hit = parts.find(x => x.envelopeId === envId);
+          if (hit) hit.amount = round(hit.amount + amt); else parts.push({ envelopeId: envId, amount: amt });
+        });
+        const tx = { id: nid('tx'), ...base(t), type: 'expense', amount: round(-total), accountId: acc.id, envelopeId: '' };
+        if (total > 0) stats.refunds++;
+        if (parts.length > 1) { tx.splits = parts; stats.splits++; } else tx.envelopeId = parts[0].envelopeId;
+        out.push(tx);
+      } else {
+        // Mixed income and spending in one split: keep each part as its own transaction
+        stats.flattened++;
+        ks.forEach(k => plain({ ...k, description: t.description, date: k.date || t.date, acct: t.acct }, String(k.notes || t.notes || '')));
+      }
+      return;
+    }
+
+    if (p && p.transfer_acct && !t.category) {
+      const partner = partnerOf(t);
+      if (partner && isIncluded(partner.acct) && !done.has(partner.id) && Number(partner.amount) === -Number(t.amount) && Number(t.amount) !== 0) {
+        const transferId = nid('xfer');
+        const [o, i] = Number(t.amount) < 0 ? [t, partner] : [partner, t];
+        const mk = (leg, type, other) => ({
+          id: nid('tx'), ...base(leg, { payee: 'Transfer: ' + accOut.get(other.acct).name }),
+          type, amount: Math.abs(cents(leg.amount)), accountId: accOut.get(leg.acct).id, envelopeId: '',
+          isTransfer: true, transferId, transferAccountId: accOut.get(other.acct).id
+        });
+        out.push(mk(o, 'expense', i), mk(i, 'income', o));
+        done.add(t.id); done.add(partner.id);
+        stats.linkedTransfers++;
+        return;
+      }
+    }
+    plain(t);
+  });
+
+  // --- debts from off-budget loan accounts
+  const debts = [];
+  accs.forEach(a => {
+    if (!a.offbudget || choice(a.id).include === false) return;
+    const bal = live.filter(t => t.acct === a.id && !t.isParent).reduce((s, t) => s + (Number(t.amount) || 0), 0);
+    if (bal < 0) {
+      const v = round(-bal / 100);
+      debts.push({ id: nid('d'), name: String(a.name || '').trim(), totalAmount: v, balance: v, APR: 0, minimumPayment: 0, isDeleted: false });
+    } else {
+      warnings.push(`Off-budget account "${String(a.name || '').trim()}" has a positive balance, so it was skipped.`);
+    }
+  });
+
+  out.sort((a, b) => b.date.localeCompare(a.date));
+  return { accounts: outAccounts, groups, envelopes, transactions: out, debts, warnings, stats, budgetCount };
+};
+// ---- end Actual Budget import ----
 
 // Older saves kept one lump "assigned" amount per envelope. Move it into the month the envelope was
 // first used (or this month), so balances are unchanged at the moment of upgrade.
@@ -520,6 +981,7 @@ export default function BudgetApp() {
   const [txAccountId, setTxAccountId] = useState('');
   const [txToAccountId, setTxToAccountId] = useState(''); // destination account when the type is Transfer
   // Transactions tab filters
+  const [txLimit, setTxLimit] = useState(150); // how many transactions are drawn (long lists stay fast)
   const [txSearch, setTxSearch] = useState('');
   const [txFilterAccount, setTxFilterAccount] = useState('');
   const [txFilterEnvelope, setTxFilterEnvelope] = useState(''); // '' = any, '__none__' = uncategorized
@@ -554,6 +1016,13 @@ export default function BudgetApp() {
   const [importDateFormat, setImportDateFormat] = useState('auto');
   const [importSign, setImportSign] = useState('negative-expense');
   const [importAccountId, setImportAccountId] = useState('');
+  // Import from Actual Budget
+  const [ax, setAx] = useState(null); // { fileName, meta, tables, desc, choices, mode }
+  const [axBusy, setAxBusy] = useState(false);
+  const [axError, setAxError] = useState('');
+  const [axUndo, setAxUndo] = useState(null); // what the budget looked like before the last import
+  const [axConfirm, setAxConfirm] = useState(false);
+  const axFileRef = useRef(null);
   const [importSkipDupes, setImportSkipDupes] = useState(true);
   const importFileRef = useRef(null);
 
@@ -837,7 +1306,9 @@ export default function BudgetApp() {
   const countsTowardRTA = (tx) => {
     if (tx.type !== 'income' || tx.isTransfer) return false;
     const acc = accounts.find(a => a.id === tx.accountId);
-    return !!acc && !acc.isDeleted && !isCreditCard(acc);
+    // Card accounts normally never feed Ready to Assign. Imported income-category entries on a card (opening
+    // balances, cash back) are flagged budgetIncome so the budget matches the app they came from.
+    return !!acc && !acc.isDeleted && (!isCreditCard(acc) || !!tx.budgetIncome);
   };
 
   // ----- Monthly budgeting -----
@@ -906,7 +1377,7 @@ export default function BudgetApp() {
     const txTotal = activeTransactions
       .filter(t => t.accountId === accId)
       .reduce((sum, t) => sum + (t.type === 'income' ? Number(t.amount) : -Number(t.amount)), 0);
-    return Number(acc.initialBalance) + txTotal;
+    return round2(Number(acc.initialBalance) + txTotal) || 0; // rounding keeps thousands of cents-sized additions from showing -0.00
   };
 
   const getClearedBalance = (accId) => {
@@ -915,7 +1386,7 @@ export default function BudgetApp() {
     const txTotal = activeTransactions
       .filter(t => t.accountId === accId && (t.cleared || t.reconciled))
       .reduce((sum, t) => sum + (t.type === 'income' ? Number(t.amount) : -Number(t.amount)), 0);
-    return Number(acc.initialBalance) + txTotal;
+    return round2(Number(acc.initialBalance) + txTotal) || 0; // rounding keeps thousands of cents-sized additions from showing -0.00
   };
 
   const handleToggleCleared = (txId) => {
@@ -1048,7 +1519,13 @@ export default function BudgetApp() {
     setTxSearch(''); setTxFilterAccount(''); setTxFilterEnvelope(''); setTxFilterType(''); setTxFromDate(''); setTxToDate('');
   };
 
-  const groupedTransactions = visibleTransactions.reduce((acc, tx) => {
+  const pagedTransactions = useMemo(
+    () => visibleTransactions.slice().sort((a, b) => String(b.date || '').localeCompare(String(a.date || ''))).slice(0, txLimit),
+    [visibleTransactions, txLimit]
+  );
+  useEffect(() => { setTxLimit(150); }, [txSearch, txFilterAccount, txFilterEnvelope, txFilterType, txFromDate, txToDate]);
+
+  const groupedTransactions = pagedTransactions.reduce((acc, tx) => {
     const dateKey = tx.date || getTodayISO();
     if (!acc[dateKey]) acc[dateKey] = [];
     acc[dateKey].push(tx);
@@ -1188,6 +1665,96 @@ export default function BudgetApp() {
     showNotification(`Copied ${count} assignment${count === 1 ? '' : 's'} from ${monthLabel(prevKey)}.`);
   };
 
+  // ----- Import from Actual Budget -----
+  const axPreview = useMemo(() => {
+    if (!ax) return null;
+    try { return buildActualImport(ax.tables, ax.choices, 0); } catch (e) { return { error: String(e && e.message || e) }; }
+  }, [ax]);
+
+  const handleActualFile = async (e) => {
+    const file = e.target.files && e.target.files[0];
+    e.target.value = '';
+    if (!file) return;
+    setAxBusy(true);
+    setAxError('');
+    setAx(null);
+    setAxConfirm(false);
+    try {
+      const bytes = new Uint8Array(await file.arrayBuffer());
+      const { tables, meta } = await readActualExport(bytes);
+      const desc = describeActualExport(tables);
+      const choices = Object.fromEntries(desc.accounts.map(a => [a.id, { include: a.include, type: a.type }]));
+      setAx({ fileName: file.name, meta, tables, desc, choices, mode: 'replace' });
+    } catch (err) {
+      setAxError(String((err && err.message) || err));
+    }
+    setAxBusy(false);
+  };
+
+  const axSetChoice = (id, patch) => setAx(prev => (prev ? { ...prev, choices: { ...prev.choices, [id]: { ...prev.choices[id], ...patch } } } : prev));
+
+  const downloadBudgetBackup = () => {
+    try {
+      const data = { accounts, groups, collapsedGroups, collapsedAccountTx, envelopes, transactions, debts, investments };
+      const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `budget-backup-${getTodayISO()}.json`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    } catch (err) { /* a failed backup download should not block the import; the in-app Undo still works */ }
+  };
+
+  const handleRunActualImport = () => {
+    if (!ax || !axPreview || axPreview.error) return;
+    const built = buildActualImport(ax.tables, ax.choices, Date.now());
+    if (ax.mode === 'replace' && !axConfirm && (transactions.length || accounts.length || envelopes.length)) {
+      setAxConfirm(true);
+      return;
+    }
+    downloadBudgetBackup();
+    setAxUndo({ accounts, groups, collapsedGroups, collapsedAccountTx, envelopes, transactions, debts, investments });
+    if (ax.mode === 'replace') {
+      setAccounts(built.accounts);
+      setGroups(built.groups);
+      setCollapsedGroups({});
+      setCollapsedAccountTx({});
+      setEnvelopes(built.envelopes);
+      setTransactions(built.transactions);
+      // Investments are never touched, and existing debts stay (imported loans are added unless one has the same name)
+      setDebts(prev => [...prev, ...built.debts.filter(d => !prev.some(x => !x.isDeleted && String(x.name).trim().toLowerCase() === String(d.name).trim().toLowerCase()))]);
+    } else {
+      setAccounts(prev => [...prev, ...built.accounts]);
+      setGroups(prev => [...prev, ...built.groups.filter(g => !prev.includes(g))]);
+      setEnvelopes(prev => [...prev, ...built.envelopes]);
+      setTransactions(prev => [...built.transactions, ...prev]);
+      setDebts(prev => [...prev, ...built.debts]);
+    }
+    setAxConfirm(false);
+    setBudgetMonth(getTodayISO().slice(0, 7));
+    setActiveTab('budget');
+    setAx(null);
+    showNotification(`Imported ${built.transactions.length} transactions, ${built.envelopes.length} envelopes and ${built.accounts.length} accounts. A backup of your previous budget was downloaded.`);
+  };
+
+  const handleUndoActualImport = () => {
+    if (!axUndo) return;
+    setAccounts(axUndo.accounts);
+    setGroups(axUndo.groups);
+    setCollapsedGroups(axUndo.collapsedGroups || {});
+    setCollapsedAccountTx(axUndo.collapsedAccountTx || {});
+    setEnvelopes(axUndo.envelopes);
+    setTransactions(axUndo.transactions);
+    setDebts(axUndo.debts);
+    setInvestments(axUndo.investments);
+    setAxUndo(null);
+    setSelectedTxIds([]);
+    showNotification('Import undone. Your previous budget is back.');
+  };
+
   // ----- Move money between envelopes / cover overspending -----
   // A move is recorded by nudging the two envelopes' assigned amounts for the month being viewed, so Ready to Assign
   // stays put and rollover, reports and everything else keep working from the same monthly numbers.
@@ -1321,7 +1888,7 @@ export default function BudgetApp() {
   // Merge lines with the same envelope; returns { lines, error }
   const cleanSplitLines = (draft, total) => {
     const lines = draft.filter(l => l.envelopeId || (evalAmount(l.amount) || 0) !== 0);
-    if (lines.some(l => !(evalAmount(l.amount) > 0))) return { error: 'Every split line needs an amount above $0.' };
+    if (lines.some(l => !(Math.abs(evalAmount(l.amount)) > 0))) return { error: 'Every split line needs an amount other than $0.' };
     const merged = [];
     lines.forEach(l => {
       const amount = round2(evalAmount(l.amount));
@@ -1689,7 +2256,7 @@ export default function BudgetApp() {
   const fillSplitRemainder = (i, total) => {
     const others = splitDraft.reduce((s, l, idx) => (idx === i ? s : s + (evalAmount(l.amount) || 0)), 0);
     const rest = round2(Number(total) - others);
-    if (rest > 0) updateSplitLine(i, { amount: String(rest) });
+    if (rest !== 0) updateSplitLine(i, { amount: String(rest) });
   };
 
   // Lines editor used by the Add Transaction form (the list's own editor keeps its state in splitDraft)
@@ -1748,8 +2315,8 @@ export default function BudgetApp() {
     const tx = transactions.find(t => t.id === splitTxId);
     if (!tx) { closeSplit(); return; }
     const lines = splitDraft.filter(l => l.envelopeId || (evalAmount(l.amount) || 0) !== 0);
-    if (lines.some(l => !(evalAmount(l.amount) > 0))) {
-      showNotification('Every split line needs an amount above $0.');
+    if (lines.some(l => !(Math.abs(evalAmount(l.amount)) > 0))) {
+      showNotification('Every split line needs an amount other than $0.');
       return;
     }
     // Merge lines that use the same envelope
@@ -2227,7 +2794,7 @@ export default function BudgetApp() {
         </div>
 
         <nav style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
-          {['budget', 'new', 'accounts', 'investments', 'transactions', 'reports', 'debts', 'trash'].map(tab => {
+          {['budget', 'new', 'accounts', 'investments', 'transactions', 'reports', 'debts', 'import', 'trash'].map(tab => {
             const isActive = activeTab === tab;
             return (
               <button
@@ -2903,8 +3470,8 @@ export default function BudgetApp() {
                                 </td>
                                 <td style={{ padding: '6px 4px', whiteSpace: 'nowrap' }}>{formatDate(t.date, 'us')}</td>
                                 <td style={{ padding: '6px 4px' }}>{t.payee}</td>
-                                <td style={{ padding: '6px 4px', textAlign: 'right', fontWeight: 'bold', color: t.type === 'income' ? '#059669' : '#1f2937', whiteSpace: 'nowrap' }}>
-                                  {t.type === 'income' ? '+' : '-'}${Number(t.amount).toFixed(2)}
+                                <td style={{ padding: '6px 4px', textAlign: 'right', fontWeight: 'bold', color: (t.type === 'income') === (Number(t.amount) >= 0) ? '#059669' : '#1f2937', whiteSpace: 'nowrap' }}>
+                                  {signedMoney(t)}
                                 </td>
                               </tr>
                             ))
@@ -3878,7 +4445,7 @@ export default function BudgetApp() {
                                   const se = envelopes.find(e => e.id === s.envelopeId);
                                   return (
                                     <div key={i} data-testid="split-part" style={{ fontSize: '0.75rem', color: s.envelopeId ? '#374151' : '#b45309' }}>
-                                      {se ? se.name + (se.isDeleted ? ' (deleted)' : '') : 'No envelope'}: ${Number(s.amount).toFixed(2)}
+                                      {se ? se.name + (se.isDeleted ? ' (deleted)' : '') : 'No envelope'}: {plainMoney(s.amount)}
                                     </div>
                                   );
                                 })}
@@ -4009,8 +4576,8 @@ export default function BudgetApp() {
                           </div>
                         </div>
                         <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexShrink: 0 }}>
-                          <span style={{ fontWeight: 'bold', color: tx.isTransfer ? '#6b7280' : tx.type === 'income' ? '#059669' : '#1f2937', fontSize: '0.9rem' }}>
-                            {tx.type === 'income' ? '+' : '-'}${Number(tx.amount).toFixed(2)}
+                          <span style={{ fontWeight: 'bold', color: tx.isTransfer ? '#6b7280' : (tx.type === 'income') === (Number(tx.amount) >= 0) ? '#059669' : '#1f2937', fontSize: '0.9rem' }}>
+                            {signedMoney(tx)}
                           </span>
                           <button
                             onClick={() => startEditTx(tx)}
@@ -4032,6 +4599,19 @@ export default function BudgetApp() {
                   })}
                 </div>
               ))
+            )}
+            {visibleTransactions.length > pagedTransactions.length && (
+              <div style={{ textAlign: 'center', padding: '14px 0 4px' }}>
+                <div style={{ fontSize: '0.8rem', color: '#6b7280', marginBottom: '6px' }}>
+                  Showing {pagedTransactions.length} of {visibleTransactions.length}
+                </div>
+                <button
+                  onClick={() => setTxLimit(n => n + 200)}
+                  style={{ backgroundColor: 'white', color: '#2563eb', border: '1px solid #bfdbfe', padding: '7px 14px', borderRadius: '6px', fontWeight: 'bold', cursor: 'pointer', fontSize: '0.85rem' }}
+                >
+                  Show 200 more
+                </button>
+              </div>
             )}
           </div>
         </div>
@@ -4104,6 +4684,146 @@ export default function BudgetApp() {
               </div>
             ))}
           </div>
+        </div>
+      )}
+
+      {/* IMPORT TAB */}
+      {activeTab === 'import' && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+          <div style={{ backgroundColor: 'white', padding: '14px', borderRadius: '10px', boxShadow: '0 1px 3px rgba(0,0,0,0.1)' }}>
+            <h3 style={{ margin: '0 0 6px 0', fontSize: '1rem' }}>Import from Actual Budget</h3>
+            <p style={{ margin: '0 0 10px 0', fontSize: '0.85rem', color: '#6b7280' }}>
+              In Actual, open Settings → Export data and choose the .zip it gives you. The file is read in your browser and is not uploaded anywhere.
+            </p>
+            <input ref={axFileRef} type="file" accept=".zip,application/zip" onChange={handleActualFile} style={{ display: 'none' }} aria-label="Actual Budget export file" />
+            <div style={{ display: 'flex', gap: '10px', alignItems: 'center', flexWrap: 'wrap' }}>
+              <button
+                onClick={() => axFileRef.current && axFileRef.current.click()}
+                disabled={axBusy}
+                style={{ backgroundColor: '#2563eb', color: 'white', border: 'none', padding: '8px 14px', borderRadius: '6px', fontWeight: 'bold', cursor: axBusy ? 'wait' : 'pointer', fontSize: '0.9rem' }}
+              >
+                {axBusy ? 'Reading…' : ax ? 'Choose another file' : 'Choose export .zip'}
+              </button>
+              {axUndo && (
+                <button
+                  onClick={handleUndoActualImport}
+                  style={{ backgroundColor: 'white', color: '#b91c1c', border: '1px solid #fca5a5', padding: '7px 12px', borderRadius: '6px', fontWeight: 'bold', cursor: 'pointer', fontSize: '0.85rem' }}
+                >
+                  Undo last import
+                </button>
+              )}
+            </div>
+            {axError && <div role="alert" style={{ marginTop: '10px', color: '#b91c1c', fontSize: '0.85rem' }}>{axError}</div>}
+          </div>
+
+          {ax && axPreview && axPreview.error && (
+            <div role="alert" style={{ backgroundColor: '#fef2f2', color: '#b91c1c', padding: '12px', borderRadius: '10px', fontSize: '0.85rem' }}>
+              Could not convert this export: {axPreview.error}
+            </div>
+          )}
+
+          {ax && axPreview && !axPreview.error && (
+            <div data-testid="import-preview" style={{ backgroundColor: 'white', padding: '14px', borderRadius: '10px', boxShadow: '0 1px 3px rgba(0,0,0,0.1)' }}>
+              <h3 style={{ margin: '0 0 4px 0', fontSize: '1rem' }}>{(ax.meta && ax.meta.budgetName) || ax.fileName}</h3>
+              <div style={{ fontSize: '0.8rem', color: '#6b7280', marginBottom: '10px' }}>
+                {ax.desc.firstDate && `${formatDate(ax.desc.firstDate, 'us')} to ${formatDate(ax.desc.lastDate, 'us')}`}
+              </div>
+              <div data-testid="import-counts" style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', marginBottom: '12px' }}>
+                {[
+                  [axPreview.accounts.length, 'accounts'],
+                  [axPreview.envelopes.length, 'envelopes'],
+                  [axPreview.transactions.length, 'transactions'],
+                  [axPreview.budgetCount, 'monthly budget amounts'],
+                  [axPreview.stats.linkedTransfers, 'transfers linked'],
+                  [axPreview.stats.splits, 'split transactions'],
+                  [axPreview.debts.length, 'debts']
+                ].map(([n, label]) => (
+                  <div key={label} style={{ backgroundColor: '#f3f4f6', borderRadius: '8px', padding: '6px 10px', fontSize: '0.8rem' }}>
+                    <strong>{n}</strong> {label}
+                  </div>
+                ))}
+              </div>
+
+              <div style={{ fontSize: '0.85rem', fontWeight: 'bold', marginBottom: '6px' }}>Accounts</div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', marginBottom: '12px' }}>
+                {ax.desc.accounts.map(a => {
+                  const ch = ax.choices[a.id] || {};
+                  return (
+                    <div key={a.id} style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap', padding: '6px 0', borderBottom: '1px solid #f3f4f6', fontSize: '0.85rem' }}>
+                      <label style={{ display: 'flex', alignItems: 'center', gap: '6px', flex: '1 1 200px', minWidth: 0, cursor: 'pointer' }}>
+                        <input
+                          type="checkbox"
+                          checked={ch.include !== false}
+                          onChange={e => axSetChoice(a.id, { include: e.target.checked })}
+                          aria-label={`Import ${a.name}`}
+                        />
+                        <span style={{ wordBreak: 'break-word' }}>{a.name}{a.closed ? ' (closed)' : ''}</span>
+                        {a.investment && <span style={{ fontSize: '0.7rem', color: '#6b7280', backgroundColor: '#f3f4f6', borderRadius: '999px', padding: '1px 7px' }}>investment, left out</span>}
+                      </label>
+                      {a.offBudget ? (
+                        <span style={{ fontSize: '0.75rem', color: '#6b7280' }}>
+                          Off budget · {a.balance < 0 ? `becomes a debt of ${formatMoney(-a.balance)}` : 'skipped (not a loan)'}
+                        </span>
+                      ) : (
+                        <>
+                          <select
+                            value={ch.type || 'Checking'}
+                            onChange={e => axSetChoice(a.id, { type: e.target.value })}
+                            aria-label={`Type of ${a.name}`}
+                            style={{ padding: '4px', border: '1px solid #d1d5db', borderRadius: '6px', fontSize: '0.8rem' }}
+                          >
+                            <option value="Checking">Checking</option>
+                            <option value="Savings">Savings</option>
+                            <option value="Cash">Cash</option>
+                            <option value="Credit Card">Credit Card</option>
+                          </select>
+                          <span style={{ fontSize: '0.75rem', color: '#6b7280', minWidth: '90px', textAlign: 'right' }}>
+                            {a.txCount} tx · {formatMoney(a.balance)}
+                          </span>
+                        </>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+
+              <div style={{ fontSize: '0.8rem', color: '#4b5563', backgroundColor: '#f9fafb', borderRadius: '8px', padding: '10px', marginBottom: '12px', lineHeight: 1.5 }}>
+                <div>• Actual's monthly budget amounts become each envelope's assigned amounts, so rollover continues from where you left off.</div>
+                <div>• Transfers between the accounts you import are linked. Categorized payments to off-budget loans stay as spending in their envelope.</div>
+                <div>• Refunds and reimbursements in a spending category import as negative spending. Money in with no category is not counted as income.</div>
+                <div>• Income on credit cards (opening balances, cash back) counts toward Ready to Assign, as in Actual.</div>
+                <div>• Not imported: schedules, rules, goals and notes on categories. Closed accounts keep their history and are labeled (closed).</div>
+              </div>
+
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', marginBottom: '12px', fontSize: '0.85rem' }}>
+                <label style={{ display: 'flex', gap: '8px', alignItems: 'flex-start', cursor: 'pointer' }}>
+                  <input type="radio" name="axmode" checked={ax.mode === 'replace'} onChange={() => { setAx({ ...ax, mode: 'replace' }); setAxConfirm(false); }} aria-label="Replace my current budget" />
+                  <span><strong>Replace my current budget</strong> with this one (recommended for a full move).</span>
+                </label>
+                <label style={{ display: 'flex', gap: '8px', alignItems: 'flex-start', cursor: 'pointer' }}>
+                  <input type="radio" name="axmode" checked={ax.mode === 'add'} onChange={() => { setAx({ ...ax, mode: 'add' }); setAxConfirm(false); }} aria-label="Add to my current budget" />
+                  <span><strong>Add to my current budget.</strong> Importing the same file twice would duplicate everything.</span>
+                </label>
+              </div>
+
+              {axConfirm && (
+                <div role="alert" style={{ backgroundColor: '#fffbeb', border: '1px solid #fcd34d', color: '#92400e', padding: '10px', borderRadius: '8px', fontSize: '0.85rem', marginBottom: '10px' }}>
+                  This replaces the accounts, envelopes and transactions currently in the app ({accounts.length} accounts, {envelopes.length} envelopes, {transactions.length} transactions). Your investments and debts are kept. A backup file downloads first, and you can undo right after.
+                </div>
+              )}
+              <div style={{ display: 'flex', gap: '8px' }}>
+                <button
+                  onClick={handleRunActualImport}
+                  style={{ backgroundColor: axConfirm ? '#dc2626' : '#059669', color: 'white', border: 'none', padding: '9px 16px', borderRadius: '6px', fontWeight: 'bold', cursor: 'pointer', fontSize: '0.9rem' }}
+                >
+                  {axConfirm ? 'Yes, replace everything' : ax.mode === 'replace' ? 'Import and replace' : 'Import and add'}
+                </button>
+                {axConfirm && (
+                  <button onClick={() => setAxConfirm(false)} style={{ background: 'none', border: 'none', color: '#6b7280', cursor: 'pointer', fontSize: '0.85rem' }}>Cancel</button>
+                )}
+              </div>
+            </div>
+          )}
         </div>
       )}
 
