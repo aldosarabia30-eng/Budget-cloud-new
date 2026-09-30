@@ -1387,6 +1387,17 @@ export default function BudgetApp() {
     showNotification('Share link copied to clipboard!');
   };
 
+  // Point this device at another budget (e.g. the ID shown on your phone) so all devices share one budget
+  const [switchIdInput, setSwitchIdInput] = useState(null); // null = closed
+  const switchBudget = () => {
+    let id = (switchIdInput || '').trim();
+    const m = id.match(/[?&]budgetId=([^&#\s]+)/); // accept a pasted share link too
+    if (m) id = decodeURIComponent(m[1]);
+    if (!id) return;
+    try { localStorage.setItem('budgetId', id); } catch (e) { /* storage unavailable */ }
+    window.location.href = `${window.location.pathname}?budgetId=${encodeURIComponent(id)}`;
+  };
+
   const showNotification = (msg) => {
     setNotification(msg);
     setTimeout(() => setNotification(''), 3500);
@@ -3064,6 +3075,29 @@ export default function BudgetApp() {
           >
             Copy Share Link
           </button>
+          {switchIdInput === null ? (
+            <button
+              onClick={() => setSwitchIdInput('')}
+              style={{ width: '100%', background: 'none', color: '#6b7280', border: 'none', padding: '6px 8px', fontSize: '0.72rem', cursor: 'pointer', textDecoration: 'underline' }}
+            >
+              Use a different budget ID
+            </button>
+          ) : (
+            <div style={{ marginTop: '6px' }}>
+              <input
+                value={switchIdInput}
+                onChange={e => setSwitchIdInput(e.target.value)}
+                onKeyDown={e => { if (e.key === 'Enter') switchBudget(); }}
+                placeholder="Paste budget ID or share link"
+                aria-label="Budget ID to switch to"
+                style={{ width: '100%', boxSizing: 'border-box', padding: '6px', fontSize: '0.75rem', border: '1px solid #d1d5db', borderRadius: '6px' }}
+              />
+              <div style={{ display: 'flex', gap: '6px', marginTop: '6px' }}>
+                <button onClick={switchBudget} style={{ flex: 1, backgroundColor: '#2563eb', color: 'white', border: 'none', borderRadius: '6px', padding: '5px', fontSize: '0.75rem', cursor: 'pointer', fontWeight: 600 }}>Switch</button>
+                <button onClick={() => setSwitchIdInput(null)} style={{ background: 'none', border: 'none', color: '#6b7280', fontSize: '0.75rem', cursor: 'pointer' }}>Cancel</button>
+              </div>
+            </div>
+          )}
         </div>
       </aside>
 
