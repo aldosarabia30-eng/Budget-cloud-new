@@ -120,6 +120,70 @@ const txParts = (t) => {
   }
   return t.envelopeId ? [{ envelopeId: t.envelopeId, amount: Number(t.amount) || 0 }] : [];
 };
+// Split amounts can be typed as a sum, e.g. "13.97+4.50+2" (a trailing "+" is ignored while typing).
+// Returns the total in dollars, or NaN when the text isn't a valid amount/sum.
+const evalAmount = (raw) => {
+  const s = String(raw == null ? '' : raw).replace(/[$,\s]/g, '').replace(/[+-]+$/, '');
+  if (!s || !/^[+-]?(\d+\.?\d*|\.\d+)([+-](\d+\.?\d*|\.\d+))*$/.test(s)) return NaN;
+  const total = (s.match(/[+-]?(\d+\.?\d*|\.\d+)/g) || []).reduce((sum, n) => sum + parseFloat(n), 0);
+  return Math.round(total * 100) / 100;
+};
+const isSumText = (raw) => /\d[+-]/.test(String(raw == null ? '' : raw).replace(/[$,\s]/g, ''));
+
+// Amount box for a split line: type a number or a sum. It shows the running total and settles to it on Enter/blur.
+const SplitAmountInput = ({ value, onChange, ariaLabel, width, placeholder, onFocus, onBlur, wrapStyle, inputStyle }) => {
+  const settle = () => {
+    if (isSumText(value)) {
+      const n = evalAmount(value);
+      if (!isNaN(n)) onChange(String(n));
+    }
+  };
+  const sum = isSumText(value) ? evalAmount(value) : NaN;
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', ...(wrapStyle || {}) }}>
+      <input
+        type="text"
+        inputMode="decimal"
+        autoComplete="off"
+        value={value}
+        onChange={e => onChange(e.target.value)}
+        onFocus={onFocus}
+        onBlur={() => { settle(); if (onBlur) onBlur(); }}
+        onKeyDown={e => {
+          if (e.key === 'Enter' && isSumText(value)) { e.preventDefault(); settle(); }
+        }}
+        aria-label={ariaLabel}
+        placeholder={placeholder || '0.00 or 12+3.50'}
+        title="Type a number, or add amounts together like 13.97+4.50"
+        style={{ width: width || '100px', padding: '5px', border: '1px solid #d1d5db', borderRadius: '6px', fontSize: '0.8rem', ...(inputStyle || {}) }}
+      />
+      {isSumText(value) && (
+        <span data-testid="split-sum" style={{ fontSize: '0.7rem', color: isNaN(sum) ? '#dc2626' : '#2563eb', marginTop: '2px' }}>
+          {isNaN(sum) ? 'Not a valid sum' : `= $${sum.toFixed(2)}`}
+        </span>
+      )}
+    </div>
+  );
+};
+// Assigned box on an envelope row: type a number or a sum. Each valid value is applied as you type.
+const AssignedInput = ({ value, onCommit, ariaLabel }) => {
+  const [draft, setDraft] = useState(null);
+  return (
+    <SplitAmountInput
+      value={draft === null ? String(value) : draft}
+      ariaLabel={ariaLabel}
+      width="84px"
+      placeholder="0.00"
+      onFocus={() => setDraft(String(value))}
+      onChange={v => {
+        setDraft(v);
+        const n = v.trim() === '' ? 0 : evalAmount(v);
+        if (!isNaN(n)) onCommit(n);
+      }}
+      onBlur={() => setDraft(null)}
+    />
+  );
+};
 // ---- end split transaction helpers ----
 
 // ---- transfer helpers ----
@@ -1145,7 +1209,7 @@ export default function BudgetApp() {
 
   const confirmMove = () => {
     if (!moveUi) return;
-    const amount = round2(parseFloat(moveUi.amount));
+    const amount = round2(evalAmount(moveUi.amount));
     if (!(amount > 0)) { showNotification('Enter an amount above $0.'); return; }
     if (!moveUi.otherId) { showNotification(moveUi.mode === 'cover' ? 'Choose where the money comes from.' : 'Choose where to move the money.'); return; }
     const main = envelopes.find(e => e.id === moveUi.envId);
@@ -1256,11 +1320,11 @@ export default function BudgetApp() {
 
   // Merge lines with the same envelope; returns { lines, error }
   const cleanSplitLines = (draft, total) => {
-    const lines = draft.filter(l => l.envelopeId || (parseFloat(l.amount) || 0) !== 0);
-    if (lines.some(l => !(parseFloat(l.amount) > 0))) return { error: 'Every split line needs an amount above $0.' };
+    const lines = draft.filter(l => l.envelopeId || (evalAmount(l.amount) || 0) !== 0);
+    if (lines.some(l => !(evalAmount(l.amount) > 0))) return { error: 'Every split line needs an amount above $0.' };
     const merged = [];
     lines.forEach(l => {
-      const amount = round2(parseFloat(l.amount));
+      const amount = round2(evalAmount(l.amount));
       const hit = merged.find(m => m.envelopeId === l.envelopeId);
       if (hit) hit.amount = round2(hit.amount + amount);
       else merged.push({ envelopeId: l.envelopeId, amount });
@@ -1280,7 +1344,7 @@ export default function BudgetApp() {
       return;
     }
 
-    const amt = parseFloat(txAmount);
+    const amt = evalAmount(txAmount);
     if (isNaN(amt)) {
       showNotification('Please enter a valid amount.');
       return;
@@ -1620,10 +1684,10 @@ export default function BudgetApp() {
   const addSplitLine = () => setSplitDraft(prev => [...prev, { envelopeId: '', amount: '' }]);
   const removeSplitLine = (i) => setSplitDraft(prev => prev.filter((_, idx) => idx !== i));
   const splitRemaining = (total) =>
-    round2(Number(total) - splitDraft.reduce((s, l) => s + (parseFloat(l.amount) || 0), 0));
+    round2(Number(total) - splitDraft.reduce((s, l) => s + (evalAmount(l.amount) || 0), 0));
   // Put whatever is still unassigned onto one line
   const fillSplitRemainder = (i, total) => {
-    const others = splitDraft.reduce((s, l, idx) => (idx === i ? s : s + (parseFloat(l.amount) || 0)), 0);
+    const others = splitDraft.reduce((s, l, idx) => (idx === i ? s : s + (evalAmount(l.amount) || 0)), 0);
     const rest = round2(Number(total) - others);
     if (rest > 0) updateSplitLine(i, { amount: String(rest) });
   };
@@ -1631,7 +1695,7 @@ export default function BudgetApp() {
   // Lines editor used by the Add Transaction form (the list's own editor keeps its state in splitDraft)
   const renderFormSplit = (draft, setDraft, total) => {
     const set = (i, patch) => setDraft(draft.map((l, idx) => (idx === i ? { ...l, ...patch } : l)));
-    const left = round2((parseFloat(total) || 0) - draft.reduce((s, l) => s + (parseFloat(l.amount) || 0), 0));
+    const left = round2((evalAmount(total) || 0) - draft.reduce((s, l) => s + (evalAmount(l.amount) || 0), 0));
     return (
       <div data-testid="form-split" style={{ gridColumn: '1 / -1', padding: '10px', backgroundColor: '#f9fafb', border: '1px solid #e5e7eb', borderRadius: '8px' }}>
         {draft.map((line, i) => (
@@ -1649,21 +1713,12 @@ export default function BudgetApp() {
                 </optgroup>
               ))}
             </select>
-            <input
-              type="number"
-              step="0.01"
-              min="0"
-              value={line.amount}
-              onChange={e => set(i, { amount: e.target.value })}
-              aria-label={`New split line ${i + 1} amount`}
-              placeholder="0.00"
-              style={{ width: '90px', padding: '6px', border: '1px solid #d1d5db', borderRadius: '6px', fontSize: '0.85rem' }}
-            />
+            <SplitAmountInput value={line.amount} onChange={v => set(i, { amount: v })} ariaLabel={`New split line ${i + 1} amount`} width="110px" />
             <button
               type="button"
               onClick={() => {
-                const others = draft.reduce((s, l, idx) => (idx === i ? s : s + (parseFloat(l.amount) || 0)), 0);
-                const rest = round2((parseFloat(total) || 0) - others);
+                const others = draft.reduce((s, l, idx) => (idx === i ? s : s + (evalAmount(l.amount) || 0)), 0);
+                const rest = round2((evalAmount(total) || 0) - others);
                 if (rest > 0) set(i, { amount: String(rest) });
               }}
               aria-label={`Fill remainder on new split line ${i + 1}`}
@@ -1679,8 +1734,8 @@ export default function BudgetApp() {
         ))}
         <div style={{ display: 'flex', gap: '10px', alignItems: 'center', flexWrap: 'wrap', fontSize: '0.8rem' }}>
           <button type="button" onClick={() => setDraft([...draft, { envelopeId: '', amount: '' }])} style={{ background: 'white', border: '1px solid #d1d5db', borderRadius: '6px', padding: '4px 10px', cursor: 'pointer', fontSize: '0.8rem' }}>+ Add line</button>
-          <span style={{ color: !(parseFloat(total) > 0) ? '#6b7280' : Math.abs(left) < 0.005 ? '#059669' : '#b45309' }}>
-            {!(parseFloat(total) > 0)
+          <span style={{ color: !(evalAmount(total) > 0) ? '#6b7280' : Math.abs(left) < 0.005 ? '#059669' : '#b45309' }}>
+            {!(evalAmount(total) > 0)
               ? 'Enter the amount first'
               : Math.abs(left) < 0.005 ? 'Fully assigned' : left > 0 ? `$${left.toFixed(2)} left to assign` : `$${Math.abs(left).toFixed(2)} over`}
           </span>
@@ -1692,15 +1747,15 @@ export default function BudgetApp() {
   const handleSaveSplit = () => {
     const tx = transactions.find(t => t.id === splitTxId);
     if (!tx) { closeSplit(); return; }
-    const lines = splitDraft.filter(l => l.envelopeId || (parseFloat(l.amount) || 0) !== 0);
-    if (lines.some(l => !(parseFloat(l.amount) > 0))) {
+    const lines = splitDraft.filter(l => l.envelopeId || (evalAmount(l.amount) || 0) !== 0);
+    if (lines.some(l => !(evalAmount(l.amount) > 0))) {
       showNotification('Every split line needs an amount above $0.');
       return;
     }
     // Merge lines that use the same envelope
     const merged = [];
     lines.forEach(l => {
-      const amount = round2(parseFloat(l.amount));
+      const amount = round2(evalAmount(l.amount));
       const hit = merged.find(m => m.envelopeId === l.envelopeId);
       if (hit) hit.amount = round2(hit.amount + amount);
       else merged.push({ envelopeId: l.envelopeId, amount });
@@ -2429,12 +2484,10 @@ export default function BudgetApp() {
                             <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap', justifyContent: 'flex-end', flex: '1 1 200px' }}>
                               <div style={{ fontSize: '0.85rem' }}>
                                 <span style={{ color: '#6b7280' }}>Assigned: </span>
-                                <input
-                                  type="number"
-                                  step="0.01"
+                                <AssignedInput
                                   value={row.budgeted}
-                                  onChange={e => handleAssignMonth(env.id, e.target.value)}
-                                  style={{ width: '70px', padding: '4px', border: '1px solid #d1d5db', borderRadius: '4px', fontSize: '0.85rem' }}
+                                  ariaLabel={`Assigned ${env.name}`}
+                                  onCommit={n => handleAssignMonth(env.id, n)}
                                 />
                               </div>
                               <div style={{ fontSize: '0.85rem' }}>Activity: <strong>{formatMoney(spent)}</strong></div>
@@ -2500,14 +2553,11 @@ export default function BudgetApp() {
                                       </option>
                                     ))}
                                   </select>
-                                  <input
-                                    type="number"
-                                    step="0.01"
-                                    min="0"
+                                  <SplitAmountInput
                                     value={moveUi.amount}
-                                    onChange={e => setMoveUi({ ...moveUi, amount: e.target.value })}
-                                    aria-label="Amount to move"
-                                    style={{ width: '90px', padding: '5px', border: '1px solid #d1d5db', borderRadius: '6px', fontSize: '0.8rem' }}
+                                    onChange={v => setMoveUi({ ...moveUi, amount: v })}
+                                    ariaLabel="Amount to move"
+                                    width="100px"
                                   />
                                   <button onClick={confirmMove} style={{ backgroundColor: '#2563eb', color: 'white', border: 'none', borderRadius: '6px', padding: '5px 12px', cursor: 'pointer', fontSize: '0.8rem', fontWeight: 'bold' }}>
                                     {moveUi.mode === 'cover' ? 'Cover' : 'Move'}
@@ -3383,13 +3433,14 @@ export default function BudgetApp() {
                   style={{ padding: '8px', border: '1px solid #d1d5db', borderRadius: '6px', fontSize: '0.9rem', gridColumn: 'span 2' }}
                 />
               )}
-              <input
-                type="number"
-                step="0.01"
-                placeholder="Amount ($)"
+              <SplitAmountInput
                 value={txAmount}
-                onChange={e => setTxAmount(e.target.value)}
-                style={{ padding: '8px', border: '1px solid #d1d5db', borderRadius: '6px', fontSize: '0.9rem' }}
+                onChange={setTxAmount}
+                ariaLabel="Amount"
+                placeholder="Amount ($)"
+                width="100%"
+                wrapStyle={{ alignItems: 'stretch' }}
+                inputStyle={{ padding: '8px', fontSize: '0.9rem', boxSizing: 'border-box' }}
               />
               <select
                 value={txType}
@@ -3907,16 +3958,7 @@ export default function BudgetApp() {
                                           </optgroup>
                                         ))}
                                       </select>
-                                      <input
-                                        type="number"
-                                        step="0.01"
-                                        min="0"
-                                        value={line.amount}
-                                        onChange={e => updateSplitLine(i, { amount: e.target.value })}
-                                        aria-label={`Split line ${i + 1} amount`}
-                                        placeholder="0.00"
-                                        style={{ width: '80px', padding: '5px', border: '1px solid #d1d5db', borderRadius: '6px', fontSize: '0.8rem' }}
-                                      />
+                                      <SplitAmountInput value={line.amount} onChange={v => updateSplitLine(i, { amount: v })} ariaLabel={`Split line ${i + 1} amount`} width="110px" />
                                       <button
                                         type="button"
                                         onClick={() => fillSplitRemainder(i, tx.amount)}
