@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { createClient } from '@supabase/supabase-js';
 
 // --- SUPABASE CONFIGURATION ---
@@ -89,6 +89,125 @@ const formatDate = (dateStr, type = 'readable') => {
   return dateStr;
 };
 
+// ---------- CSV import helpers ----------
+const MAX_IMPORT_ROWS = 5000;
+const MAX_IMPORT_BYTES = 3 * 1024 * 1024;
+
+// Small RFC-4180-style parser: quoted fields, escaped quotes, CRLF/LF, BOM, and , ; or tab delimiters.
+const parseCSV = (text) => {
+  const t = text.replace(/^\uFEFF/, '');
+  const firstLine = t.split(/\r?\n/, 1)[0] || '';
+  const delim = [',', ';', '\t']
+    .map(d => [d, firstLine.split(d).length])
+    .sort((a, b) => b[1] - a[1])[0][0];
+
+  const rows = [];
+  let row = [];
+  let field = '';
+  let inQuotes = false;
+
+  for (let i = 0; i < t.length; i++) {
+    const c = t[i];
+    if (inQuotes) {
+      if (c === '"') {
+        if (t[i + 1] === '"') { field += '"'; i++; } else { inQuotes = false; }
+      } else {
+        field += c;
+      }
+    } else if (c === '"') {
+      inQuotes = true;
+    } else if (c === delim) {
+      row.push(field);
+      field = '';
+    } else if (c === '\n' || c === '\r') {
+      if (c === '\r' && t[i + 1] === '\n') i++;
+      row.push(field);
+      field = '';
+      rows.push(row);
+      row = [];
+    } else {
+      field += c;
+    }
+  }
+  if (field !== '' || row.length) {
+    row.push(field);
+    rows.push(row);
+  }
+  return rows.filter(r => r.some(cell => String(cell).trim() !== ''));
+};
+
+// "$1,234.56", "(45.00)", "-12.30", "12.30-", "1.234,56" -> number (NaN if unreadable)
+const parseAmount = (raw) => {
+  if (raw === undefined || raw === null) return NaN;
+  const s = String(raw).trim();
+  if (!s) return NaN;
+  const neg = /^\s*\$?\s*-/.test(s) || /^\(.*\)$/.test(s) || /-\s*$/.test(s);
+  let n = s.replace(/[^0-9.,]/g, '');
+  if (!/\d/.test(n)) return NaN;
+  const lastDot = n.lastIndexOf('.');
+  const lastComma = n.lastIndexOf(',');
+  if (lastDot !== -1 && lastComma !== -1) {
+    n = lastComma > lastDot ? n.replace(/\./g, '').replace(',', '.') : n.replace(/,/g, '');
+  } else if (lastComma !== -1) {
+    n = (n.split(',').length === 2 && /,\d{1,2}$/.test(n)) ? n.replace(',', '.') : n.replace(/,/g, '');
+  }
+  const v = parseFloat(n);
+  if (isNaN(v)) return NaN;
+  return neg ? -v : v;
+};
+
+// Look at the file's dates to decide between MM/DD and DD/MM (defaults to US).
+const detectDateFormat = (values) => {
+  for (const v of values) {
+    const m = String(v || '').trim().match(/^(\d{1,2})[-/.](\d{1,2})[-/.]\d{2,4}/);
+    if (!m) continue;
+    if (Number(m[1]) > 12) return 'dmy';
+    if (Number(m[2]) > 12) return 'mdy';
+  }
+  return 'mdy';
+};
+
+// Returns YYYY-MM-DD or '' when the date can't be read. fmt: 'mdy' | 'dmy' | 'ymd'
+const parseDate = (raw, fmt = 'mdy') => {
+  const s = String(raw || '').trim().split(/[ T]/)[0];
+  const m = s.match(/^(\d{1,4})[-/.](\d{1,2})[-/.](\d{1,4})$/);
+  if (!m) return '';
+  const [a, b, c] = [m[1], m[2], m[3]];
+  const f = a.length === 4 ? 'ymd' : fmt;
+  let y, mo, d;
+  if (f === 'ymd') { y = a; mo = b; d = c; }
+  else if (f === 'dmy') { d = a; mo = b; y = c; }
+  else { mo = a; d = b; y = c; }
+  if (String(y).length === 2) y = (Number(y) > 70 ? '19' : '20') + y;
+  y = Number(y); mo = Number(mo); d = Number(d);
+  if (!y || mo < 1 || mo > 12 || d < 1 || d > 31) return '';
+  const dt = new Date(y, mo - 1, d);
+  if (dt.getMonth() !== mo - 1) return '';
+  return `${y}-${String(mo).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+};
+
+// Guess which column is which from the header names. Values are column indexes as strings ('' = none).
+const detectMapping = (headers) => {
+  const find = (regexes, exclude) => {
+    for (const re of regexes) {
+      const i = headers.findIndex(h => re.test(String(h)) && !(exclude && exclude.test(String(h))));
+      if (i !== -1) return String(i);
+    }
+    return '';
+  };
+  const map = {
+    date: find([/^date$/i, /trans.*date|posted|date/i]),
+    payee: find([/^payee$/i, /description|merchant|name|details|payee/i]),
+    amount: find([/^amount$/i, /amount/i], /debit|credit/i),
+    debit: find([/debit|withdrawal|paid out|money out/i]),
+    credit: find([/credit|deposit|paid in|money in/i]),
+    notes: find([/^memo$/i, /note|memo/i])
+  };
+  if (map.amount !== '') { map.debit = ''; map.credit = ''; } // one signed column wins over split columns
+  if (map.notes === map.payee) map.notes = '';
+  return map;
+};
+
 const getOrdinalSuffix = (num) => {
   const n = Number(num);
   if (isNaN(n)) return '';
@@ -165,6 +284,17 @@ export default function BudgetApp() {
   // Editing state (null = adding new)
   const [editingTxId, setEditingTxId] = useState(null);
   const [editingEnvId, setEditingEnvId] = useState(null);
+
+  // CSV import state
+  const [importRows, setImportRows] = useState([]);
+  const [importFileName, setImportFileName] = useState('');
+  const [importHasHeader, setImportHasHeader] = useState(true);
+  const [importMap, setImportMap] = useState({ date: '', payee: '', amount: '', debit: '', credit: '', notes: '' });
+  const [importDateFormat, setImportDateFormat] = useState('auto');
+  const [importSign, setImportSign] = useState('negative-expense');
+  const [importAccountId, setImportAccountId] = useState('');
+  const [importSkipDupes, setImportSkipDupes] = useState(true);
+  const importFileRef = useRef(null);
 
   // Side menu state
   const [isMobile, setIsMobile] = useState(isMobileNow);
@@ -703,6 +833,108 @@ export default function BudgetApp() {
     showNotification('Transaction recorded.');
   };
 
+  // ----- CSV import -----
+  const closeImport = () => {
+    setImportRows([]);
+    setImportFileName('');
+    setImportHasHeader(true);
+    setImportMap({ date: '', payee: '', amount: '', debit: '', credit: '', notes: '' });
+    setImportDateFormat('auto');
+    setImportSign('negative-expense');
+    setImportSkipDupes(true);
+  };
+
+  const handleImportFile = async (e) => {
+    const file = e.target.files && e.target.files[0];
+    e.target.value = ''; // lets the same file be chosen again later
+    if (!file) return;
+    if (file.size > MAX_IMPORT_BYTES) {
+      showNotification('That file is too large (max 3 MB).');
+      return;
+    }
+    try {
+      const text = await file.text();
+      const rows = parseCSV(text);
+      if (rows.length === 0) {
+        showNotification('No rows found in that file.');
+        return;
+      }
+      if (rows.length > MAX_IMPORT_ROWS + 1) {
+        showNotification(`Too many rows (max ${MAX_IMPORT_ROWS.toLocaleString()} per import).`);
+        return;
+      }
+      // If the first row already contains a readable date, there is no header row.
+      const hasHeader = !rows[0].some(cell => parseDate(cell, 'mdy') !== '');
+      setImportRows(rows);
+      setImportFileName(file.name);
+      setImportHasHeader(hasHeader);
+      setImportMap(hasHeader
+        ? detectMapping(rows[0])
+        : { date: '', payee: '', amount: '', debit: '', credit: '', notes: '' });
+      setImportDateFormat('auto');
+      setImportSign('negative-expense');
+      setImportSkipDupes(true);
+      setImportAccountId(
+        activeAccounts.length === 1
+          ? activeAccounts[0].id
+          : (activeAccounts.some(a => a.id === txAccountId) ? txAccountId : '')
+      );
+    } catch (err) {
+      console.error('CSV read error:', err);
+      showNotification("Couldn't read that file.");
+    }
+  };
+
+  const handleImportHeaderToggle = (checked) => {
+    setImportHasHeader(checked);
+    if (importRows.length) {
+      setImportMap(checked
+        ? detectMapping(importRows[0])
+        : { date: '', payee: '', amount: '', debit: '', credit: '', notes: '' });
+    }
+  };
+
+  const handleConfirmImport = () => {
+    if (!importPreview) return;
+    if (!importAccountId) {
+      showNotification('Choose an account to import into.');
+      return;
+    }
+    if (importMap.date === '' || (importMap.amount === '' && importMap.debit === '' && importMap.credit === '')) {
+      showNotification('Map the Date column and an Amount (or Debit/Credit) column first.');
+      return;
+    }
+    const toImport = importPreview.rows.filter(r => r.status === 'ok' || (r.status === 'dup' && !importSkipDupes));
+    if (toImport.length === 0) {
+      showNotification('Nothing to import.');
+      return;
+    }
+
+    const stamp = Date.now();
+    // Bank exports only contain transactions that have cleared, so they arrive as cleared (not yet reconciled).
+    const newTxs = toImport.map((r, i) => ({
+      id: `tx-${stamp}-${i}`,
+      date: r.date,
+      payee: r.payee,
+      amount: r.amount,
+      type: r.type,
+      accountId: importAccountId,
+      envelopeId: r.type === 'expense' ? r.envelopeId : '',
+      notes: r.notes,
+      isDeleted: false,
+      cleared: true,
+      reconciled: false
+    }));
+
+    const rtaAdd = newTxs.filter(countsTowardRTA).reduce((sum, t) => sum + Number(t.amount), 0);
+    setTransactions(prev => [...newTxs, ...prev]);
+    if (rtaAdd !== 0) {
+      setReadyToAssign(prev => prev + rtaAdd);
+    }
+    closeImport();
+    showNotification(`Imported ${newTxs.length} transaction${newTxs.length === 1 ? '' : 's'}.`);
+  };
+
   const handleSoftDeleteTransaction = (txId) => {
     const tx = transactions.find(t => t.id === txId);
     if (!tx) return;
@@ -808,6 +1040,116 @@ export default function BudgetApp() {
   const deletedAcc = accounts.filter(a => a.isDeleted);
   const deletedDebts = debts.filter(d => d.isDeleted);
   const totalTrashCount = deletedTx.length + deletedEnv.length + deletedAcc.length + deletedDebts.length;
+
+  // Build the import preview: parse every row, flag duplicates, and suggest envelopes.
+  const importPreview = useMemo(() => {
+    if (!importRows.length) return null;
+    const dataRows = importHasHeader ? importRows.slice(1) : importRows;
+    const col = (row, idx) => (idx === '' ? '' : (row[Number(idx)] ?? ''));
+
+    const fmt = importDateFormat === 'auto'
+      ? detectDateFormat(dataRows.slice(0, 300).map(r => col(r, importMap.date)))
+      : importDateFormat;
+
+    const liveTx = transactions.filter(t => !t.isDeleted);
+    const liveEnv = envelopes.filter(e => !e.isDeleted);
+
+    // Existing transactions in the target account, counted so identical repeats still import correctly.
+    const existing = new Map();
+    liveTx.filter(t => t.accountId === importAccountId).forEach(t => {
+      const k = `${t.date}|${t.type}|${Math.round(Number(t.amount) * 100)}`;
+      existing.set(k, (existing.get(k) || 0) + 1);
+    });
+
+    // Remember which envelope each payee was last filed under.
+    const payeeHistory = new Map();
+    liveTx.forEach(t => {
+      const key = String(t.payee || '').trim().toLowerCase();
+      if (t.type === 'expense' && t.envelopeId && key && !payeeHistory.has(key)) {
+        payeeHistory.set(key, t.envelopeId);
+      }
+    });
+
+    const rows = dataRows.map((row, i) => {
+      const date = parseDate(col(row, importMap.date), fmt);
+      const payeeRaw = String(col(row, importMap.payee)).trim();
+      const notes = String(col(row, importMap.notes)).trim();
+
+      let signed = NaN;
+      if (importMap.amount !== '') {
+        signed = parseAmount(col(row, importMap.amount));
+        if (importSign === 'positive-expense' && !isNaN(signed)) signed = -signed;
+      } else if (importMap.debit !== '' || importMap.credit !== '') {
+        const d = parseAmount(col(row, importMap.debit));
+        const c = parseAmount(col(row, importMap.credit));
+        const debit = isNaN(d) ? 0 : Math.abs(d);
+        const credit = isNaN(c) ? 0 : Math.abs(c);
+        signed = (debit === 0 && credit === 0) ? NaN : credit - debit;
+      }
+
+      const base = {
+        index: i,
+        date,
+        payee: payeeRaw || '(no payee)',
+        notes,
+        type: signed > 0 ? 'income' : 'expense',
+        amount: isNaN(signed) ? 0 : Math.round(Math.abs(signed) * 100) / 100,
+        envelopeId: ''
+      };
+
+      if (!date) return { ...base, status: 'invalid', reason: 'Bad date' };
+      if (isNaN(signed) || Math.round(Math.abs(signed) * 100) === 0) return { ...base, status: 'invalid', reason: 'Bad amount' };
+
+      const key = `${date}|${base.type}|${Math.round(base.amount * 100)}`;
+      const isDup = (existing.get(key) || 0) > 0;
+      if (isDup) existing.set(key, existing.get(key) - 1);
+
+      let envelopeId = '';
+      if (base.type === 'expense') {
+        const lower = payeeRaw.toLowerCase();
+        const fromHistory = payeeHistory.get(lower);
+        if (fromHistory && liveEnv.some(e => e.id === fromHistory)) {
+          envelopeId = fromHistory;
+        } else if (lower) {
+          const byName = liveEnv.find(e => e.name.length >= 3 && lower.includes(e.name.toLowerCase()));
+          if (byName) envelopeId = byName.id;
+        }
+      }
+
+      return { ...base, envelopeId, status: isDup ? 'dup' : 'ok' };
+    });
+
+    return {
+      rows,
+      ok: rows.filter(r => r.status === 'ok').length,
+      dup: rows.filter(r => r.status === 'dup').length,
+      invalid: rows.filter(r => r.status === 'invalid').length
+    };
+  }, [importRows, importHasHeader, importMap, importDateFormat, importSign, importAccountId, transactions, envelopes]);
+
+  const importToImportCount = importPreview
+    ? importPreview.ok + (importSkipDupes ? 0 : importPreview.dup)
+    : 0;
+
+  const importColumnOptions = importRows.length
+    ? (importHasHeader ? importRows[0] : importRows[0].map((_, i) => `Column ${i + 1}`))
+    : [];
+
+  const mapSelect = (label, key) => (
+    <label key={key} style={{ display: 'flex', flexDirection: 'column', fontSize: '0.75rem', color: '#6b7280', gap: '2px' }}>
+      {label}
+      <select
+        value={importMap[key]}
+        onChange={e => setImportMap(m => ({ ...m, [key]: e.target.value }))}
+        style={{ padding: '6px', border: '1px solid #d1d5db', borderRadius: '6px', fontSize: '0.85rem', color: '#1f2937' }}
+      >
+        <option value="">— none —</option>
+        {importColumnOptions.map((h, i) => (
+          <option key={i} value={String(i)}>{String(h).trim() || `Column ${i + 1}`}</option>
+        ))}
+      </select>
+    </label>
+  );
 
   return (
     <div style={{ display: 'flex', minHeight: '100vh', fontFamily: 'system-ui, -apple-system, sans-serif', color: '#1f2937', backgroundColor: '#f9fafb' }}>
@@ -1458,6 +1800,170 @@ export default function BudgetApp() {
                 )}
               </div>
             </form>
+          </div>
+
+          {/* CSV import */}
+          <div style={{ backgroundColor: 'white', padding: '14px', borderRadius: '10px', boxShadow: '0 1px 3px rgba(0,0,0,0.1)' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
+              <div style={{ minWidth: 0 }}>
+                <h3 style={{ margin: 0, fontSize: '1rem' }}>Import CSV</h3>
+                <div style={{ fontSize: '0.75rem', color: '#6b7280', marginTop: '2px', wordBreak: 'break-word' }}>
+                  {importRows.length ? importFileName : "Upload your bank's CSV export to add transactions in bulk."}
+                </div>
+              </div>
+              <input
+                ref={importFileRef}
+                type="file"
+                accept=".csv,.txt,text/csv"
+                onChange={handleImportFile}
+                style={{ display: 'none' }}
+              />
+              <button
+                onClick={() => importFileRef.current && importFileRef.current.click()}
+                style={{ backgroundColor: 'white', color: '#2563eb', border: '1px solid #bfdbfe', padding: '6px 12px', borderRadius: '6px', fontWeight: 'bold', cursor: 'pointer', fontSize: '0.85rem' }}
+              >
+                {importRows.length ? 'Choose another file' : 'Choose CSV file'}
+              </button>
+            </div>
+
+            {importRows.length > 0 && importPreview && (
+              <div style={{ marginTop: '12px', display: 'flex', flexDirection: 'column', gap: '10px' }}>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: '8px' }}>
+                  <label style={{ display: 'flex', flexDirection: 'column', fontSize: '0.75rem', color: '#6b7280', gap: '2px' }}>
+                    Import into account
+                    <select
+                      value={importAccountId}
+                      onChange={e => setImportAccountId(e.target.value)}
+                      style={{ padding: '6px', border: '1px solid #d1d5db', borderRadius: '6px', fontSize: '0.85rem', color: '#1f2937' }}
+                    >
+                      <option value="">Select Account</option>
+                      {activeAccounts.map(acc => (
+                        <option key={acc.id} value={acc.id}>{acc.name}</option>
+                      ))}
+                    </select>
+                  </label>
+                  <label style={{ display: 'flex', flexDirection: 'column', fontSize: '0.75rem', color: '#6b7280', gap: '2px' }}>
+                    Date format
+                    <select
+                      value={importDateFormat}
+                      onChange={e => setImportDateFormat(e.target.value)}
+                      style={{ padding: '6px', border: '1px solid #d1d5db', borderRadius: '6px', fontSize: '0.85rem', color: '#1f2937' }}
+                    >
+                      <option value="auto">Auto-detect</option>
+                      <option value="mdy">MM/DD/YYYY</option>
+                      <option value="dmy">DD/MM/YYYY</option>
+                      <option value="ymd">YYYY-MM-DD</option>
+                    </select>
+                  </label>
+                  <label style={{ display: 'flex', flexDirection: 'column', fontSize: '0.75rem', color: '#6b7280', gap: '2px' }}>
+                    Amount signs
+                    <select
+                      value={importSign}
+                      onChange={e => setImportSign(e.target.value)}
+                      style={{ padding: '6px', border: '1px solid #d1d5db', borderRadius: '6px', fontSize: '0.85rem', color: '#1f2937' }}
+                    >
+                      <option value="negative-expense">Negative = money out</option>
+                      <option value="positive-expense">Positive = money out</option>
+                    </select>
+                  </label>
+                </div>
+
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(130px, 1fr))', gap: '8px' }}>
+                  {mapSelect('Date column', 'date')}
+                  {mapSelect('Payee column', 'payee')}
+                  {mapSelect('Amount column', 'amount')}
+                  {mapSelect('Debit column', 'debit')}
+                  {mapSelect('Credit column', 'credit')}
+                  {mapSelect('Notes column', 'notes')}
+                </div>
+                <div style={{ fontSize: '0.72rem', color: '#9ca3af' }}>
+                  Use either one Amount column, or separate Debit and Credit columns.
+                </div>
+
+                <div style={{ display: 'flex', gap: '16px', flexWrap: 'wrap', fontSize: '0.85rem', color: '#374151' }}>
+                  <label style={{ display: 'flex', alignItems: 'center', gap: '6px', cursor: 'pointer' }}>
+                    <input type="checkbox" checked={importHasHeader} onChange={e => handleImportHeaderToggle(e.target.checked)} />
+                    First row is a header
+                  </label>
+                  <label style={{ display: 'flex', alignItems: 'center', gap: '6px', cursor: 'pointer' }}>
+                    <input type="checkbox" checked={importSkipDupes} onChange={e => setImportSkipDupes(e.target.checked)} />
+                    Skip likely duplicates
+                  </label>
+                </div>
+
+                <div style={{ fontSize: '0.85rem', color: '#374151' }}>
+                  <strong style={{ color: '#059669' }}>{importPreview.ok} ready</strong>
+                  {' · '}
+                  <span style={{ color: '#b45309' }}>{importPreview.dup} duplicate{importPreview.dup === 1 ? '' : 's'}{importSkipDupes ? ' (skipped)' : ''}</span>
+                  {' · '}
+                  <span style={{ color: importPreview.invalid ? '#dc2626' : '#6b7280' }}>{importPreview.invalid} unreadable (skipped)</span>
+                </div>
+
+                <div style={{ overflowX: 'auto', WebkitOverflowScrolling: 'touch' }}>
+                  <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.8rem', minWidth: '420px' }}>
+                    <thead>
+                      <tr style={{ borderBottom: '1px solid #e5e7eb', textAlign: 'left', color: '#6b7280' }}>
+                        <th style={{ padding: '5px 4px' }}>Status</th>
+                        <th style={{ padding: '5px 4px' }}>Date</th>
+                        <th style={{ padding: '5px 4px' }}>Payee</th>
+                        <th style={{ padding: '5px 4px' }}>Envelope</th>
+                        <th style={{ padding: '5px 4px', textAlign: 'right' }}>Amount</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {importPreview.rows.slice(0, 8).map(r => {
+                        const envName = envelopes.find(e => e.id === r.envelopeId)?.name;
+                        return (
+                          <tr key={r.index} style={{ borderBottom: '1px solid #f3f4f6', opacity: r.status === 'ok' ? 1 : 0.65 }}>
+                            <td style={{ padding: '5px 4px', whiteSpace: 'nowrap', fontWeight: 600, color: r.status === 'ok' ? '#059669' : r.status === 'dup' ? '#b45309' : '#dc2626' }}>
+                              {r.status === 'ok' ? '✓ New' : r.status === 'dup' ? 'Duplicate' : r.reason}
+                            </td>
+                            <td style={{ padding: '5px 4px', whiteSpace: 'nowrap' }}>{r.date ? formatDate(r.date, 'us') : '—'}</td>
+                            <td style={{ padding: '5px 4px', wordBreak: 'break-word' }}>{r.payee}</td>
+                            <td style={{ padding: '5px 4px', color: '#6b7280' }}>{envName || '—'}</td>
+                            <td style={{ padding: '5px 4px', textAlign: 'right', whiteSpace: 'nowrap', fontWeight: 'bold', color: r.type === 'income' ? '#059669' : '#1f2937' }}>
+                              {r.status === 'invalid' && r.reason === 'Bad amount' ? '—' : `${r.type === 'income' ? '+' : '-'}$${r.amount.toFixed(2)}`}
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                  {importPreview.rows.length > 8 && (
+                    <div style={{ fontSize: '0.75rem', color: '#9ca3af', padding: '6px 4px' }}>
+                      …and {importPreview.rows.length - 8} more rows
+                    </div>
+                  )}
+                </div>
+
+                <div style={{ display: 'flex', gap: '8px' }}>
+                  <button
+                    onClick={handleConfirmImport}
+                    disabled={importToImportCount === 0 || !importAccountId}
+                    style={{
+                      flex: 1,
+                      backgroundColor: '#2563eb',
+                      color: 'white',
+                      border: 'none',
+                      padding: '10px',
+                      borderRadius: '6px',
+                      fontWeight: 'bold',
+                      cursor: (importToImportCount === 0 || !importAccountId) ? 'not-allowed' : 'pointer',
+                      opacity: (importToImportCount === 0 || !importAccountId) ? 0.5 : 1,
+                      fontSize: '0.9rem'
+                    }}
+                  >
+                    Import {importToImportCount} transaction{importToImportCount === 1 ? '' : 's'}
+                  </button>
+                  <button
+                    onClick={closeImport}
+                    style={{ backgroundColor: '#e5e7eb', color: '#374151', border: 'none', padding: '10px 16px', borderRadius: '6px', fontWeight: 'bold', cursor: 'pointer', fontSize: '0.9rem' }}
+                  >
+                    Cancel
+                  </button>
+                </div>
+              </div>
+            )}
           </div>
 
           <div style={{ backgroundColor: 'white', padding: '14px', borderRadius: '10px', boxShadow: '0 1px 3px rgba(0,0,0,0.1)' }}>
