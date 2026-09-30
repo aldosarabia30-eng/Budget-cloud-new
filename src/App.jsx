@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { createClient } from '@supabase/supabase-js';
 
 // --- SUPABASE CONFIGURATION ---
@@ -8,17 +8,46 @@ const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBh
 export const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 // ------------------------------
 
-// Helper to get or generate Budget ID from URL query parameters
+// Helper to get or generate Budget ID from URL query parameters.
+// No shared "default-budget" anymore: a private random ID is generated once and remembered on this device.
 const getBudgetIdFromUrl = () => {
   const params = new URLSearchParams(window.location.search);
   let id = params.get('budgetId');
   if (!id) {
-    id = 'default-budget';
+    try { id = localStorage.getItem('budgetId'); } catch (e) { /* storage unavailable */ }
+    if (!id) {
+      id = (typeof crypto !== 'undefined' && crypto.randomUUID)
+        ? crypto.randomUUID()
+        : 'b-' + Date.now() + '-' + Math.random().toString(36).slice(2);
+      try { localStorage.setItem('budgetId', id); } catch (e) { /* storage unavailable */ }
+    }
     const newUrl = `${window.location.pathname}?budgetId=${id}`;
     window.history.replaceState({ path: newUrl }, '', newUrl);
   }
   return id;
 };
+
+// Order-independent JSON so local state can be compared with what Postgres jsonb returns
+// (jsonb does not preserve key order, including inside nested objects).
+const stable = (v) => {
+  if (Array.isArray(v)) return '[' + v.map(item => (item === undefined ? 'null' : stable(item))).join(',') + ']';
+  if (v && typeof v === 'object') {
+    return '{' + Object.keys(v).filter(k => v[k] !== undefined).sort()
+      .map(k => JSON.stringify(k) + ':' + stable(v[k])).join(',') + '}';
+  }
+  return JSON.stringify(v);
+};
+
+const snapshot = (d = {}) => stable({
+  readyToAssign: d.readyToAssign ?? 0,
+  accounts: d.accounts ?? [],
+  groups: d.groups ?? [],
+  collapsedGroups: d.collapsedGroups ?? {},
+  collapsedAccountTx: d.collapsedAccountTx ?? {},
+  envelopes: d.envelopes ?? [],
+  transactions: d.transactions ?? [],
+  debts: d.debts ?? []
+});
 
 // Helper to get local date string YYYY-MM-DD
 const getTodayISO = () => {
@@ -75,7 +104,7 @@ const getScheduleText = (env) => {
 };
 
 export default function BudgetApp() {
-  const [budgetId, setBudgetId] = useState(getBudgetIdFromUrl());
+  const [budgetId, setBudgetId] = useState(getBudgetIdFromUrl);
   const [readyToAssign, setReadyToAssign] = useState(0.0);
 
   const [accounts, setAccounts] = useState([]);
@@ -125,29 +154,43 @@ export default function BudgetApp() {
   const [newDebtAPR, setNewDebtAPR] = useState('');
   const [newDebtMin, setNewDebtMin] = useState('');
 
-  // Fetch budget data from Supabase & Subscribe to Real-time Changes
+  // Sync guards: never save before the initial load finishes, and never echo remote data back.
+  const loadedRef = useRef(false);
+  const lastJsonRef = useRef('');
+
+  // Fetch budget data from Supabase & subscribe to real-time changes
   useEffect(() => {
+    if (!budgetId) return;
+    let cancelled = false;
+    loadedRef.current = false;
+
+    const applyRemote = (d) => {
+      lastJsonRef.current = snapshot(d); // remember it so the save effect doesn't send it back
+      setReadyToAssign(d.readyToAssign ?? 0);
+      setAccounts(d.accounts ?? []);
+      setGroups(d.groups ?? []);
+      setCollapsedGroups(d.collapsedGroups ?? {});
+      setCollapsedAccountTx(d.collapsedAccountTx ?? {});
+      setEnvelopes(d.envelopes ?? []);
+      setTransactions(d.transactions ?? []);
+      setDebts(d.debts ?? []);
+    };
+
     const fetchBudgetData = async () => {
-      if (!budgetId) return;
       const { data, error } = await supabase
         .from('user_budgets')
         .select('data')
         .eq('id', budgetId)
-        .single();
+        .maybeSingle(); // a brand-new budget has no row yet, which is not an error
 
+      if (cancelled) return;
       if (error) {
         console.error('Error fetching budget data from Supabase:', error);
-      } else if (data && data.data) {
-        const parsed = data.data;
-        if (parsed.readyToAssign !== undefined) setReadyToAssign(parsed.readyToAssign);
-        if (parsed.accounts) setAccounts(parsed.accounts);
-        if (parsed.groups) setGroups(parsed.groups);
-        if (parsed.collapsedGroups) setCollapsedGroups(parsed.collapsedGroups);
-        if (parsed.collapsedAccountTx) setCollapsedAccountTx(parsed.collapsedAccountTx);
-        if (parsed.envelopes) setEnvelopes(parsed.envelopes);
-        if (parsed.transactions) setTransactions(parsed.transactions);
-        if (parsed.debts) setDebts(parsed.debts);
+        setNotification("Couldn't load your budget, so changes won't be saved. Please refresh.");
+        return; // stay "not loaded" so we never overwrite saved data with empty state
       }
+      if (data && data.data) applyRemote(data.data);
+      loadedRef.current = true;
     };
 
     fetchBudgetData();
@@ -155,40 +198,39 @@ export default function BudgetApp() {
     const channel = supabase
       .channel(`public:user_budgets:id=eq.${budgetId}`)
       .on('postgres_changes', { event: '*', schema: 'public', table: 'user_budgets', filter: `id=eq.${budgetId}` }, (payload) => {
-        if (payload.new && payload.new.data) {
-          const updated = payload.new.data;
-          if (updated.readyToAssign !== undefined) setReadyToAssign(updated.readyToAssign);
-          if (updated.accounts) setAccounts(updated.accounts);
-          if (updated.groups) setGroups(updated.groups);
-          if (updated.collapsedGroups) setCollapsedGroups(updated.collapsedGroups);
-          if (updated.collapsedAccountTx) setCollapsedAccountTx(updated.collapsedAccountTx);
-          if (updated.envelopes) setEnvelopes(updated.envelopes);
-          if (updated.transactions) setTransactions(updated.transactions);
-          if (updated.debts) setDebts(updated.debts);
-        }
+        const d = payload.new && payload.new.data;
+        if (!d) return;
+        if (snapshot(d) === lastJsonRef.current) return; // our own save echoing back
+        applyRemote(d);
       })
       .subscribe();
 
     return () => {
+      cancelled = true;
       supabase.removeChannel(channel);
     };
   }, [budgetId]);
 
-  // Save budget changes to Supabase
+  // Save budget changes to Supabase (debounced, skipped when nothing actually changed)
   useEffect(() => {
-    const saveBudgetData = async () => {
-      if (!budgetId) return;
-      const dataToSave = { readyToAssign, accounts, groups, collapsedGroups, collapsedAccountTx, envelopes, transactions, debts };
+    if (!budgetId || !loadedRef.current) return;
+    const dataToSave = { readyToAssign, accounts, groups, collapsedGroups, collapsedAccountTx, envelopes, transactions, debts };
+    const json = snapshot(dataToSave);
+    if (json === lastJsonRef.current) return;
+
+    const timer = setTimeout(async () => {
       const { error } = await supabase
         .from('user_budgets')
         .upsert({ id: budgetId, data: dataToSave });
 
       if (error) {
         console.error('Error saving budget data to Supabase:', error);
+      } else {
+        lastJsonRef.current = json;
       }
-    };
+    }, 400);
 
-    saveBudgetData();
+    return () => clearTimeout(timer);
   }, [budgetId, readyToAssign, accounts, groups, collapsedGroups, collapsedAccountTx, envelopes, transactions, debts]);
 
   const copyShareLink = () => {
@@ -214,6 +256,26 @@ export default function BudgetApp() {
   const activeAccounts = accounts.filter(a => !a.isDeleted);
   const activeEnvelopes = envelopes.filter(e => !e.isDeleted);
   const activeDebts = debts.filter(d => !d.isDeleted);
+
+  // Credit cards hold debt (negative balance) and never feed Ready to Assign.
+  const isCreditCard = (acc) => acc?.type === 'Credit Card';
+
+  // Does this transaction add to Ready to Assign? Only income into a live, non-credit-card account.
+  const countsTowardRTA = (tx) => {
+    if (tx.type !== 'income') return false;
+    const acc = accounts.find(a => a.id === tx.accountId);
+    return !!acc && !acc.isDeleted && !isCreditCard(acc);
+  };
+
+  // Total an account has contributed to Ready to Assign (used when deleting/restoring an account).
+  const getRtaContribution = (accId) => {
+    const acc = accounts.find(a => a.id === accId);
+    if (!acc || isCreditCard(acc)) return 0;
+    const income = activeTransactions
+      .filter(t => t.accountId === accId && t.type === 'income')
+      .reduce((sum, t) => sum + Number(t.amount), 0);
+    return Number(acc.initialBalance) + income;
+  };
 
   const getAccountBalance = (accId) => {
     const acc = accounts.find(a => a.id === accId);
@@ -255,18 +317,20 @@ export default function BudgetApp() {
       return;
     }
 
-    const currentBal = getAccountBalance(accId);
-    const diff = target - currentBal;
+    // The bank statement only knows about cleared transactions, so compare against the cleared balance.
+    const clearedBal = getClearedBalance(accId);
+    const diff = target - clearedBal;
+    const needsAdjustment = Math.abs(diff) >= 0.01;
+    const acc = accounts.find(a => a.id === accId);
 
-    if (Math.abs(diff) >= 0.01) {
+    let adjTx = null;
+    if (needsAdjustment) {
       const isIncome = diff > 0;
-      const adjustmentAmt = Math.abs(diff);
-
-      const adjTx = {
+      adjTx = {
         id: 'tx-' + Date.now(),
         date: getTodayISO(),
         payee: 'Reconciliation Adjustment',
-        amount: adjustmentAmt,
+        amount: Math.abs(diff),
         type: isIncome ? 'income' : 'expense',
         accountId: accId,
         envelopeId: '',
@@ -275,17 +339,21 @@ export default function BudgetApp() {
         cleared: true,
         reconciled: true
       };
-
-      setTransactions(prev => [adjTx, ...prev]);
-      setReadyToAssign(prev => prev + (isIncome ? adjustmentAmt : -adjustmentAmt));
+      // Same rule as every other income transaction, so deleting/restoring it stays consistent.
+      if (isIncome && acc && !isCreditCard(acc)) {
+        setReadyToAssign(prev => prev + adjTx.amount);
+      }
     }
 
-    setTransactions(prev => prev.map(t => {
-      if (t.accountId === accId && (t.cleared || Math.abs(diff) >= 0.01) && !t.isDeleted) {
-        return { ...t, cleared: true, reconciled: true };
-      }
-      return t;
-    }));
+    // Only cleared transactions become reconciled; uncleared ones stay visible for follow-up.
+    setTransactions(prev => {
+      const marked = prev.map(t => (
+        t.accountId === accId && !t.isDeleted && (t.cleared || t.reconciled)
+          ? { ...t, cleared: true, reconciled: true }
+          : t
+      ));
+      return adjTx ? [adjTx, ...marked] : marked;
+    });
 
     setAccounts(prev => prev.map(a => {
       if (a.id === accId) {
@@ -313,6 +381,19 @@ export default function BudgetApp() {
     return Number(env.assigned) - getEnvelopeSpent(env.id);
   };
 
+  // How far an envelope is from its target.
+  // Repeating goals (bills): funded = amount assigned this cycle.
+  // Target-by-date goals (savings): funded = balance still sitting in the envelope.
+  const getTargetProgress = (env) => {
+    if (!env.goalType || env.goalType === 'none') return null;
+    const target = Number(env.targetAmount);
+    if (!(target > 0)) return null;
+    const funded = env.goalType === 'target_by_date' ? getEnvelopeRemaining(env) : Number(env.assigned);
+    const left = Math.max(0, target - funded);
+    const pct = Math.min(100, Math.max(0, (funded / target) * 100));
+    return { target, funded, left, pct };
+  };
+
   const groupedTransactions = activeTransactions.reduce((acc, tx) => {
     const dateKey = tx.date || getTodayISO();
     if (!acc[dateKey]) acc[dateKey] = [];
@@ -322,12 +403,15 @@ export default function BudgetApp() {
 
   const sortedTransactionDates = Object.keys(groupedTransactions).sort((a, b) => b.localeCompare(a));
 
+  // Auto-pick an envelope only on a confident match (3+ chars, prefix match), not on any shared letter.
   const handlePayeeChange = (val) => {
     setTxPayee(val);
-    if (!val) return;
-    const matchedEnv = activeEnvelopes.find(env =>
-      val.toLowerCase().includes(env.name.toLowerCase()) || env.name.toLowerCase().includes(val.toLowerCase())
-    );
+    const typed = val.trim().toLowerCase();
+    if (typed.length < 3) return;
+    const matchedEnv = activeEnvelopes.find(env => {
+      const name = env.name.toLowerCase();
+      return name.startsWith(typed) || (name.length >= 3 && typed.startsWith(name));
+    });
     if (matchedEnv) {
       setTxEnvelopeId(matchedEnv.id);
     }
@@ -350,7 +434,8 @@ export default function BudgetApp() {
     }
 
     setGroups(groups.filter(g => g !== groupName));
-    setEnvelopes(envelopes.map(env => (env.group === groupName ? { ...env, isDeleted: true } : env)));
+    // Zero out assigned so restoring an envelope later can't bring back money that was already refunded.
+    setEnvelopes(envelopes.map(env => (env.group === groupName && !env.isDeleted ? { ...env, isDeleted: true, assigned: 0 } : env)));
     showNotification(`Group '${groupName}' deleted.`);
   };
 
@@ -402,17 +487,22 @@ export default function BudgetApp() {
   const handleAddAccount = (e) => {
     e.preventDefault();
     if (!newAccName.trim() || !newAccBalance) return;
+    const entered = parseFloat(newAccBalance) || 0;
+    const isCC = newAccType === 'Credit Card';
     const newAcc = {
       id: 'acc-' + Date.now(),
       name: newAccName.trim(),
       type: newAccType,
-      initialBalance: parseFloat(newAccBalance) || 0,
+      // Credit cards are entered as "amount owed" and stored as a negative balance.
+      initialBalance: isCC ? -Math.abs(entered) : entered,
       isDeleted: false,
       lastReconciledDate: '',
       lastReconciledBalance: null
     };
     setAccounts([...accounts, newAcc]);
-    setReadyToAssign(prev => prev + newAcc.initialBalance);
+    if (!isCC) {
+      setReadyToAssign(prev => prev + newAcc.initialBalance);
+    }
     setNewAccName('');
     setNewAccBalance('');
     showNotification(`Account '${newAcc.name}' added.`);
@@ -420,8 +510,14 @@ export default function BudgetApp() {
 
   const handleSoftDeleteAccount = (accId) => {
     const acc = accounts.find(a => a.id === accId);
+    if (!acc) return;
+    const contribution = getRtaContribution(accId);
+    if (contribution !== 0) {
+      setReadyToAssign(prev => prev - contribution);
+    }
     setAccounts(accounts.map(a => (a.id === accId ? { ...a, isDeleted: true } : a)));
-    showNotification(`Account '${acc?.name}' moved to Trash.`);
+    if (reconcilingAccId === accId) setReconcilingAccId(null);
+    showNotification(`Account '${acc.name}' moved to Trash.`);
   };
 
   const handleAddTransaction = (e) => {
@@ -448,7 +544,7 @@ export default function BudgetApp() {
 
     setTransactions([newTx, ...transactions]);
 
-    if (txType === 'income') {
+    if (countsTowardRTA(newTx)) {
       setReadyToAssign(prev => prev + amt);
     }
 
@@ -462,10 +558,11 @@ export default function BudgetApp() {
   const handleSoftDeleteTransaction = (txId) => {
     const tx = transactions.find(t => t.id === txId);
     if (!tx) return;
-    if (tx.type === 'income') {
-      setReadyToAssign(prev => prev - tx.amount);
+    if (countsTowardRTA(tx)) {
+      setReadyToAssign(prev => prev - Number(tx.amount));
     }
     setTransactions(transactions.map(t => (t.id === txId ? { ...t, isDeleted: true } : t)));
+    setSelectedTxIds(prev => prev.filter(id => id !== txId)); // don't leave a stale selection behind
     showNotification('Transaction moved to Trash.');
   };
 
@@ -489,7 +586,7 @@ export default function BudgetApp() {
 
     let incomeAdjustment = 0;
     transactions.forEach(t => {
-      if (selectedTxIds.includes(t.id) && t.type === 'income' && !t.isDeleted) {
+      if (selectedTxIds.includes(t.id) && !t.isDeleted && countsTowardRTA(t)) {
         incomeAdjustment += Number(t.amount);
       }
     });
@@ -531,11 +628,16 @@ export default function BudgetApp() {
   const restoreItem = (type, id) => {
     if (type === 'tx') {
       const tx = transactions.find(t => t.id === id);
-      if (tx && tx.type === 'income') setReadyToAssign(prev => prev + tx.amount);
+      if (tx && countsTowardRTA(tx)) setReadyToAssign(prev => prev + Number(tx.amount));
       setTransactions(transactions.map(t => (t.id === id ? { ...t, isDeleted: false } : t)));
     } else if (type === 'env') {
+      const env = envelopes.find(e => e.id === id);
+      // If its group was deleted too, bring the group back so the envelope isn't invisible.
+      if (env && !groups.includes(env.group)) setGroups(prev => [...prev, env.group]);
       setEnvelopes(envelopes.map(e => (e.id === id ? { ...e, isDeleted: false } : e)));
     } else if (type === 'acc') {
+      const contribution = getRtaContribution(id);
+      if (contribution !== 0) setReadyToAssign(prev => prev + contribution);
       setAccounts(accounts.map(a => (a.id === id ? { ...a, isDeleted: false } : a)));
     } else if (type === 'debt') {
       setDebts(debts.map(d => (d.id === id ? { ...d, isDeleted: false } : d)));
@@ -798,6 +900,7 @@ export default function BudgetApp() {
                       groupEnvelopes.map(env => {
                         const spent = getEnvelopeSpent(env.id);
                         const remaining = getEnvelopeRemaining(env);
+                        const progress = getTargetProgress(env);
 
                         return (
                           <div key={env.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '10px', backgroundColor: '#f9fafb', borderRadius: '6px', flexWrap: 'wrap', gap: '10px' }}>
@@ -806,6 +909,18 @@ export default function BudgetApp() {
                               {env.goalType !== 'none' && (
                                 <div style={{ fontSize: '0.75rem', color: '#6b7280' }}>
                                   {getScheduleText(env)} {env.targetAmount > 0 ? `(Target: $${Number(env.targetAmount).toFixed(2)})` : ''} {env.targetDate ? `by ${formatDate(env.targetDate, 'us')}` : ''}
+                                </div>
+                              )}
+                              {progress && (
+                                <div style={{ marginTop: '6px' }}>
+                                  <div style={{ height: '6px', backgroundColor: '#e5e7eb', borderRadius: '3px', overflow: 'hidden' }}>
+                                    <div style={{ width: `${progress.pct}%`, height: '100%', backgroundColor: progress.left === 0 ? '#059669' : '#3b82f6' }} />
+                                  </div>
+                                  <div style={{ fontSize: '0.75rem', marginTop: '3px', fontWeight: '600', color: progress.left === 0 ? '#059669' : '#b45309' }}>
+                                    {progress.left === 0
+                                      ? 'Target reached ✓'
+                                      : `$${progress.left.toFixed(2)} left to reach target`}
+                                  </div>
                                 </div>
                               )}
                             </div>
@@ -866,7 +981,7 @@ export default function BudgetApp() {
               <input
                 type="number"
                 step="0.01"
-                placeholder="Initial Bal ($)"
+                placeholder={newAccType === 'Credit Card' ? 'Amount Owed ($)' : 'Initial Bal ($)'}
                 value={newAccBalance}
                 onChange={e => setNewAccBalance(e.target.value)}
                 style={{ flex: '1 1 100px', padding: '8px', border: '1px solid #d1d5db', borderRadius: '6px', fontSize: '0.9rem' }}
@@ -925,7 +1040,7 @@ export default function BudgetApp() {
                   <div style={{ marginTop: '12px', backgroundColor: '#f0fdf4', padding: '12px', borderRadius: '8px', border: '1px solid #bbf7d0' }}>
                     <h4 style={{ margin: '0 0 6px 0', color: '#166534', fontSize: '0.95rem' }}>Reconcile {acc.name}</h4>
                     <p style={{ margin: '0 0 10px 0', fontSize: '0.8rem', color: '#15803d' }}>
-                      Enter your bank statement ending balance.
+                      Mark the transactions that appear on your statement as cleared (C), then enter the statement ending balance. Uncleared transactions stay open.
                     </p>
                     <div style={{ display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap' }}>
                       <input
@@ -986,8 +1101,8 @@ export default function BudgetApp() {
                                   <button
                                     onClick={() => handleToggleCleared(t.id)}
                                     style={{
-                                      backgroundColor: t.cleared ? '#10b981' : '#e5e7eb',
-                                      color: t.cleared ? 'white' : '#6b7280',
+                                      backgroundColor: (t.cleared || t.reconciled) ? '#10b981' : '#e5e7eb',
+                                      color: (t.cleared || t.reconciled) ? 'white' : '#6b7280',
                                       border: 'none',
                                       borderRadius: '4px',
                                       padding: '2px 6px',
@@ -1218,7 +1333,7 @@ export default function BudgetApp() {
                 <div>
                   <h4 style={{ margin: '0 0 4px 0', fontSize: '1rem' }}>{debt.name}</h4>
                   <p style={{ margin: 0, fontSize: '0.8rem', color: '#6b7280' }}>
-                    Bal: <strong>${Number(debt.balance).toFixed(2)}</strong> \vert{} APR: <strong>{debt.APR}\%</strong> \vert{} Min: <strong>${Number(debt.minimumPayment).toFixed(2)}</strong>
+                    Bal: <strong>${Number(debt.balance).toFixed(2)}</strong> | APR: <strong>{debt.APR}%</strong> | Min: <strong>${Number(debt.minimumPayment).toFixed(2)}</strong>
                   </p>
                 </div>
                 <button
