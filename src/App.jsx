@@ -193,6 +193,109 @@ const signedMoney = (tx) => {
 const plainMoney = (n) => `${Number(n) < 0 ? '-' : ''}$${Math.abs(Number(n) || 0).toFixed(2)}`;
 // ---- end split transaction helpers ----
 
+// ---- drag-to-reorder for a vertical list of cards ----
+// Hold the handle, drag up or down, release to drop. Pointer events, so it works with mouse and touch.
+// `ids` is the current order; onCommit(newIds) is called once when the order really changed.
+const useDragReorder = (ids, onCommit) => {
+  const [drag, setDrag] = useState(null); // { id, dy, target, measuring }
+  const ref = useRef(null);
+  const els = useRef({});
+  const live = useRef({});
+  live.current = { ids, onCommit };
+
+  const targetOf = (info, clientY) => {
+    const cardTop = clientY + window.scrollY - info.grabOffset;
+    const center = cardTop + info.rects[info.from].height / 2;
+    let target = 0;
+    info.ids.forEach((_, i) => { if (i !== info.from && info.rects[i].top + info.rects[i].height / 2 < center) target++; });
+    return { target, dy: cardTop - info.rects[info.from].top };
+  };
+  const finish = (commit) => {
+    const info = ref.current;
+    if (info) {
+      if (info.cleanup) info.cleanup();
+      if (commit && info.phase === 'drag') {
+        const { target } = targetOf(info, info.clientY);
+        const others = info.ids.filter((_, i) => i !== info.from);
+        const next = [...others.slice(0, target), info.id, ...others.slice(target)];
+        if (next.some((x, i) => x !== info.ids[i])) live.current.onCommit(next);
+      }
+    }
+    ref.current = null;
+    setDrag(null);
+  };
+  const start = (e, id) => {
+    if (e.button !== undefined && e.button !== 0) return;
+    e.preventDefault();
+    const onMove = (ev) => {
+      const info = ref.current;
+      if (!info) return;
+      info.clientY = ev.clientY;
+      if (info.phase === 'drag') {
+        const { target, dy } = targetOf(info, ev.clientY);
+        setDrag({ id: info.id, dy, target, measuring: false });
+      }
+    };
+    const onUp = () => finish(true);
+    const onCancel = () => finish(false);
+    window.addEventListener('pointermove', onMove);
+    window.addEventListener('pointerup', onUp);
+    window.addEventListener('pointercancel', onCancel);
+    document.body.style.userSelect = 'none';
+    ref.current = {
+      id,
+      phase: 'pending',
+      clientY: e.clientY,
+      cleanup: () => {
+        window.removeEventListener('pointermove', onMove);
+        window.removeEventListener('pointerup', onUp);
+        window.removeEventListener('pointercancel', onCancel);
+        document.body.style.userSelect = '';
+      }
+    };
+    setDrag({ id, dy: 0, target: 0, measuring: true }); // cards fold while dragging, then get measured
+  };
+  useLayoutEffect(() => {
+    if (!drag || !drag.measuring) return;
+    const info = ref.current;
+    if (!info) return;
+    const list = live.current.ids.slice();
+    const scrollY = window.scrollY;
+    const rects = list.map(id => {
+      const el = els.current[id];
+      if (!el) return null;
+      const r = el.getBoundingClientRect();
+      return { top: r.top + scrollY, height: r.height };
+    });
+    const from = list.indexOf(info.id);
+    if (from === -1 || rects.some(r => !r)) { finish(false); return; }
+    ref.current = {
+      ...info, ids: list, rects, from, phase: 'drag',
+      grabOffset: Math.min(rects[from].height / 2, 24),
+      gap: list.length > 1 ? Math.max(0, rects[1].top - (rects[0].top + rects[0].height)) : 16
+    };
+    const { target, dy } = targetOf(ref.current, info.clientY);
+    setDrag({ id: info.id, dy, target, measuring: false });
+  }, [drag && drag.measuring]);
+  useEffect(() => () => { if (ref.current && ref.current.cleanup) ref.current.cleanup(); }, []);
+
+  const styleFor = (id) => {
+    const info = ref.current;
+    if (!drag || drag.measuring || !info || info.phase !== 'drag') return {};
+    if (id === drag.id) {
+      return { transform: `translateY(${drag.dy}px)`, position: 'relative', zIndex: 20, boxShadow: '0 10px 24px rgba(0,0,0,0.2)', cursor: 'grabbing' };
+    }
+    const idx = info.ids.indexOf(id);
+    const step = info.rects[info.from].height + info.gap;
+    let shift = 0;
+    if (info.from < drag.target && idx > info.from && idx <= drag.target) shift = -step;
+    else if (info.from > drag.target && idx >= drag.target && idx < info.from) shift = step;
+    return { transform: `translateY(${shift}px)`, transition: 'transform 0.15s ease' };
+  };
+  return { dragging: drag !== null, start, styleFor, refFor: (id) => (el) => { els.current[id] = el; } };
+};
+// ---- end drag-to-reorder ----
+
 // ---- transfer helpers ----
 // A transfer between two accounts is stored as two linked transactions that share a transferId:
 // the money-out leg (type 'expense') in the source account and the money-in leg (type 'income') in the
@@ -536,7 +639,9 @@ const buildActualImport = (tables, choices, stamp) => {
     const g = groupsById.get(c.cat_group);
     const groupName = String((g && g.name) || 'Other').trim() || 'Other';
     if (!groups.includes(groupName)) groups.push(groupName);
-    const env = { id: nid('env'), name: String(c.name || '').trim() || 'Envelope', group: groupName, budget: {}, isDeleted: false, goalType: 'none', targetAmount: 0, targetDate: '' };
+    const hiddenInActual = !!(c.hidden || (g && g.hidden));
+    const cleanName = String(c.name || '').trim().replace(hiddenInActual ? /\s*\(hidden\)\s*$/i : /$^/, '');
+    const env = { id: nid('env'), name: cleanName || 'Envelope', group: groupName, budget: {}, isDeleted: false, isHidden: hiddenInActual, goalType: 'none', targetAmount: 0, targetDate: '' };
     envByCat.set(c.id, env);
     return env;
   });
@@ -561,7 +666,8 @@ const buildActualImport = (tables, choices, stamp) => {
     const type = choice(a.id).type || guessActualAccountType(a.name);
     const acc = {
       id: nid('acc'),
-      name: String(a.name || '').trim() + (a.closed ? ' (closed)' : ''),
+      name: String(a.name || '').trim(),
+      isHidden: !!a.closed, // closed in Actual = hidden here; history stays
       type,
       initialBalance: 0,
       isDeleted: false,
@@ -981,17 +1087,25 @@ export default function BudgetApp() {
   const [txAccountId, setTxAccountId] = useState('');
   const [txToAccountId, setTxToAccountId] = useState(''); // destination account when the type is Transfer
   // Transactions tab filters
+  const [showHiddenEnvelopes, setShowHiddenEnvelopes] = useState(false);
+  const [showHiddenAccounts, setShowHiddenAccounts] = useState(false);
+  const [hideEnvUi, setHideEnvUi] = useState(null); // envelope id asking what to do with its money before hiding
   const [txLimit, setTxLimit] = useState(150); // how many transactions are drawn (long lists stay fast)
   const [txSearch, setTxSearch] = useState('');
   const [txFilterAccount, setTxFilterAccount] = useState('');
   const [txFilterEnvelope, setTxFilterEnvelope] = useState(''); // '' = any, '__none__' = uncategorized
   const [txFilterType, setTxFilterType] = useState(''); // '' | expense | income | transfer
+  const [txFilterStatus, setTxFilterStatus] = useState(''); // '' | cleared | uncleared
+  const [accStatusFilter, setAccStatusFilter] = useState({}); // per account on the Accounts tab: '' | cleared | uncleared
   const [txFromDate, setTxFromDate] = useState('');
   const [txToDate, setTxToDate] = useState('');
   // Budget tab: which envelope has its "move money" / "cover overspending" panel open
   const [moveUi, setMoveUi] = useState(null); // { envId, mode: 'move' | 'cover', otherId, amount }
   const [txSplitLines, setTxSplitLines] = useState(null); // split editor inside the add form: null = off
   const [txEnvelopeId, setTxEnvelopeId] = useState('');
+  // Reconciled transactions are locked. Unlocking is per transaction and only lasts until the page is reloaded.
+  const [unlockedTxIds, setUnlockedTxIds] = useState([]);
+  const [unlockAskId, setUnlockAskId] = useState(null); // row showing the "unlock?" question
   const [splitTxId, setSplitTxId] = useState(null); // transaction whose split editor is open
   const [splitDraft, setSplitDraft] = useState([]); // [{ envelopeId, amount: string }]
   const [txDate, setTxDate] = useState(getTodayISO());
@@ -1290,10 +1404,31 @@ export default function BudgetApp() {
   const activeInvestments = investments.filter(i => !i.isDeleted);
 
   // Envelopes grouped for dropdowns (envelopes whose group no longer exists go under "Other")
-  const envelopeChoices = [
-    ...groups.map(g => ({ label: g, list: activeEnvelopes.filter(e => e.group === g) })),
-    { label: 'Other', list: activeEnvelopes.filter(e => !groups.includes(e.group)) }
+  // Hidden envelopes keep their history and still count in every total, but can't be picked for new spending.
+  const visibleEnvelopes = activeEnvelopes.filter(e => !e.isHidden);
+  const hiddenEnvelopeCount = activeEnvelopes.length - visibleEnvelopes.length;
+  const groupEnvelopeChoices = (list) => [
+    ...groups.map(g => ({ label: g, list: list.filter(e => e.group === g) })),
+    { label: 'Other', list: list.filter(e => !groups.includes(e.group)) }
   ].filter(c => c.list.length > 0);
+  const envelopeChoices = groupEnvelopeChoices(visibleEnvelopes);
+  // For filters: every envelope, hidden ones marked
+  const envelopeChoicesAll = groupEnvelopeChoices(activeEnvelopes.map(e => (e.isHidden ? { ...e, name: e.name + ' (hidden)' } : e)));
+  // Accounts you can put new transactions in (hidden accounts stay out of the way)
+  const hiddenAccountCount = activeAccounts.filter(a => a.isHidden).length;
+  const shownAccounts = activeAccounts.filter(a => showHiddenAccounts || !a.isHidden);
+  const accountChoices = (keepId) => activeAccounts.filter(a => !a.isHidden || a.id === keepId);
+
+  // Drag accounts into a new order. Only the accounts on screen move; hidden ones keep their place.
+  const commitAccountOrder = (newIds) => {
+    setAccounts(prev => {
+      const shown = new Set(newIds);
+      const byId = new Map(prev.map(a => [a.id, a]));
+      let i = 0;
+      return prev.map(a => (shown.has(a.id) ? byId.get(newIds[i++]) : a));
+    });
+  };
+  const acctDrag = useDragReorder(shownAccounts.map(a => a.id), commitAccountOrder);
   const invTotals = activeInvestments.reduce(
     (t, i) => ({ value: t.value + Number(i.value), basis: t.basis + Number(i.costBasis) }),
     { value: 0, basis: 0 }
@@ -1390,9 +1525,12 @@ export default function BudgetApp() {
   };
 
   const handleToggleCleared = (txId) => {
+    const tx = transactions.find(t => t.id === txId);
+    if (isTxLocked(tx)) { showNotification(LOCKED_MSG); return; }
     setTransactions(prev => prev.map(t => {
       if (t.id === txId) {
-        return { ...t, cleared: !t.cleared };
+        // Un-clearing an unlocked reconciled transaction also takes it out of the reconciled set
+        return t.cleared || t.reconciled ? { ...t, cleared: false, reconciled: false } : { ...t, cleared: true };
       }
       return t;
     }));
@@ -1474,11 +1612,23 @@ export default function BudgetApp() {
     return { target, funded, left, pct };
   };
 
+  // A reconciled transaction (or a transfer with a reconciled side) is locked until the person unlocks it.
+  const isTxLocked = (t) => {
+    if (!t) return false;
+    if (t.reconciled && !unlockedTxIds.includes(t.id)) return true;
+    if (t.isTransfer && t.transferId) {
+      const other = transactions.find(x => x.id !== t.id && x.transferId === t.transferId);
+      return !!other && !!other.reconciled && !unlockedTxIds.includes(other.id);
+    }
+    return false;
+  };
+  const LOCKED_MSG = 'This transaction is reconciled and locked. Click the lock to unlock it first.';
+
   // Likely transfers hiding as separate expense/income pairs (e.g. after importing both accounts)
-  const transferMatches = useMemo(() => findTransferMatches(activeTransactions), [transactions]);
+  const transferMatches = useMemo(() => findTransferMatches(activeTransactions.filter(t => !isTxLocked(t))), [transactions, unlockedTxIds]);
 
   // Transactions after the search box and filters
-  const txFiltersActive = !!(txSearch.trim() || txFilterAccount || txFilterEnvelope || txFilterType || txFromDate || txToDate);
+  const txFiltersActive = !!(txSearch.trim() || txFilterAccount || txFilterEnvelope || txFilterType || txFilterStatus || txFromDate || txToDate);
   const visibleTransactions = useMemo(() => {
     const q = txSearch.trim().toLowerCase().replace(/^\$/, '');
     const accName = new Map(accounts.map(a => [a.id, a.name.toLowerCase()]));
@@ -1488,10 +1638,16 @@ export default function BudgetApp() {
       if (txFilterType) {
         if (txFilterType === 'transfer' ? !t.isTransfer : (t.isTransfer || t.type !== txFilterType)) return false;
       }
+      if (txFilterStatus) {
+        const isCleared = !!(t.cleared || t.reconciled);
+        if (txFilterStatus === 'cleared' ? !isCleared : isCleared) return false;
+      }
       if (txFromDate && (t.date || '') < txFromDate) return false;
       if (txToDate && (t.date || '') > txToDate) return false;
       if (txFilterEnvelope) {
-        if (txFilterEnvelope === '__none__') {
+        if (txFilterEnvelope === '__has__') {
+          if (!txParts(t).length) return false;
+        } else if (txFilterEnvelope === '__none__') {
           const uncategorized = t.type === 'expense' && !t.isTransfer && (isSplitTx(t) ? t.splits.some(s => !s.envelopeId) : !t.envelopeId);
           if (!uncategorized) return false;
         } else if (!txParts(t).some(p => p.envelopeId === txFilterEnvelope)) return false;
@@ -1506,7 +1662,7 @@ export default function BudgetApp() {
       }
       return true;
     });
-  }, [transactions, accounts, envelopes, txSearch, txFilterAccount, txFilterEnvelope, txFilterType, txFromDate, txToDate]);
+  }, [transactions, accounts, envelopes, txSearch, txFilterAccount, txFilterEnvelope, txFilterType, txFilterStatus, txFromDate, txToDate]);
   // Never act on selected transactions that a filter is hiding
   useEffect(() => {
     setSelectedTxIds(prev => {
@@ -1516,14 +1672,14 @@ export default function BudgetApp() {
     });
   }, [visibleTransactions]);
   const clearTxFilters = () => {
-    setTxSearch(''); setTxFilterAccount(''); setTxFilterEnvelope(''); setTxFilterType(''); setTxFromDate(''); setTxToDate('');
+    setTxSearch(''); setTxFilterAccount(''); setTxFilterEnvelope(''); setTxFilterType(''); setTxFilterStatus(''); setTxFromDate(''); setTxToDate('');
   };
 
   const pagedTransactions = useMemo(
     () => visibleTransactions.slice().sort((a, b) => String(b.date || '').localeCompare(String(a.date || ''))).slice(0, txLimit),
     [visibleTransactions, txLimit]
   );
-  useEffect(() => { setTxLimit(150); }, [txSearch, txFilterAccount, txFilterEnvelope, txFilterType, txFromDate, txToDate]);
+  useEffect(() => { setTxLimit(150); }, [txSearch, txFilterAccount, txFilterEnvelope, txFilterType, txFilterStatus, txFromDate, txToDate]);
 
   const groupedTransactions = pagedTransactions.reduce((acc, tx) => {
     const dateKey = tx.date || getTodayISO();
@@ -1539,7 +1695,7 @@ export default function BudgetApp() {
     setTxPayee(val);
     const typed = val.trim().toLowerCase();
     if (typed.length < 3) return;
-    const matchedEnv = activeEnvelopes.find(env => {
+    const matchedEnv = visibleEnvelopes.find(env => {
       const name = env.name.toLowerCase();
       return name.startsWith(typed) || (name.length >= 3 && typed.startsWith(name));
     });
@@ -1759,7 +1915,7 @@ export default function BudgetApp() {
   // A move is recorded by nudging the two envelopes' assigned amounts for the month being viewed, so Ready to Assign
   // stays put and rollover, reports and everything else keep working from the same monthly numbers.
   const moveSources = (targetId) =>
-    activeEnvelopes.filter(e => e.id !== targetId && envRow(e).end > 0.004);
+    visibleEnvelopes.filter(e => e.id !== targetId && envRow(e).end > 0.004);
 
   const openMove = (env, mode) => {
     const row = envRow(env);
@@ -1834,12 +1990,62 @@ export default function BudgetApp() {
     showNotification(`Account '${newAcc.name}' added.`);
   };
 
+  // ----- Hide envelopes and accounts (history stays; nothing is deleted) -----
+  const doHideEnvelope = (env, release) => {
+    const avail = round2(envRow(env).end);
+    setEnvelopes(prev => prev.map(e => {
+      if (e.id !== env.id) return e;
+      const next = { ...e, isHidden: true };
+      // Optionally hand what is left in it back to Ready to Assign (recorded in the month being viewed)
+      if (release && avail > 0) {
+        const b = e.budget || {};
+        next.budget = { ...b, [budgetMonth]: round2((Number(b[budgetMonth]) || 0) - avail) };
+      }
+      return next;
+    }));
+    setHideEnvUi(null);
+    showNotification(release && avail > 0
+      ? `'${env.name}' hidden. ${formatMoney(avail)} went back to Ready to Assign.`
+      : `'${env.name}' hidden. Its history stays; use "Show hidden envelopes" to bring it back.`);
+  };
+  const requestHideEnvelope = (env) => {
+    if (Math.abs(round2(envRow(env).end)) < 0.005) { doHideEnvelope(env, false); return; }
+    setHideEnvUi(env.id);
+  };
+  const handleUnhideEnvelope = (env) => {
+    setEnvelopes(prev => prev.map(e => (e.id === env.id ? { ...e, isHidden: false } : e)));
+    showNotification(`'${env.name}' is visible again.`);
+  };
+  const handleHideAccount = (acc) => {
+    setAccounts(prev => prev.map(a => (a.id === acc.id ? { ...a, isHidden: true } : a)));
+    if (reconcilingAccId === acc.id) setReconcilingAccId(null);
+    showNotification(`'${acc.name.trim()}' hidden. Its history and balance stay in your totals; use "Show hidden accounts" to see it.`);
+  };
+  const handleUnhideAccount = (acc) => {
+    setAccounts(prev => prev.map(a => (a.id === acc.id ? { ...a, isHidden: false } : a)));
+    showNotification(`'${acc.name.trim()}' is visible again.`);
+  };
+
   const handleSoftDeleteAccount = (accId) => {
     const acc = accounts.find(a => a.id === accId);
     if (!acc) return;
     setAccounts(accounts.map(a => (a.id === accId ? { ...a, isDeleted: true } : a)));
     if (reconcilingAccId === accId) setReconcilingAccId(null);
     showNotification(`Account '${acc.name}' moved to Trash.`);
+  };
+
+  const unlockTx = (tx) => {
+    const other = tx.isTransfer && tx.transferId ? transactions.find(x => x.id !== tx.id && x.transferId === tx.transferId) : null;
+    setUnlockedTxIds(prev => [...new Set([...prev, tx.id, ...(other ? [other.id] : [])])]);
+    setUnlockAskId(null);
+    showNotification(other ? 'Transfer unlocked (both sides).' : 'Transaction unlocked. Changing its amount, date or account will mark it as needing reconciliation.');
+  };
+  const relockTx = (tx) => {
+    const other = tx.isTransfer && tx.transferId ? transactions.find(x => x.id !== tx.id && x.transferId === tx.transferId) : null;
+    const drop = new Set([tx.id, other && other.id].filter(Boolean));
+    setUnlockedTxIds(prev => prev.filter(id => !drop.has(id)));
+    if (editingTxId && drop.has(editingTxId)) cancelEditTx();
+    if (splitTxId && drop.has(splitTxId)) setSplitTxId(null);
   };
 
   const cancelEditTx = () => {
@@ -1860,6 +2066,7 @@ export default function BudgetApp() {
       : null;
 
   const startEditTx = (tx) => {
+    if (isTxLocked(tx)) { showNotification(LOCKED_MSG); return; }
     setEditingTxId(tx.id);
     setTxAmount(String(tx.amount));
     setTxDate(tx.date || getTodayISO());
@@ -1935,6 +2142,7 @@ export default function BudgetApp() {
       }
       const date = txDate || getTodayISO();
       const editing = editingTxId ? transactions.find(t => t.id === editingTxId) : null;
+      if (editing && isTxLocked(editing)) { showNotification(LOCKED_MSG); return; }
       const oldPartner = editing ? transferPartner(editing) : null;
       if (editing && editing.isTransfer && oldPartner) {
         const outOld = editing.type === 'expense' ? editing : oldPartner;
@@ -1951,6 +2159,7 @@ export default function BudgetApp() {
           return t;
         }));
         cancelEditTx();
+        setUnlockedTxIds(prev => prev.filter(id => id !== outOld.id && id !== inOld.id)); // relock once the change is saved
         showNotification('Transfer updated.');
         return;
       }
@@ -1974,6 +2183,7 @@ export default function BudgetApp() {
         cancelEditTx();
         return;
       }
+      if (isTxLocked(old)) { showNotification(LOCKED_MSG); return; }
       const updated = {
         ...old,
         date: txDate || getTodayISO(),
@@ -2012,6 +2222,7 @@ export default function BudgetApp() {
 
       setTransactions(transactions.map(t => (t.id === editingTxId ? updated : t)));
       cancelEditTx();
+      setUnlockedTxIds(prev => prev.filter(id => id !== old.id)); // relock once the change is saved
       if (splitCleared && splitTxId === editingTxId) setSplitTxId(null);
       showNotification(splitCleared ? 'Transaction updated. Its split was cleared because the amount or type changed.' : 'Transaction updated.');
       return;
@@ -2083,6 +2294,7 @@ export default function BudgetApp() {
     }
     const a = transactions.find(t => t.id === selectedTxIds[0]);
     const b = transactions.find(t => t.id === selectedTxIds[1]);
+    if (isTxLocked(a) || isTxLocked(b)) { showNotification('One of these is reconciled and locked. Unlock it first to link it.'); return; }
     if (!canLinkAsTransfer(a, b)) {
       showNotification('To link them, one must be money out and the other money in, with the same amount, in different accounts.');
       return;
@@ -2115,6 +2327,7 @@ export default function BudgetApp() {
 
   // Turn a transfer back into two ordinary transactions
   const handleUnlinkTransfer = (tx) => {
+    if (isTxLocked(tx)) { showNotification(LOCKED_MSG); return; }
     const partner = transferPartner(tx);
     const ids = new Set([tx.id, partner && partner.id].filter(Boolean));
     setTransactions(prev => prev.map(t => {
@@ -2168,8 +2381,8 @@ export default function BudgetApp() {
       setImportSign('negative-expense');
       setImportSkipDupes(true);
       setImportAccountId(
-        activeAccounts.length === 1
-          ? activeAccounts[0].id
+        accountChoices('').length === 1
+          ? accountChoices('')[0].id
           : (activeAccounts.some(a => a.id === txAccountId) ? txAccountId : '')
       );
     } catch (err) {
@@ -2233,6 +2446,7 @@ export default function BudgetApp() {
 
   // ----- Split transactions -----
   const openSplit = (tx) => {
+    if (isTxLocked(tx)) { showNotification(LOCKED_MSG); return; }
     setSplitTxId(tx.id);
     if (isSplitTx(tx)) {
       setSplitDraft(tx.splits.map(s => ({ envelopeId: s.envelopeId || '', amount: String(s.amount) })));
@@ -2314,6 +2528,7 @@ export default function BudgetApp() {
   const handleSaveSplit = () => {
     const tx = transactions.find(t => t.id === splitTxId);
     if (!tx) { closeSplit(); return; }
+    if (isTxLocked(tx)) { showNotification(LOCKED_MSG); return; }
     const lines = splitDraft.filter(l => l.envelopeId || (evalAmount(l.amount) || 0) !== 0);
     if (lines.some(l => !(Math.abs(evalAmount(l.amount)) > 0))) {
       showNotification('Every split line needs an amount other than $0.');
@@ -2346,6 +2561,7 @@ export default function BudgetApp() {
   };
 
   const handleRemoveSplit = (txId) => {
+    if (isTxLocked(transactions.find(t => t.id === txId))) { showNotification(LOCKED_MSG); return; }
     setTransactions(prev => prev.map(t => (t.id === txId ? withSingleEnvelope(t, '') : t)));
     if (editingTxId === txId) setTxEnvelopeId('');
     if (splitTxId === txId) closeSplit();
@@ -2354,6 +2570,7 @@ export default function BudgetApp() {
 
   const handleAssignTxEnvelope = (txId, envId) => {
     const env = envelopes.find(e => e.id === envId);
+    if (isTxLocked(transactions.find(t => t.id === txId))) { showNotification(LOCKED_MSG); return; }
     setTransactions(prev => prev.map(t => (t.id === txId && t.type === 'expense' && !t.isTransfer ? withSingleEnvelope(t, envId) : t)));
     if (editingTxId === txId) setTxEnvelopeId(envId); // keep the edit form from restoring an old value
     showNotification(env ? `Filed under '${env.name}'.` : 'Envelope cleared.');
@@ -2361,21 +2578,23 @@ export default function BudgetApp() {
 
   const handleAssignSelectedEnvelope = (envId) => {
     if (!envId) return;
-    const ids = new Set(selectedTxIds);
+    const lockedCount = transactions.filter(t => selectedTxIds.includes(t.id) && t.type === 'expense' && !t.isTransfer && isTxLocked(t)).length;
+    const ids = new Set(selectedTxIds.filter(id => !isTxLocked(transactions.find(t => t.id === id))));
     const env = envelopes.find(e => e.id === envId);
     const count = transactions.filter(t => ids.has(t.id) && !t.isDeleted && t.type === 'expense' && !t.isTransfer).length;
     if (count === 0) {
-      showNotification('Select at least one expense to assign an envelope.');
+      showNotification(lockedCount ? 'Those transactions are reconciled and locked. Unlock them first.' : 'Select at least one expense to assign an envelope.');
       return;
     }
     setTransactions(prev => prev.map(t => (ids.has(t.id) && !t.isDeleted && t.type === 'expense' && !t.isTransfer ? withSingleEnvelope(t, envId) : t)));
     if (editingTxId && ids.has(editingTxId)) setTxEnvelopeId(envId);
-    showNotification(`${count} transaction${count === 1 ? '' : 's'} filed under '${env ? env.name : 'envelope'}'.`);
+    showNotification(`${count} transaction${count === 1 ? '' : 's'} filed under '${env ? env.name : 'envelope'}'.${lockedCount ? ` ${lockedCount} reconciled and locked ${lockedCount === 1 ? 'was' : 'were'} skipped.` : ''}`);
   };
 
   const handleSoftDeleteTransaction = (txId) => {
     const tx = transactions.find(t => t.id === txId);
     if (!tx) return;
+    if (isTxLocked(tx)) { showNotification(LOCKED_MSG); return; }
     const partner = transferPartner(tx);
     const ids = new Set([txId, partner && partner.id].filter(Boolean));
     setTransactions(transactions.map(t => (ids.has(t.id) ? { ...t, isDeleted: true } : t)));
@@ -2402,13 +2621,18 @@ export default function BudgetApp() {
   const handleDeleteSelectedTransactions = () => {
     if (selectedTxIds.length === 0) return;
 
-    // A transfer always goes to the Trash as a pair
-    const chosen = new Set(selectedTxIds);
+    // A transfer always goes to the Trash as a pair. Reconciled (locked) transactions are left alone.
+    const lockedPicked = transactions.filter(t => selectedTxIds.includes(t.id) && isTxLocked(t));
+    const chosen = new Set(selectedTxIds.filter(id => !lockedPicked.some(t => t.id === id)));
+    if (lockedPicked.length) {
+      showNotification(`${lockedPicked.length} reconciled transaction${lockedPicked.length === 1 ? ' was' : 's were'} skipped. Unlock ${lockedPicked.length === 1 ? 'it' : 'them'} first to delete.`);
+      if (chosen.size === 0) return;
+    }
     const xfers = new Set(transactions.filter(t => chosen.has(t.id) && t.transferId).map(t => t.transferId));
     setTransactions(prev => prev.map(t => (chosen.has(t.id) || (t.transferId && xfers.has(t.transferId)) ? { ...t, isDeleted: true } : t)));
     if (selectedTxIds.includes(editingTxId)) cancelEditTx();
     setSelectedTxIds([]);
-    showNotification('Selected transactions moved to Trash.');
+    if (!lockedPicked.length) showNotification('Selected transactions moved to Trash.');
   };
 
   const handleAddDebt = (e) => {
@@ -2944,9 +3168,17 @@ export default function BudgetApp() {
             </div>
           )}
 
+          {hiddenEnvelopeCount > 0 && (
+            <label style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '0.85rem', color: '#4b5563', cursor: 'pointer' }}>
+              <input type="checkbox" checked={showHiddenEnvelopes} onChange={e => setShowHiddenEnvelopes(e.target.checked)} />
+              Show hidden envelopes ({hiddenEnvelopeCount})
+            </label>
+          )}
+
           {/* Group Categories */}
           {groups.map(groupName => {
-            const groupEnvelopes = activeEnvelopes.filter(e => e.group === groupName);
+            const groupEnvelopes = activeEnvelopes.filter(e => e.group === groupName && (showHiddenEnvelopes || !e.isHidden));
+            const groupHasHidden = activeEnvelopes.some(e => e.group === groupName && e.isHidden);
             const isCollapsed = collapsedGroups[groupName] || dragState !== null; // everything folds while dragging
 
             // Visual position while a group is being dragged (the real order is committed on drop)
@@ -3008,7 +3240,7 @@ export default function BudgetApp() {
                 {!isCollapsed && (
                   <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
                     {groupEnvelopes.length === 0 ? (
-                      <div style={{ fontSize: '0.85rem', color: '#9ca3af', padding: '4px 0' }}>No envelopes in this group.</div>
+                      <div style={{ fontSize: '0.85rem', color: '#9ca3af', padding: '4px 0' }}>{groupHasHidden ? 'All envelopes in this group are hidden.' : 'No envelopes in this group.'}</div>
                     ) : (
                       groupEnvelopes.map(env => {
                         const row = envRow(env);
@@ -3017,9 +3249,12 @@ export default function BudgetApp() {
                         const progress = getTargetProgress(env, row);
 
                         return (
-                          <div key={env.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '10px', backgroundColor: '#f9fafb', borderRadius: '6px', flexWrap: 'wrap', gap: '10px' }}>
+                          <div key={env.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '10px', backgroundColor: env.isHidden ? '#f3f4f6' : '#f9fafb', opacity: env.isHidden ? 0.75 : 1, borderRadius: '6px', flexWrap: 'wrap', gap: '10px' }}>
                             <div style={{ flex: '1 1 160px' }}>
-                              <div style={{ fontWeight: '600', fontSize: '0.95rem' }}>{env.name}</div>
+                              <div style={{ fontWeight: '600', fontSize: '0.95rem' }}>
+                                {env.name}
+                                {env.isHidden && <span data-testid="hidden-badge" style={{ marginLeft: '8px', fontSize: '0.7rem', fontWeight: 600, color: '#6b7280', backgroundColor: '#e5e7eb', borderRadius: '999px', padding: '1px 8px' }}>hidden</span>}
+                              </div>
                               {env.goalType !== 'none' && (
                                 <div style={{ fontSize: '0.75rem', color: '#6b7280' }}>
                                   {getScheduleText(env)} {env.targetAmount > 0 ? `(Target: $${Number(env.targetAmount).toFixed(2)})` : ''} {env.targetDate ? `by ${formatDate(env.targetDate, 'us')}` : ''}
@@ -3077,6 +3312,24 @@ export default function BudgetApp() {
                                   Move
                                 </button>
                               )}
+                              {env.isHidden ? (
+                                <button
+                                  onClick={() => handleUnhideEnvelope(env)}
+                                  aria-label={`Unhide envelope ${env.name}`}
+                                  style={{ background: 'white', color: '#2563eb', border: '1px solid #bfdbfe', borderRadius: '6px', padding: '3px 8px', cursor: 'pointer', fontSize: '0.75rem', fontWeight: 'bold' }}
+                                >
+                                  Unhide
+                                </button>
+                              ) : (
+                                <button
+                                  onClick={() => (hideEnvUi === env.id ? setHideEnvUi(null) : requestHideEnvelope(env))}
+                                  title="Hide this envelope. Its history stays."
+                                  aria-label={`Hide envelope ${env.name}`}
+                                  style={{ background: 'none', color: '#6b7280', border: 'none', cursor: 'pointer', fontSize: '0.75rem', padding: '4px' }}
+                                >
+                                  Hide
+                                </button>
+                              )}
                               <button
                                 onClick={() => startEditEnv(env)}
                                 title="Edit envelope"
@@ -3113,7 +3366,7 @@ export default function BudgetApp() {
                                     )}
                                     {(moveUi.mode === 'cover'
                                       ? moveSources(env.id)
-                                      : activeEnvelopes.filter(e => e.id !== env.id)
+                                      : visibleEnvelopes.filter(e => e.id !== env.id)
                                     ).map(e => (
                                       <option key={e.id} value={e.id}>
                                         {e.name}{moveUi.mode === 'cover' ? ` (${formatMoney(envRow(e).end)} available)` : ''}
@@ -3134,6 +3387,32 @@ export default function BudgetApp() {
                                 <div style={{ fontSize: '0.72rem', color: '#6b7280', marginTop: '6px' }}>
                                   This adjusts what is assigned in {monthLabel(budgetMonth)}. Later months follow automatically.
                                 </div>
+                              </div>
+                            )}
+                            {hideEnvUi === env.id && (
+                              <div data-testid="hide-panel" style={{ flexBasis: '100%', padding: '10px', backgroundColor: 'white', border: '1px solid #e5e7eb', borderRadius: '8px', fontSize: '0.8rem' }}>
+                                {remaining > 0.004 ? (
+                                  <>
+                                    <div style={{ marginBottom: '8px' }}>
+                                      <strong>{env.name}</strong> still has {formatMoney(remaining)} in {monthLabel(budgetMonth)}. A hidden envelope keeps its money reserved, so you may want to send it back to Ready to Assign.
+                                    </div>
+                                    <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+                                      <button onClick={() => doHideEnvelope(env, true)} style={{ backgroundColor: '#2563eb', color: 'white', border: 'none', borderRadius: '6px', padding: '5px 10px', cursor: 'pointer', fontSize: '0.8rem', fontWeight: 'bold' }}>Move {formatMoney(remaining)} to Ready to Assign and hide</button>
+                                      <button onClick={() => doHideEnvelope(env, false)} style={{ backgroundColor: 'white', color: '#374151', border: '1px solid #d1d5db', borderRadius: '6px', padding: '5px 10px', cursor: 'pointer', fontSize: '0.8rem' }}>Hide, keep the money in it</button>
+                                      <button onClick={() => setHideEnvUi(null)} style={{ background: 'none', border: 'none', color: '#6b7280', cursor: 'pointer', fontSize: '0.8rem' }}>Cancel</button>
+                                    </div>
+                                  </>
+                                ) : (
+                                  <>
+                                    <div style={{ marginBottom: '8px' }}>
+                                      <strong>{env.name}</strong> is overspent by {formatMoney(-remaining)}. Cover it first if you can. If you hide it as is, the shortfall still comes out of Ready to Assign next month.
+                                    </div>
+                                    <div style={{ display: 'flex', gap: '8px' }}>
+                                      <button onClick={() => doHideEnvelope(env, false)} style={{ backgroundColor: '#d97706', color: 'white', border: 'none', borderRadius: '6px', padding: '5px 10px', cursor: 'pointer', fontSize: '0.8rem', fontWeight: 'bold' }}>Hide anyway</button>
+                                      <button onClick={() => setHideEnvUi(null)} style={{ background: 'none', border: 'none', color: '#6b7280', cursor: 'pointer', fontSize: '0.8rem' }}>Cancel</button>
+                                    </div>
+                                  </>
+                                )}
                               </div>
                             )}
                           </div>
@@ -3352,18 +3631,43 @@ export default function BudgetApp() {
             </div>
           )}
 
-          {activeAccounts.map(acc => {
-            const accTransactions = activeTransactions.filter(t => t.accountId === acc.id);
+          {hiddenAccountCount > 0 && (
+            <label style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '0.85rem', color: '#4b5563', cursor: 'pointer' }}>
+              <input type="checkbox" checked={showHiddenAccounts} onChange={e => setShowHiddenAccounts(e.target.checked)} />
+              Show hidden accounts ({hiddenAccountCount})
+            </label>
+          )}
+
+          {shownAccounts.map(acc => {
+            const accTransactionsAll = activeTransactions.filter(t => t.accountId === acc.id);
+            const accStatus = accStatusFilter[acc.id] || '';
+            const accTransactions = accStatus
+              ? accTransactionsAll.filter(t => ((t.cleared || t.reconciled) ? 'cleared' : 'uncleared') === accStatus)
+              : accTransactionsAll;
             const clearedBal = getClearedBalance(acc.id);
             const workingBal = getAccountBalance(acc.id);
             const isReconciling = reconcilingAccId === acc.id;
-            const isTxCollapsed = collapsedAccountTx[acc.id];
+            const isTxCollapsed = collapsedAccountTx[acc.id] || acctDrag.dragging; // cards fold while one is dragged
 
             return (
-              <div key={acc.id} style={{ backgroundColor: 'white', borderRadius: '10px', padding: '14px', boxShadow: '0 1px 3px rgba(0,0,0,0.1)' }}>
+              <div key={acc.id} ref={acctDrag.refFor(acc.id)} style={{ backgroundColor: acc.isHidden ? '#f9fafb' : 'white', borderRadius: '10px', padding: '14px', boxShadow: '0 1px 3px rgba(0,0,0,0.1)', ...acctDrag.styleFor(acc.id) }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexWrap: 'wrap', gap: '10px' }}>
                   <div>
-                    <h3 style={{ margin: '0 0 4px 0', fontSize: '1.1rem' }}>{acc.name} <span style={{ fontSize: '0.8rem', color: '#6b7280', fontWeight: 'normal' }}>({acc.type})</span></h3>
+                    <h3 style={{ margin: '0 0 4px 0', fontSize: '1.1rem' }}>
+                      {shownAccounts.length > 1 && (
+                        <button
+                          onPointerDown={e => acctDrag.start(e, acc.id)}
+                          onContextMenu={e => e.preventDefault()}
+                          title="Hold and drag to reorder"
+                          aria-label={`Drag to reorder ${acc.name.trim()}`}
+                          style={{ background: 'none', border: 'none', cursor: 'grab', touchAction: 'none', color: '#9ca3af', fontSize: '1.1rem', padding: '0 10px 0 0', lineHeight: 1, userSelect: 'none', WebkitUserSelect: 'none' }}
+                        >
+                          ⋮⋮
+                        </button>
+                      )}
+                      {acc.name} <span style={{ fontSize: '0.8rem', color: '#6b7280', fontWeight: 'normal' }}>({acc.type})</span>
+                      {acc.isHidden && <span data-testid="hidden-account-badge" style={{ marginLeft: '8px', fontSize: '0.7rem', fontWeight: 600, color: '#6b7280', backgroundColor: '#e5e7eb', borderRadius: '999px', padding: '1px 8px' }}>hidden</span>}
+                    </h3>
                     <p style={{ margin: '0 0 4px 0', fontSize: '0.85rem', color: '#4b5563' }}>
                       Cleared: <strong>${clearedBal.toFixed(2)}</strong> | Working: <strong>${workingBal.toFixed(2)}</strong>
                     </p>
@@ -3379,6 +3683,14 @@ export default function BudgetApp() {
                       style={{ backgroundColor: '#059669', color: 'white', border: 'none', padding: '6px 10px', borderRadius: '6px', fontWeight: 'bold', cursor: 'pointer', fontSize: '0.8rem' }}
                     >
                       Reconcile
+                    </button>
+                    <button
+                      onClick={() => (acc.isHidden ? handleUnhideAccount(acc) : handleHideAccount(acc))}
+                      title={acc.isHidden ? 'Show this account again' : 'Hide this account. Its history stays.'}
+                      aria-label={`${acc.isHidden ? 'Unhide' : 'Hide'} account ${acc.name.trim()}`}
+                      style={{ backgroundColor: 'white', color: '#374151', border: '1px solid #d1d5db', padding: '6px 10px', borderRadius: '6px', fontWeight: 'bold', cursor: 'pointer', fontSize: '0.8rem' }}
+                    >
+                      {acc.isHidden ? 'Unhide' : 'Hide'}
                     </button>
                     <button
                       onClick={() => handleSoftDeleteAccount(acc.id)}
@@ -3429,8 +3741,27 @@ export default function BudgetApp() {
                     onClick={() => toggleAccountTxCollapse(acc.id)}
                     style={{ background: 'none', border: 'none', color: '#2563eb', fontWeight: 'bold', cursor: 'pointer', padding: 0, marginBottom: '6px', fontSize: '0.85rem' }}
                   >
-                    {isTxCollapsed ? `Show Activity (${accTransactions.length})` : `Hide Activity (${accTransactions.length})`}
+                    {isTxCollapsed ? `Show Activity (${accTransactionsAll.length})` : `Hide Activity (${accTransactionsAll.length})`}
                   </button>
+                  {!isTxCollapsed && (
+                    <span style={{ marginLeft: '10px', display: 'inline-flex', alignItems: 'center', gap: '6px' }}>
+                      <select
+                        value={accStatus}
+                        onChange={e => setAccStatusFilter(prev => ({ ...prev, [acc.id]: e.target.value }))}
+                        aria-label={`Filter ${acc.name.trim()} activity by cleared status`}
+                        style={{ padding: '3px 6px', border: '1px solid #d1d5db', borderRadius: '6px', fontSize: '0.8rem' }}
+                      >
+                        <option value="">All</option>
+                        <option value="cleared">Cleared</option>
+                        <option value="uncleared">Not cleared</option>
+                      </select>
+                      {accStatus && (
+                        <span data-testid={`acc-filter-count-${acc.id}`} style={{ fontSize: '0.75rem', color: '#6b7280' }}>
+                          {accTransactions.length} of {accTransactionsAll.length} shown
+                        </span>
+                      )}
+                    </span>
+                  )}
 
                   {!isTxCollapsed && (
                     <div style={{ overflowX: 'auto', WebkitOverflowScrolling: 'touch' }}>
@@ -3446,7 +3777,7 @@ export default function BudgetApp() {
                         <tbody>
                           {accTransactions.length === 0 ? (
                             <tr>
-                              <td colSpan="4" style={{ padding: '10px', textAlign: 'center', color: '#9ca3af' }}>No transactions.</td>
+                              <td colSpan="4" style={{ padding: '10px', textAlign: 'center', color: '#9ca3af' }}>{accStatus ? 'No transactions match this filter.' : 'No transactions.'}</td>
                             </tr>
                           ) : (
                             accTransactions.map(t => (
@@ -3454,7 +3785,10 @@ export default function BudgetApp() {
                                 <td style={{ padding: '6px 4px' }}>
                                   <button
                                     onClick={() => handleToggleCleared(t.id)}
+                                    title={isTxLocked(t) ? 'Reconciled and locked. Unlock it on the Transactions tab.' : 'Toggle cleared'}
+                                    aria-label={`${(t.cleared || t.reconciled) ? 'Cleared' : 'Uncleared'}: ${t.payee}`}
                                     style={{
+                                      opacity: isTxLocked(t) ? 0.55 : 1,
                                       backgroundColor: (t.cleared || t.reconciled) ? '#10b981' : '#e5e7eb',
                                       color: (t.cleared || t.reconciled) ? 'white' : '#6b7280',
                                       border: 'none',
@@ -3465,7 +3799,7 @@ export default function BudgetApp() {
                                       fontSize: '0.7rem'
                                     }}
                                   >
-                                    C
+                                    {isTxLocked(t) ? '🔒' : 'C'}
                                   </button>
                                 </td>
                                 <td style={{ padding: '6px 4px', whiteSpace: 'nowrap' }}>{formatDate(t.date, 'us')}</td>
@@ -4027,7 +4361,7 @@ export default function BudgetApp() {
                 style={{ padding: '8px', border: '1px solid #d1d5db', borderRadius: '6px', fontSize: '0.9rem', gridColumn: 'span 2' }}
               >
                 <option value="">{txType === 'transfer' ? 'From account' : 'Select Account'}</option>
-                {activeAccounts.map(acc => (
+                {accountChoices(txAccountId).map(acc => (
                   <option key={acc.id} value={acc.id}>{acc.name}</option>
                 ))}
               </select>
@@ -4039,7 +4373,7 @@ export default function BudgetApp() {
                   style={{ padding: '8px', border: '1px solid #d1d5db', borderRadius: '6px', fontSize: '0.9rem', gridColumn: 'span 2' }}
                 >
                   <option value="">To account</option>
-                  {activeAccounts.filter(acc => acc.id !== txAccountId).map(acc => (
+                  {accountChoices(txToAccountId).filter(acc => acc.id !== txAccountId).map(acc => (
                     <option key={acc.id} value={acc.id}>{acc.name}</option>
                   ))}
                 </select>
@@ -4069,8 +4403,8 @@ export default function BudgetApp() {
                   style={{ padding: '8px', border: '1px solid #d1d5db', borderRadius: '6px', fontSize: '0.9rem', gridColumn: 'span 2' }}
                 >
                   <option value="">Select Envelope (Optional)</option>
-                  {activeEnvelopes.map(env => (
-                    <option key={env.id} value={env.id}>{env.group} &gt; {env.name}</option>
+                  {activeEnvelopes.filter(env => !env.isHidden || env.id === txEnvelopeId).map(env => (
+                    <option key={env.id} value={env.id}>{env.group} &gt; {env.name}{env.isHidden ? ' (hidden)' : ''}</option>
                   ))}
                 </select>
               )}
@@ -4177,7 +4511,7 @@ export default function BudgetApp() {
                       style={{ padding: '6px', border: '1px solid #d1d5db', borderRadius: '6px', fontSize: '0.85rem', color: '#1f2937' }}
                     >
                       <option value="">Select Account</option>
-                      {activeAccounts.map(acc => (
+                      {accountChoices(importAccountId).map(acc => (
                         <option key={acc.id} value={acc.id}>{acc.name}</option>
                       ))}
                     </select>
@@ -4355,12 +4689,13 @@ export default function BudgetApp() {
               />
               <select value={txFilterAccount} onChange={e => setTxFilterAccount(e.target.value)} aria-label="Filter by account" style={{ flex: '1 1 110px', padding: '7px', border: '1px solid #d1d5db', borderRadius: '6px', fontSize: '0.85rem' }}>
                 <option value="">All accounts</option>
-                {activeAccounts.map(a => (<option key={a.id} value={a.id}>{a.name}</option>))}
+                {activeAccounts.map(a => (<option key={a.id} value={a.id}>{a.name}{a.isHidden ? ' (hidden)' : ''}</option>))}
               </select>
               <select value={txFilterEnvelope} onChange={e => setTxFilterEnvelope(e.target.value)} aria-label="Filter by envelope" style={{ flex: '1 1 110px', padding: '7px', border: '1px solid #d1d5db', borderRadius: '6px', fontSize: '0.85rem' }}>
                 <option value="">All envelopes</option>
-                <option value="__none__">Uncategorized</option>
-                {envelopeChoices.map(c => (
+                <option value="__has__">Has an envelope</option>
+                <option value="__none__">No envelope (uncategorized)</option>
+                {envelopeChoicesAll.map(c => (
                   <optgroup key={c.label} label={c.label}>
                     {c.list.map(e => (<option key={e.id} value={e.id}>{e.name}</option>))}
                   </optgroup>
@@ -4371,6 +4706,11 @@ export default function BudgetApp() {
                 <option value="expense">Expenses</option>
                 <option value="income">Income</option>
                 <option value="transfer">Transfers</option>
+              </select>
+              <select value={txFilterStatus} onChange={e => setTxFilterStatus(e.target.value)} aria-label="Filter by cleared status" style={{ flex: '1 1 100px', padding: '7px', border: '1px solid #d1d5db', borderRadius: '6px', fontSize: '0.85rem' }}>
+                <option value="">Cleared or not</option>
+                <option value="cleared">Cleared</option>
+                <option value="uncleared">Not cleared</option>
               </select>
               <input type="date" value={txFromDate} onChange={e => setTxFromDate(e.target.value)} aria-label="From date" style={{ padding: '6px', border: '1px solid #d1d5db', borderRadius: '6px', fontSize: '0.85rem' }} />
               <input type="date" value={txToDate} onChange={e => setTxToDate(e.target.value)} aria-label="To date" style={{ padding: '6px', border: '1px solid #d1d5db', borderRadius: '6px', fontSize: '0.85rem' }} />
@@ -4410,9 +4750,12 @@ export default function BudgetApp() {
                     const acc = accounts.find(a => a.id === tx.accountId);
                     const env = envelopes.find(e => e.id === tx.envelopeId);
                     const isSelected = selectedTxIds.includes(tx.id);
+                    const locked = isTxLocked(tx);
+                    const hasLock = locked || tx.reconciled || unlockedTxIds.includes(tx.id);
 
                     return (
-                      <div key={tx.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '8px 0', borderBottom: '1px solid #f3f4f6', gap: '8px' }}>
+                      <React.Fragment key={tx.id}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '8px 0', borderBottom: unlockAskId === tx.id ? 'none' : '1px solid #f3f4f6', gap: '8px' }}>
                         <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flex: 1, minWidth: 0 }}>
                           <input
                             type="checkbox"
@@ -4433,7 +4776,8 @@ export default function BudgetApp() {
                                 <button
                                   type="button"
                                   onClick={() => handleUnlinkTransfer(tx)}
-                                  style={{ background: 'none', border: 'none', color: '#6b7280', cursor: 'pointer', padding: 0, fontSize: '0.75rem' }}
+                                  disabled={locked}
+                                  style={{ opacity: locked ? 0.4 : 1, background: 'none', border: 'none', color: '#6b7280', cursor: 'pointer', padding: 0, fontSize: '0.75rem' }}
                                 >
                                   Unlink
                                 </button>
@@ -4455,6 +4799,7 @@ export default function BudgetApp() {
                               <select
                                 value={tx.envelopeId || ''}
                                 onChange={e => handleAssignTxEnvelope(tx.id, e.target.value)}
+                                disabled={locked}
                                 aria-label="Assign envelope"
                                 style={{
                                   marginTop: '4px',
@@ -4468,8 +4813,8 @@ export default function BudgetApp() {
                                 }}
                               >
                                 <option value="">No envelope</option>
-                                {tx.envelopeId && env && env.isDeleted && (
-                                  <option value={tx.envelopeId}>{env.name} (deleted)</option>
+                                {tx.envelopeId && env && (env.isDeleted || env.isHidden) && (
+                                  <option value={tx.envelopeId}>{env.name} ({env.isDeleted ? 'deleted' : 'hidden'})</option>
                                 )}
                                 {envelopeChoices.map(c => (
                                   <optgroup key={c.label} label={c.label}>
@@ -4484,7 +4829,8 @@ export default function BudgetApp() {
                               <button
                                 type="button"
                                 onClick={() => (splitTxId === tx.id ? closeSplit() : openSplit(tx))}
-                                style={{ marginTop: '4px', marginLeft: isSplitTx(tx) ? 0 : '6px', background: 'none', border: 'none', color: '#2563eb', cursor: 'pointer', padding: '2px 0', fontSize: '0.75rem', fontWeight: '600' }}
+                                disabled={locked}
+                                style={{ opacity: locked ? 0.4 : 1, marginTop: '4px', marginLeft: isSplitTx(tx) ? 0 : '6px', background: 'none', border: 'none', color: '#2563eb', cursor: 'pointer', padding: '2px 0', fontSize: '0.75rem', fontWeight: '600' }}
                               >
                                 {splitTxId === tx.id ? 'Close split' : isSplitTx(tx) ? 'Edit split' : 'Split'}
                               </button>
@@ -4493,7 +4839,8 @@ export default function BudgetApp() {
                               <button
                                 type="button"
                                 onClick={() => handleRemoveSplit(tx.id)}
-                                style={{ marginTop: '4px', marginLeft: '10px', background: 'none', border: 'none', color: '#6b7280', cursor: 'pointer', padding: '2px 0', fontSize: '0.75rem' }}
+                                disabled={locked}
+                                style={{ opacity: locked ? 0.4 : 1, marginTop: '4px', marginLeft: '10px', background: 'none', border: 'none', color: '#6b7280', cursor: 'pointer', padding: '2px 0', fontSize: '0.75rem' }}
                               >
                                 Remove split
                               </button>
@@ -4514,8 +4861,8 @@ export default function BudgetApp() {
                                         style={{ flex: '1 1 auto', minWidth: 0, padding: '5px', border: '1px solid #d1d5db', borderRadius: '6px', fontSize: '0.8rem' }}
                                       >
                                         <option value="">No envelope</option>
-                                        {line.envelopeId && envelopes.find(e => e.id === line.envelopeId && e.isDeleted) && (
-                                          <option value={line.envelopeId}>{envelopes.find(e => e.id === line.envelopeId).name} (deleted)</option>
+                                        {line.envelopeId && envelopes.find(e => e.id === line.envelopeId && (e.isDeleted || e.isHidden)) && (
+                                          <option value={line.envelopeId}>{envelopes.find(e => e.id === line.envelopeId).name} ({envelopes.find(e => e.id === line.envelopeId).isDeleted ? 'deleted' : 'hidden'})</option>
                                         )}
                                         {envelopeChoices.map(c => (
                                           <optgroup key={c.label} label={c.label}>
@@ -4579,22 +4926,48 @@ export default function BudgetApp() {
                           <span style={{ fontWeight: 'bold', color: tx.isTransfer ? '#6b7280' : (tx.type === 'income') === (Number(tx.amount) >= 0) ? '#059669' : '#1f2937', fontSize: '0.9rem' }}>
                             {signedMoney(tx)}
                           </span>
+                          {hasLock && (
+                            <button
+                              onClick={() => (locked ? setUnlockAskId(unlockAskId === tx.id ? null : tx.id) : relockTx(tx))}
+                              title={locked ? 'Reconciled and locked. Click to unlock.' : 'Unlocked. Click to lock again.'}
+                              aria-label={locked ? 'Unlock transaction' : 'Lock transaction'}
+                              style={{ background: 'none', border: 'none', cursor: 'pointer', padding: '2px', fontSize: '0.9rem' }}
+                            >
+                              {locked ? '🔒' : '🔓'}
+                            </button>
+                          )}
                           <button
                             onClick={() => startEditTx(tx)}
-                            title="Edit transaction"
+                            disabled={locked}
+                            title={locked ? 'Reconciled and locked' : 'Edit transaction'}
                             aria-label="Edit transaction"
-                            style={{ background: 'none', border: 'none', color: '#2563eb', cursor: 'pointer', padding: '4px' }}
+                            style={{ background: 'none', border: 'none', color: '#2563eb', cursor: locked ? 'not-allowed' : 'pointer', padding: '4px', opacity: locked ? 0.35 : 1 }}
                           >
                             ✎
                           </button>
                           <button
                             onClick={() => handleSoftDeleteTransaction(tx.id)}
-                            style={{ background: 'none', border: 'none', color: '#dc2626', cursor: 'pointer', padding: '4px' }}
+                            disabled={locked}
+                            title={locked ? 'Reconciled and locked' : 'Delete transaction'}
+                            aria-label="Delete transaction"
+                            style={{ background: 'none', border: 'none', color: '#dc2626', cursor: locked ? 'not-allowed' : 'pointer', padding: '4px', opacity: locked ? 0.35 : 1 }}
                           >
                             ✕
                           </button>
                         </div>
                       </div>
+                      {unlockAskId === tx.id && locked && (
+                        <div data-testid="unlock-ask" style={{ backgroundColor: '#fffbeb', border: '1px solid #fcd34d', color: '#92400e', borderRadius: '8px', padding: '8px 10px', margin: '0 0 6px', fontSize: '0.8rem', borderBottom: '1px solid #fcd34d' }}>
+                          <div style={{ marginBottom: '6px' }}>
+                            This {tx.isTransfer ? 'transfer' : 'transaction'} was reconciled with your bank. Changing it can throw off your reconciled balance.
+                          </div>
+                          <div style={{ display: 'flex', gap: '8px' }}>
+                            <button onClick={() => unlockTx(tx)} style={{ backgroundColor: '#d97706', color: 'white', border: 'none', borderRadius: '6px', padding: '4px 10px', fontWeight: 'bold', cursor: 'pointer', fontSize: '0.8rem' }}>Unlock to edit</button>
+                            <button onClick={() => setUnlockAskId(null)} style={{ background: 'none', border: 'none', color: '#92400e', cursor: 'pointer', fontSize: '0.8rem' }}>Keep locked</button>
+                          </div>
+                        </div>
+                      )}
+                      </React.Fragment>
                     );
                   })}
                 </div>
@@ -4792,7 +5165,7 @@ export default function BudgetApp() {
                 <div>• Transfers between the accounts you import are linked. Categorized payments to off-budget loans stay as spending in their envelope.</div>
                 <div>• Refunds and reimbursements in a spending category import as negative spending. Money in with no category is not counted as income.</div>
                 <div>• Income on credit cards (opening balances, cash back) counts toward Ready to Assign, as in Actual.</div>
-                <div>• Not imported: schedules, rules, goals and notes on categories. Closed accounts keep their history and are labeled (closed).</div>
+                <div>• Not imported: schedules, rules, goals and notes on categories. Closed accounts and hidden categories come in hidden, with their history.</div>
               </div>
 
               <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', marginBottom: '12px', fontSize: '0.85rem' }}>
