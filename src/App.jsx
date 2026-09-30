@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useMemo } from 'react';
+import React, { useState, useEffect, useLayoutEffect, useRef, useMemo } from 'react';
 import { createClient } from '@supabase/supabase-js';
 
 // --- SUPABASE CONFIGURATION ---
@@ -46,7 +46,8 @@ const snapshot = (d = {}) => stable({
   collapsedAccountTx: d.collapsedAccountTx ?? {},
   envelopes: d.envelopes ?? [],
   transactions: d.transactions ?? [],
-  debts: d.debts ?? []
+  debts: d.debts ?? [],
+  investments: d.investments ?? []
 });
 
 const MOBILE_QUERY = '(max-width: 720px)';
@@ -56,11 +57,20 @@ const TAB_LABELS = {
   budget: 'Budget',
   new: 'Add New',
   accounts: 'Accounts',
+  investments: 'Investments',
   transactions: 'Transactions',
   debts: 'Debts',
   trash: 'Trash'
 };
 const NAV_LABELS = { ...TAB_LABELS, new: '+ New' };
+
+const INVESTMENT_TYPES = ['Brokerage', '401(k)', 'IRA', 'Roth IRA', 'HSA', 'Crypto', 'Other'];
+
+const formatMoney = (n) => {
+  const v = Number(n) || 0;
+  return (v < 0 ? '-$' : '$') + Math.abs(v).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+};
+const round2 = (n) => Math.round(Number(n) * 100) / 100;
 
 // Helper to get local date string YYYY-MM-DD
 const getTodayISO = () => {
@@ -296,6 +306,24 @@ export default function BudgetApp() {
   const [importSkipDupes, setImportSkipDupes] = useState(true);
   const importFileRef = useRef(null);
 
+  // Investments (tracked separately from the budget)
+  const [investments, setInvestments] = useState([]);
+  const [invFormOpen, setInvFormOpen] = useState(false);
+  const [editingInvId, setEditingInvId] = useState(null);
+  const [newInvName, setNewInvName] = useState('');
+  const [newInvType, setNewInvType] = useState('Brokerage');
+  const [newInvValue, setNewInvValue] = useState('');
+  const [newInvBasis, setNewInvBasis] = useState('');
+  const [invPanel, setInvPanel] = useState(null); // { id, mode: 'value' | 'contribute' | 'withdraw' }
+  const [invAmount, setInvAmount] = useState('');
+  const [invDate, setInvDate] = useState(getTodayISO());
+  const [invShowAll, setInvShowAll] = useState({});
+
+  // Group drag-to-reorder
+  const [dragState, setDragState] = useState(null); // { name, dy, target, measuring }
+  const dragRef = useRef(null);
+  const groupRefs = useRef({});
+
   // Side menu state
   const [isMobile, setIsMobile] = useState(isMobileNow);
   const [sidebarOpen, setSidebarOpen] = useState(() => !isMobileNow());
@@ -325,6 +353,7 @@ export default function BudgetApp() {
       setEnvelopes(d.envelopes ?? []);
       setTransactions(d.transactions ?? []);
       setDebts(d.debts ?? []);
+      setInvestments(d.investments ?? []);
     };
 
     const fetchBudgetData = async () => {
@@ -365,7 +394,7 @@ export default function BudgetApp() {
   // Save budget changes to Supabase (debounced, skipped when nothing actually changed)
   useEffect(() => {
     if (!budgetId || !loadedRef.current) return;
-    const dataToSave = { readyToAssign, accounts, groups, collapsedGroups, collapsedAccountTx, envelopes, transactions, debts };
+    const dataToSave = { readyToAssign, accounts, groups, collapsedGroups, collapsedAccountTx, envelopes, transactions, debts, investments };
     const json = snapshot(dataToSave);
     if (json === lastJsonRef.current) return;
 
@@ -382,7 +411,7 @@ export default function BudgetApp() {
     }, 400);
 
     return () => clearTimeout(timer);
-  }, [budgetId, readyToAssign, accounts, groups, collapsedGroups, collapsedAccountTx, envelopes, transactions, debts]);
+  }, [budgetId, readyToAssign, accounts, groups, collapsedGroups, collapsedAccountTx, envelopes, transactions, debts, investments]);
 
   // Keep the side menu sensible when the window is resized (open on desktop, closed drawer on mobile)
   useEffect(() => {
@@ -394,6 +423,108 @@ export default function BudgetApp() {
     };
     mq.addEventListener('change', onChange);
     return () => mq.removeEventListener('change', onChange);
+  }, []);
+
+  // ----- Group drag-to-reorder (pointer events: works with mouse and touch) -----
+  const updateDrag = (clientY) => {
+    const info = dragRef.current;
+    if (!info || info.phase !== 'drag') return;
+    const pointerPageY = clientY + window.scrollY;
+    const { names, rects, from, grabOffset } = info;
+    const cardTop = pointerPageY - grabOffset;
+    const dy = cardTop - rects[from].top;
+    const draggedCenter = cardTop + rects[from].height / 2;
+    let target = 0;
+    names.forEach((n, i) => {
+      if (i !== from && rects[i].top + rects[i].height / 2 < draggedCenter) target++;
+    });
+    setDragState({ name: info.name, dy, target, measuring: false });
+  };
+
+  const finishGroupDrag = (commit) => {
+    const info = dragRef.current;
+    if (info) {
+      if (info.cleanup) info.cleanup();
+      if (commit && info.phase === 'drag') {
+        const pointerPageY = info.clientY + window.scrollY;
+        const cardTop = pointerPageY - info.grabOffset;
+        const draggedCenter = cardTop + info.rects[info.from].height / 2;
+        let target = 0;
+        info.names.forEach((n, i) => {
+          if (i !== info.from && info.rects[i].top + info.rects[i].height / 2 < draggedCenter) target++;
+        });
+        const others = info.names.filter((_, i) => i !== info.from);
+        const next = [...others.slice(0, target), info.name, ...others.slice(target)];
+        if (next.some((n, i) => n !== info.names[i])) setGroups(next);
+      }
+    }
+    dragRef.current = null;
+    setDragState(null);
+  };
+
+  const startGroupDrag = (e, name) => {
+    if (e.button !== undefined && e.button !== 0) return;
+    e.preventDefault();
+    const onMove = (ev) => {
+      const info = dragRef.current;
+      if (!info) return;
+      info.clientY = ev.clientY;
+      updateDrag(ev.clientY);
+    };
+    const onUp = () => finishGroupDrag(true);
+    const onCancel = () => finishGroupDrag(false);
+    window.addEventListener('pointermove', onMove);
+    window.addEventListener('pointerup', onUp);
+    window.addEventListener('pointercancel', onCancel);
+    document.body.style.userSelect = 'none';
+    dragRef.current = {
+      name,
+      phase: 'pending',
+      clientY: e.clientY,
+      cleanup: () => {
+        window.removeEventListener('pointermove', onMove);
+        window.removeEventListener('pointerup', onUp);
+        window.removeEventListener('pointercancel', onCancel);
+        document.body.style.userSelect = '';
+      }
+    };
+    // All groups collapse while dragging so they are short and easy to move; measured right after.
+    setDragState({ name, dy: 0, target: 0, measuring: true });
+  };
+
+  // Measure the (collapsed) group cards once the drag has started
+  useLayoutEffect(() => {
+    if (!dragState || !dragState.measuring) return;
+    const info = dragRef.current;
+    if (!info) return;
+    const names = groups.slice();
+    const scrollY = window.scrollY;
+    const rects = names.map(n => {
+      const el = groupRefs.current[n];
+      if (!el) return null;
+      const r = el.getBoundingClientRect();
+      return { top: r.top + scrollY, height: r.height };
+    });
+    const from = names.indexOf(info.name);
+    if (from === -1 || rects.some(r => !r)) {
+      finishGroupDrag(false);
+      return;
+    }
+    dragRef.current = {
+      ...info,
+      names,
+      rects,
+      from,
+      grabOffset: Math.min(rects[from].height / 2, 24),
+      gap: names.length > 1 ? Math.max(0, rects[1].top - (rects[0].top + rects[0].height)) : 16,
+      phase: 'drag'
+    };
+    updateDrag(info.clientY);
+  }, [dragState && dragState.measuring]);
+
+  // Never leave listeners behind if the component unmounts mid-drag
+  useEffect(() => () => {
+    if (dragRef.current && dragRef.current.cleanup) dragRef.current.cleanup();
   }, []);
 
   const openTab = (tab) => {
@@ -427,6 +558,11 @@ export default function BudgetApp() {
   const activeAccounts = accounts.filter(a => !a.isDeleted);
   const activeEnvelopes = envelopes.filter(e => !e.isDeleted);
   const activeDebts = debts.filter(d => !d.isDeleted);
+  const activeInvestments = investments.filter(i => !i.isDeleted);
+  const invTotals = activeInvestments.reduce(
+    (t, i) => ({ value: t.value + Number(i.value), basis: t.basis + Number(i.costBasis) }),
+    { value: 0, basis: 0 }
+  );
 
   // Credit cards hold debt (negative balance) and never feed Ready to Assign.
   const isCreditCard = (acc) => acc?.type === 'Credit Card';
@@ -1007,6 +1143,125 @@ export default function BudgetApp() {
     showNotification('Debt moved to Trash.');
   };
 
+  // ----- Investments: fully separate from accounts/envelopes, so nothing here touches Ready to Assign -----
+  const newEntryId = () => 'ie-' + Date.now() + '-' + Math.random().toString(36).slice(2, 6);
+
+  const resetInvForm = () => {
+    setEditingInvId(null);
+    setNewInvName('');
+    setNewInvType('Brokerage');
+    setNewInvValue('');
+    setNewInvBasis('');
+    setInvFormOpen(false);
+  };
+
+  const startEditInv = (inv) => {
+    setEditingInvId(inv.id);
+    setNewInvName(inv.name);
+    setNewInvType(inv.type || 'Brokerage');
+    setNewInvValue(String(inv.value));
+    setNewInvBasis(String(inv.costBasis));
+    setInvFormOpen(true);
+    setInvPanel(null);
+    scrollToTop();
+  };
+
+  const handleSaveInvestment = (e) => {
+    e.preventDefault();
+    const value = parseFloat(newInvValue);
+    if (!newInvName.trim() || isNaN(value) || value < 0) {
+      showNotification('Enter a name and a current value.');
+      return;
+    }
+    const existing = editingInvId ? investments.find(i => i.id === editingInvId) : null;
+    let basis = newInvBasis === '' ? (existing ? Number(existing.costBasis) : value) : parseFloat(newInvBasis);
+    if (isNaN(basis)) {
+      showNotification('Amount invested must be a number.');
+      return;
+    }
+
+    if (existing) {
+      const valueChanged = round2(existing.value) !== round2(value);
+      const entries = valueChanged
+        ? [{ id: newEntryId(), date: getTodayISO(), kind: 'value', amount: round2(value), note: 'Adjusted' }, ...(existing.entries || [])]
+        : (existing.entries || []);
+      setInvestments(investments.map(i => (i.id === existing.id
+        ? { ...i, name: newInvName.trim(), type: newInvType, value: round2(value), costBasis: round2(basis), entries }
+        : i)));
+      showNotification(`'${newInvName.trim()}' updated.`);
+    } else {
+      const newInv = {
+        id: 'inv-' + Date.now(),
+        name: newInvName.trim(),
+        type: newInvType,
+        value: round2(value),
+        costBasis: round2(basis),
+        isDeleted: false,
+        entries: [{ id: newEntryId(), date: getTodayISO(), kind: 'value', amount: round2(value), note: 'Opening value' }]
+      };
+      setInvestments([...investments, newInv]);
+      showNotification(`Investment account '${newInv.name}' added.`);
+    }
+    resetInvForm();
+  };
+
+  const openInvPanel = (inv, mode) => {
+    setInvPanel({ id: inv.id, mode });
+    setInvAmount(mode === 'value' ? String(inv.value) : '');
+    setInvDate(getTodayISO());
+  };
+
+  const handleInvAction = () => {
+    if (!invPanel) return;
+    const inv = investments.find(i => i.id === invPanel.id);
+    if (!inv) {
+      setInvPanel(null);
+      return;
+    }
+    const mode = invPanel.mode;
+    const amount = parseFloat(invAmount);
+    if (isNaN(amount) || amount < 0 || (mode !== 'value' && amount === 0)) {
+      showNotification('Please enter a valid amount.');
+      return;
+    }
+    if (mode === 'withdraw' && amount > Number(inv.value)) {
+      showNotification('That withdrawal is larger than the current value.');
+      return;
+    }
+
+    let value = Number(inv.value);
+    let costBasis = Number(inv.costBasis);
+    let kind = 'value';
+    if (mode === 'value') {
+      value = amount;
+    } else if (mode === 'contribute') {
+      value += amount;
+      costBasis += amount;
+      kind = 'contribution';
+    } else {
+      value -= amount;
+      costBasis -= amount;
+      kind = 'withdrawal';
+    }
+
+    const entry = { id: newEntryId(), date: invDate || getTodayISO(), kind, amount: round2(amount) };
+    setInvestments(investments.map(i => (i.id === inv.id
+      ? { ...i, value: round2(value), costBasis: round2(costBasis), entries: [entry, ...(i.entries || [])] }
+      : i)));
+    setInvPanel(null);
+    setInvAmount('');
+    showNotification(mode === 'value' ? 'Value updated.' : mode === 'contribute' ? 'Contribution recorded.' : 'Withdrawal recorded.');
+  };
+
+  const handleSoftDeleteInv = (id) => {
+    const inv = investments.find(i => i.id === id);
+    if (!inv) return;
+    setInvestments(investments.map(i => (i.id === id ? { ...i, isDeleted: true } : i)));
+    if (editingInvId === id) resetInvForm();
+    if (invPanel && invPanel.id === id) setInvPanel(null);
+    showNotification(`'${inv.name}' moved to Trash.`);
+  };
+
   const restoreItem = (type, id) => {
     if (type === 'tx') {
       const tx = transactions.find(t => t.id === id);
@@ -1023,6 +1278,8 @@ export default function BudgetApp() {
       setAccounts(accounts.map(a => (a.id === id ? { ...a, isDeleted: false } : a)));
     } else if (type === 'debt') {
       setDebts(debts.map(d => (d.id === id ? { ...d, isDeleted: false } : d)));
+    } else if (type === 'inv') {
+      setInvestments(investments.map(i => (i.id === id ? { ...i, isDeleted: false } : i)));
     }
     showNotification('Item restored.');
   };
@@ -1032,6 +1289,7 @@ export default function BudgetApp() {
     if (type === 'env') setEnvelopes(envelopes.filter(e => e.id !== id));
     if (type === 'acc') setAccounts(accounts.filter(a => a.id !== id));
     if (type === 'debt') setDebts(debts.filter(d => d.id !== id));
+    if (type === 'inv') setInvestments(investments.filter(i => i.id !== id));
     showNotification('Item permanently deleted.');
   };
 
@@ -1039,7 +1297,8 @@ export default function BudgetApp() {
   const deletedEnv = envelopes.filter(e => e.isDeleted);
   const deletedAcc = accounts.filter(a => a.isDeleted);
   const deletedDebts = debts.filter(d => d.isDeleted);
-  const totalTrashCount = deletedTx.length + deletedEnv.length + deletedAcc.length + deletedDebts.length;
+  const deletedInv = investments.filter(i => i.isDeleted);
+  const totalTrashCount = deletedTx.length + deletedEnv.length + deletedAcc.length + deletedDebts.length + deletedInv.length;
 
   // Build the import preview: parse every row, flag duplicates, and suggest envelopes.
   const importPreview = useMemo(() => {
@@ -1135,6 +1394,13 @@ export default function BudgetApp() {
     ? (importHasHeader ? importRows[0] : importRows[0].map((_, i) => `Column ${i + 1}`))
     : [];
 
+  const invStat = (label, value, color) => (
+    <div>
+      <div style={{ fontSize: '0.7rem', textTransform: 'uppercase', color: '#6b7280', letterSpacing: '0.03em' }}>{label}</div>
+      <div style={{ fontSize: '1.15rem', fontWeight: 700, color: color || '#111827' }}>{value}</div>
+    </div>
+  );
+
   const mapSelect = (label, key) => (
     <label key={key} style={{ display: 'flex', flexDirection: 'column', fontSize: '0.75rem', color: '#6b7280', gap: '2px' }}>
       {label}
@@ -1188,7 +1454,7 @@ export default function BudgetApp() {
         </div>
 
         <nav style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
-          {['budget', 'new', 'accounts', 'transactions', 'debts', 'trash'].map(tab => {
+          {['budget', 'new', 'accounts', 'investments', 'transactions', 'debts', 'trash'].map(tab => {
             const isActive = activeTab === tab;
             return (
               <button
@@ -1292,17 +1558,56 @@ export default function BudgetApp() {
           {/* Group Categories */}
           {groups.map(groupName => {
             const groupEnvelopes = activeEnvelopes.filter(e => e.group === groupName);
-            const isCollapsed = collapsedGroups[groupName];
+            const isCollapsed = collapsedGroups[groupName] || dragState !== null; // everything folds while dragging
+
+            // Visual position while a group is being dragged (the real order is committed on drop)
+            let dragStyle = {};
+            const dragInfo = dragRef.current;
+            if (dragState && !dragState.measuring && dragInfo && dragInfo.phase === 'drag') {
+              if (groupName === dragState.name) {
+                dragStyle = {
+                  transform: `translateY(${dragState.dy}px)`,
+                  position: 'relative',
+                  zIndex: 20,
+                  boxShadow: '0 10px 24px rgba(0,0,0,0.2)',
+                  cursor: 'grabbing'
+                };
+              } else {
+                const idx = dragInfo.names.indexOf(groupName);
+                const step = dragInfo.rects[dragInfo.from].height + dragInfo.gap;
+                let shift = 0;
+                if (dragInfo.from < dragState.target && idx > dragInfo.from && idx <= dragState.target) shift = -step;
+                else if (dragInfo.from > dragState.target && idx >= dragState.target && idx < dragInfo.from) shift = step;
+                dragStyle = { transform: `translateY(${shift}px)`, transition: 'transform 0.15s ease' };
+              }
+            }
 
             return (
-              <div key={groupName} style={{ backgroundColor: 'white', borderRadius: '10px', padding: '14px', boxShadow: '0 1px 3px rgba(0,0,0,0.1)' }}>
+              <div
+                key={groupName}
+                ref={el => { groupRefs.current[groupName] = el; }}
+                style={{ backgroundColor: 'white', borderRadius: '10px', padding: '14px', boxShadow: '0 1px 3px rgba(0,0,0,0.1)', ...dragStyle }}
+              >
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '2px solid #e5e7eb', paddingBottom: '8px', marginBottom: '10px' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', minWidth: 0 }}>
+                  {groups.length > 1 && (
+                    <button
+                      onPointerDown={e => startGroupDrag(e, groupName)}
+                      onContextMenu={e => e.preventDefault()}
+                      title="Hold and drag to reorder"
+                      aria-label={`Drag to reorder ${groupName}`}
+                      style={{ background: 'none', border: 'none', cursor: 'grab', touchAction: 'none', color: '#9ca3af', fontSize: '1.1rem', padding: '0 10px 0 0', lineHeight: 1, userSelect: 'none', WebkitUserSelect: 'none' }}
+                    >
+                      ⋮⋮
+                    </button>
+                  )}
                   <button
                     onClick={() => toggleGroupCollapse(groupName)}
                     style={{ background: 'none', border: 'none', fontWeight: 'bold', fontSize: '1rem', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '6px', color: '#1e3a8a', padding: 0 }}
                   >
                     <span>{isCollapsed ? '▶' : '▼'}</span> {groupName}
                   </button>
+                  </div>
                   <button
                     onClick={() => handleRemoveGroup(groupName)}
                     style={{ background: 'none', border: 'none', color: '#dc2626', cursor: 'pointer', fontSize: '0.8rem' }}
@@ -1720,6 +2025,188 @@ export default function BudgetApp() {
           })}
         </div>
       )}
+
+      {/* INVESTMENTS TAB */}
+      {activeTab === 'investments' && (() => {
+        const totalGain = invTotals.value - invTotals.basis;
+        const totalPct = invTotals.basis > 0 ? (totalGain / invTotals.basis) * 100 : null;
+        const gainColor = (g) => (g > 0 ? '#059669' : g < 0 ? '#dc2626' : '#111827');
+        const signedMoney = (g) => `${g >= 0 ? '+' : '-'}${formatMoney(Math.abs(g))}`;
+
+        return (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+            <div style={{ backgroundColor: 'white', padding: '14px', borderRadius: '10px', boxShadow: '0 1px 3px rgba(0,0,0,0.1)' }}>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: '12px' }}>
+                {invStat('Total value', formatMoney(invTotals.value))}
+                {invStat('Net contributed', formatMoney(invTotals.basis))}
+                {invStat('Gain / loss', `${signedMoney(totalGain)}${totalPct !== null ? ` (${totalPct >= 0 ? '+' : ''}${totalPct.toFixed(1)}%)` : ''}`, gainColor(totalGain))}
+              </div>
+              <div style={{ fontSize: '0.72rem', color: '#9ca3af', marginTop: '10px' }}>
+                Tracked separately: nothing here counts toward Ready to Assign or your envelopes.
+              </div>
+            </div>
+
+            {invFormOpen ? (
+              <div style={{ backgroundColor: 'white', padding: '14px', borderRadius: '10px', boxShadow: '0 1px 3px rgba(0,0,0,0.1)' }}>
+                <h3 style={{ margin: '0 0 10px 0', fontSize: '1rem' }}>{editingInvId ? 'Edit Investment Account' : '+ Add Investment Account'}</h3>
+                <form onSubmit={handleSaveInvestment} style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+                  <input
+                    type="text"
+                    placeholder="Account Name"
+                    value={newInvName}
+                    onChange={e => setNewInvName(e.target.value)}
+                    style={{ flex: '2 1 140px', padding: '8px', border: '1px solid #d1d5db', borderRadius: '6px', fontSize: '0.9rem' }}
+                  />
+                  <select
+                    value={newInvType}
+                    onChange={e => setNewInvType(e.target.value)}
+                    style={{ flex: '1 1 110px', padding: '8px', border: '1px solid #d1d5db', borderRadius: '6px', fontSize: '0.9rem' }}
+                  >
+                    {INVESTMENT_TYPES.map(t => (
+                      <option key={t} value={t}>{t}</option>
+                    ))}
+                  </select>
+                  <input
+                    type="number"
+                    step="0.01"
+                    placeholder="Current Value ($)"
+                    value={newInvValue}
+                    onChange={e => setNewInvValue(e.target.value)}
+                    style={{ flex: '1 1 110px', padding: '8px', border: '1px solid #d1d5db', borderRadius: '6px', fontSize: '0.9rem' }}
+                  />
+                  <input
+                    type="number"
+                    step="0.01"
+                    placeholder="Amount Invested ($)"
+                    value={newInvBasis}
+                    onChange={e => setNewInvBasis(e.target.value)}
+                    style={{ flex: '1 1 110px', padding: '8px', border: '1px solid #d1d5db', borderRadius: '6px', fontSize: '0.9rem' }}
+                  />
+                  <div style={{ display: 'flex', gap: '8px', flex: '1 1 100%' }}>
+                    <button type="submit" style={{ flex: 1, backgroundColor: '#2563eb', color: 'white', border: 'none', padding: '8px 14px', borderRadius: '6px', fontWeight: 'bold', cursor: 'pointer', fontSize: '0.9rem' }}>
+                      {editingInvId ? 'Save Changes' : 'Add Account'}
+                    </button>
+                    <button type="button" onClick={resetInvForm} style={{ backgroundColor: '#e5e7eb', color: '#374151', border: 'none', padding: '8px 14px', borderRadius: '6px', fontWeight: 'bold', cursor: 'pointer', fontSize: '0.9rem' }}>
+                      Cancel
+                    </button>
+                  </div>
+                </form>
+                <div style={{ fontSize: '0.72rem', color: '#9ca3af', marginTop: '8px' }}>
+                  Amount invested is what you have put in so far. Leave it blank to use the current value.
+                </div>
+              </div>
+            ) : (
+              <div>
+                <button
+                  onClick={() => setInvFormOpen(true)}
+                  style={{ backgroundColor: '#2563eb', color: 'white', border: 'none', padding: '8px 14px', borderRadius: '6px', fontWeight: 'bold', cursor: 'pointer', fontSize: '0.85rem' }}
+                >
+                  + Add investment account
+                </button>
+              </div>
+            )}
+
+            {activeInvestments.length === 0 && (
+              <div style={{ backgroundColor: 'white', padding: '20px', borderRadius: '10px', textAlign: 'center', color: '#6b7280', boxShadow: '0 1px 3px rgba(0,0,0,0.1)' }}>
+                No investment accounts yet.
+              </div>
+            )}
+
+            {activeInvestments.map(inv => {
+              const gain = Number(inv.value) - Number(inv.costBasis);
+              const pct = Number(inv.costBasis) > 0 ? (gain / Number(inv.costBasis)) * 100 : null;
+              const panelOpen = invPanel && invPanel.id === inv.id;
+              const entries = [...(inv.entries || [])].sort((a, b) => String(b.date).localeCompare(String(a.date)));
+              const showAll = invShowAll[inv.id];
+              const shownEntries = showAll ? entries : entries.slice(0, 5);
+              const smallBtn = (bg, color) => ({ backgroundColor: bg, color, border: 'none', padding: '6px 10px', borderRadius: '6px', fontWeight: 'bold', cursor: 'pointer', fontSize: '0.8rem' });
+
+              return (
+                <div key={inv.id} style={{ backgroundColor: 'white', borderRadius: '10px', padding: '14px', boxShadow: '0 1px 3px rgba(0,0,0,0.1)' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexWrap: 'wrap', gap: '10px' }}>
+                    <div>
+                      <h3 style={{ margin: 0, fontSize: '1.05rem' }}>{inv.name} <span style={{ fontSize: '0.8rem', color: '#6b7280', fontWeight: 'normal' }}>({inv.type})</span></h3>
+                    </div>
+                    <div style={{ display: 'flex', gap: '4px' }}>
+                      <button onClick={() => startEditInv(inv)} title="Edit account" aria-label="Edit account" style={{ background: 'none', border: 'none', color: '#2563eb', cursor: 'pointer', fontSize: '0.95rem', padding: '4px' }}>✎</button>
+                      <button onClick={() => handleSoftDeleteInv(inv.id)} title="Delete account" aria-label="Delete account" style={{ background: 'none', border: 'none', color: '#dc2626', cursor: 'pointer', fontSize: '0.9rem', padding: '4px' }}>✕</button>
+                    </div>
+                  </div>
+
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(120px, 1fr))', gap: '12px', marginTop: '10px' }}>
+                    {invStat('Value', formatMoney(inv.value))}
+                    {invStat('Net contributed', formatMoney(inv.costBasis))}
+                    {invStat('Gain / loss', `${signedMoney(gain)}${pct !== null ? ` (${pct >= 0 ? '+' : ''}${pct.toFixed(1)}%)` : ''}`, gainColor(gain))}
+                  </div>
+
+                  <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap', marginTop: '12px' }}>
+                    <button onClick={() => openInvPanel(inv, 'value')} style={smallBtn('#eff6ff', '#1e3a8a')}>Update value</button>
+                    <button onClick={() => openInvPanel(inv, 'contribute')} style={smallBtn('#ecfdf5', '#047857')}>+ Contribute</button>
+                    <button onClick={() => openInvPanel(inv, 'withdraw')} style={smallBtn('#fef2f2', '#b91c1c')}>− Withdraw</button>
+                  </div>
+
+                  {panelOpen && (
+                    <form
+                      onSubmit={e => { e.preventDefault(); handleInvAction(); }}
+                      style={{ marginTop: '10px', backgroundColor: '#f9fafb', padding: '10px', borderRadius: '8px', display: 'flex', gap: '8px', flexWrap: 'wrap', alignItems: 'flex-end' }}
+                    >
+                      <label style={{ display: 'flex', flexDirection: 'column', fontSize: '0.75rem', color: '#6b7280', gap: '2px', flex: '1 1 130px' }}>
+                        {invPanel.mode === 'value' ? 'New current value ($)' : invPanel.mode === 'contribute' ? 'Contribution ($)' : 'Withdrawal ($)'}
+                        <input
+                          type="number"
+                          step="0.01"
+                          value={invAmount}
+                          onChange={e => setInvAmount(e.target.value)}
+                          autoFocus
+                          style={{ padding: '7px', border: '1px solid #d1d5db', borderRadius: '6px', fontSize: '0.9rem' }}
+                        />
+                      </label>
+                      <label style={{ display: 'flex', flexDirection: 'column', fontSize: '0.75rem', color: '#6b7280', gap: '2px', flex: '1 1 130px' }}>
+                        Date
+                        <input
+                          type="date"
+                          value={invDate}
+                          onChange={e => setInvDate(e.target.value)}
+                          style={{ padding: '7px', border: '1px solid #d1d5db', borderRadius: '6px', fontSize: '0.9rem' }}
+                        />
+                      </label>
+                      <div style={{ display: 'flex', gap: '6px' }}>
+                        <button type="submit" style={smallBtn('#2563eb', 'white')}>Save</button>
+                        <button type="button" onClick={() => setInvPanel(null)} style={smallBtn('#e5e7eb', '#374151')}>Cancel</button>
+                      </div>
+                    </form>
+                  )}
+
+                  {entries.length > 0 && (
+                    <div style={{ marginTop: '12px', borderTop: '1px solid #e5e7eb', paddingTop: '8px' }}>
+                      <div style={{ fontSize: '0.75rem', fontWeight: 'bold', color: '#6b7280', marginBottom: '4px' }}>Activity</div>
+                      {shownEntries.map(en => (
+                        <div key={en.id} style={{ display: 'flex', justifyContent: 'space-between', gap: '8px', fontSize: '0.8rem', padding: '4px 0', borderBottom: '1px solid #f3f4f6' }}>
+                          <span style={{ color: '#6b7280', whiteSpace: 'nowrap' }}>{formatDate(en.date, 'us')}</span>
+                          <span style={{ flex: 1, minWidth: 0, wordBreak: 'break-word' }}>
+                            {en.kind === 'value' ? `Value set${en.note ? ` (${en.note})` : ''}` : en.kind === 'contribution' ? 'Contribution' : 'Withdrawal'}
+                          </span>
+                          <strong style={{ whiteSpace: 'nowrap', color: en.kind === 'contribution' ? '#059669' : en.kind === 'withdrawal' ? '#dc2626' : '#1f2937' }}>
+                            {en.kind === 'contribution' ? '+' : en.kind === 'withdrawal' ? '-' : ''}{formatMoney(en.amount)}
+                          </strong>
+                        </div>
+                      ))}
+                      {entries.length > 5 && (
+                        <button
+                          onClick={() => setInvShowAll(prev => ({ ...prev, [inv.id]: !prev[inv.id] }))}
+                          style={{ background: 'none', border: 'none', color: '#2563eb', fontWeight: 'bold', cursor: 'pointer', padding: '6px 0 0 0', fontSize: '0.8rem' }}
+                        >
+                          {showAll ? 'Show less' : `Show all (${entries.length})`}
+                        </button>
+                      )}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        );
+      })()}
 
       {/* TRANSACTIONS TAB */}
       {activeTab === 'transactions' && (
@@ -2151,6 +2638,15 @@ export default function BudgetApp() {
                   <div style={{ display: 'flex', gap: '6px' }}>
                     <button onClick={() => restoreItem('acc', a.id)} style={{ padding: '4px 8px', cursor: 'pointer', fontSize: '0.8rem' }}>Restore</button>
                     <button onClick={() => permDeleteItem('acc', a.id)} style={{ padding: '4px 8px', color: 'red', cursor: 'pointer', fontSize: '0.8rem' }}>Delete Forever</button>
+                  </div>
+                </div>
+              ))}
+              {deletedInv.map(i => (
+                <div key={i.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '8px', backgroundColor: '#f9fafb', borderRadius: '6px', gap: '8px', flexWrap: 'wrap' }}>
+                  <div style={{ fontSize: '0.85rem', wordBreak: 'break-word' }}>[Investment] {i.name}</div>
+                  <div style={{ display: 'flex', gap: '6px' }}>
+                    <button onClick={() => restoreItem('inv', i.id)} style={{ padding: '4px 8px', cursor: 'pointer', fontSize: '0.8rem' }}>Restore</button>
+                    <button onClick={() => permDeleteItem('inv', i.id)} style={{ padding: '4px 8px', color: 'red', cursor: 'pointer', fontSize: '0.8rem' }}>Delete Forever</button>
                   </div>
                 </div>
               ))}
