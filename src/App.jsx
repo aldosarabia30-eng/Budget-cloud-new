@@ -1,4 +1,5 @@
-import React, { useState, useEffect, useLayoutEffect, useRef, useMemo } from 'react';
+
+     import React, { useState, useEffect, useLayoutEffect, useRef, useMemo } from 'react';
 import { createClient } from '@supabase/supabase-js';
 
 // --- SUPABASE CONFIGURATION ---
@@ -39,7 +40,6 @@ const stable = (v) => {
 };
 
 const snapshot = (d = {}) => stable({
-  readyToAssign: d.readyToAssign ?? 0,
   accounts: d.accounts ?? [],
   groups: d.groups ?? [],
   collapsedGroups: d.collapsedGroups ?? {},
@@ -72,6 +72,66 @@ const formatMoney = (n) => {
   return (v < 0 ? '-$' : '$') + Math.abs(v).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 };
 const round2 = (n) => Math.round(Number(n) * 100) / 100;
+
+// ---- monthly budgeting helpers ----
+const MONTH_RE = /^\d{4}-(0[1-9]|1[0-2])$/;
+
+const addMonthKey = (key, delta) => {
+  const [y, m] = key.split('-').map(Number);
+  const total = y * 12 + (m - 1) + delta;
+  return `${Math.floor(total / 12)}-${String((total % 12) + 1).padStart(2, '0')}`;
+};
+
+const monthKeyOf = (dateStr) => String(dateStr || '').slice(0, 7);
+
+const monthLabel = (key, short) => {
+  const [y, m] = key.split('-').map(Number);
+  const name = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'][m - 1];
+  return `${short ? name.slice(0, 3) : name} ${y}`;
+};
+
+// One envelope, month by month. What is left at the end of a month carries into the next one.
+// An envelope that ends a month below zero starts the next month at $0: that overspending is taken
+// out of Ready to Assign instead (see `overspend`).
+const buildEnvTimeline = (budgetMap, spendMap, throughKey) => {
+  const rows = new Map();
+  const keys = [...Object.keys(budgetMap || {}), ...Object.keys(spendMap || {})].filter(k => MONTH_RE.test(k)).sort();
+  if (!keys.length || keys[0] > throughKey) return rows;
+  let carry = 0;
+  for (let k = keys[0], n = 0; k <= throughKey && n < 1200; k = addMonthKey(k, 1), n++) {
+    const budgeted = Number(budgetMap && budgetMap[k]) || 0;
+    const spent = Number(spendMap && spendMap[k]) || 0;
+    const end = Math.round((carry + budgeted - spent) * 100) / 100;
+    rows.set(k, { start: carry, budgeted, spent, end, overspend: end < 0 ? -end : 0 });
+    carry = end > 0 ? end : 0;
+  }
+  return rows;
+};
+
+// Older saves kept one lump "assigned" amount per envelope. Move it into the month the envelope was
+// first used (or this month), so balances are unchanged at the moment of upgrade.
+const migrateBudgetData = (d) => {
+  const envs = d.envelopes || [];
+  if (!envs.some(e => !e.budget)) return d;
+  const thisMonth = getTodayISO().slice(0, 7);
+  const firstSpend = {};
+  (d.transactions || []).forEach(t => {
+    if (t.isDeleted || t.type !== 'expense' || !t.envelopeId) return;
+    const k = monthKeyOf(t.date);
+    if (MONTH_RE.test(k) && (!firstSpend[t.envelopeId] || k < firstSpend[t.envelopeId])) firstSpend[t.envelopeId] = k;
+  });
+  return {
+    ...d,
+    envelopes: envs.map(e => {
+      if (e.budget) return e;
+      const { assigned, ...rest } = e;
+      const amount = Number(assigned) || 0;
+      const month = firstSpend[e.id] && firstSpend[e.id] < thisMonth ? firstSpend[e.id] : thisMonth;
+      return { ...rest, budget: amount ? { [month]: Math.round(amount * 100) / 100 } : {} };
+    })
+  };
+};
+// ---- end monthly budgeting helpers ----
 
 const REPORT_MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
 
@@ -301,7 +361,7 @@ const getScheduleText = (env) => {
 
 export default function BudgetApp() {
   const [budgetId, setBudgetId] = useState(getBudgetIdFromUrl);
-  const [readyToAssign, setReadyToAssign] = useState(0.0);
+  const [budgetMonth, setBudgetMonth] = useState(() => getTodayISO().slice(0, 7)); // month shown on the Budget tab
 
   const [accounts, setAccounts] = useState([]);
   const [groups, setGroups] = useState([]);
@@ -407,9 +467,11 @@ export default function BudgetApp() {
     let cancelled = false;
     loadedRef.current = false;
 
-    const applyRemote = (d) => {
-      lastJsonRef.current = snapshot(d); // remember it so the save effect doesn't send it back
-      setReadyToAssign(d.readyToAssign ?? 0);
+    const applyRemote = (raw) => {
+      // Older saves kept one lump "assigned" per envelope; convert to monthly assignments.
+      const d = migrateBudgetData(raw);
+      // Remember what the server has (not the converted copy) so a converted budget gets saved back.
+      lastJsonRef.current = snapshot(raw);
       setAccounts(d.accounts ?? []);
       setGroups(d.groups ?? []);
       setCollapsedGroups(d.collapsedGroups ?? {});
@@ -458,7 +520,7 @@ export default function BudgetApp() {
   // Save budget changes to Supabase (debounced, skipped when nothing actually changed)
   useEffect(() => {
     if (!budgetId || !loadedRef.current) return;
-    const dataToSave = { readyToAssign, accounts, groups, collapsedGroups, collapsedAccountTx, envelopes, transactions, debts, investments };
+    const dataToSave = { accounts, groups, collapsedGroups, collapsedAccountTx, envelopes, transactions, debts, investments };
     const json = snapshot(dataToSave);
     if (json === lastJsonRef.current) return;
 
@@ -475,7 +537,7 @@ export default function BudgetApp() {
     }, 400);
 
     return () => clearTimeout(timer);
-  }, [budgetId, readyToAssign, accounts, groups, collapsedGroups, collapsedAccountTx, envelopes, transactions, debts, investments]);
+  }, [budgetId, accounts, groups, collapsedGroups, collapsedAccountTx, envelopes, transactions, debts, investments]);
 
   // Keep the side menu sensible when the window is resized (open on desktop, closed drawer on mobile)
   useEffect(() => {
@@ -645,15 +707,64 @@ export default function BudgetApp() {
     return !!acc && !acc.isDeleted && !isCreditCard(acc);
   };
 
-  // Total an account has contributed to Ready to Assign (used when deleting/restoring an account).
-  const getRtaContribution = (accId) => {
-    const acc = accounts.find(a => a.id === accId);
-    if (!acc || isCreditCard(acc)) return 0;
-    const income = activeTransactions
-      .filter(t => t.accountId === accId && t.type === 'income')
-      .reduce((sum, t) => sum + Number(t.amount), 0);
-    return Number(acc.initialBalance) + income;
+  // ----- Monthly budgeting -----
+  // Ready to Assign and every envelope balance are worked out from the data each time, so editing an old
+  // transaction or month can never leave them out of sync.
+  const todayMonth = getTodayISO().slice(0, 7);
+  const txMonth = (t) => {
+    const k = monthKeyOf(t.date);
+    return MONTH_RE.test(k) ? k : todayMonth;
   };
+
+  const budgetView = useMemo(() => {
+    const key = budgetMonth;
+    const spend = {};
+    activeTransactions.forEach(t => {
+      if (t.type !== 'expense' || !t.envelopeId) return;
+      const k = txMonth(t);
+      if (!spend[t.envelopeId]) spend[t.envelopeId] = {};
+      spend[t.envelopeId][k] = (spend[t.envelopeId][k] || 0) + Number(t.amount);
+    });
+
+    const rowsByEnv = {};
+    let budgetedThrough = 0;
+    let penalties = 0; // overspending from months before the selected one
+    activeEnvelopes.forEach(env => {
+      const budget = env.budget || {};
+      const rows = buildEnvTimeline(budget, spend[env.id], key);
+      rowsByEnv[env.id] = rows;
+      rows.forEach((r, k) => { if (k < key) penalties += r.overspend; });
+      Object.keys(budget).forEach(k => {
+        if (MONTH_RE.test(k) && k <= key) budgetedThrough += Number(budget[k]) || 0;
+      });
+    });
+
+    const opening = activeAccounts.filter(a => !isCreditCard(a)).reduce((sum, a) => sum + Number(a.initialBalance), 0);
+    const income = activeTransactions
+      .filter(t => countsTowardRTA(t) && txMonth(t) <= key)
+      .reduce((sum, t) => sum + Number(t.amount), 0);
+
+    return {
+      rowsByEnv,
+      inflow: round2(opening + income),
+      budgetedThrough: round2(budgetedThrough),
+      penalties: round2(penalties),
+      rta: round2(opening + income - budgetedThrough - penalties)
+    };
+  }, [envelopes, accounts, transactions, budgetMonth]);
+
+  const rtaShown = Math.abs(budgetView.rta) < 0.005 ? 0 : budgetView.rta;
+  const EMPTY_ENV_ROW = { start: 0, budgeted: 0, spent: 0, end: 0, overspend: 0 };
+  const envRow = (env) => (budgetView.rowsByEnv[env.id] && budgetView.rowsByEnv[env.id].get(budgetMonth)) || EMPTY_ENV_ROW;
+
+  // Months you can browse: back to your earliest data, forward one year for planning ahead
+  const budgetEarliest = (() => {
+    let m = todayMonth;
+    envelopes.forEach(e => Object.keys(e.budget || {}).forEach(k => { if (MONTH_RE.test(k) && k < m) m = k; }));
+    activeTransactions.forEach(t => { const k = txMonth(t); if (k < m) m = k; });
+    return m;
+  })();
+  const budgetLatest = addMonthKey(todayMonth, 12);
 
   const getAccountBalance = (accId) => {
     const acc = accounts.find(a => a.id === accId);
@@ -717,10 +828,6 @@ export default function BudgetApp() {
         cleared: true,
         reconciled: true
       };
-      // Same rule as every other income transaction, so deleting/restoring it stays consistent.
-      if (isIncome && acc && !isCreditCard(acc)) {
-        setReadyToAssign(prev => prev + adjTx.amount);
-      }
     }
 
     // Only cleared transactions become reconciled; uncleared ones stay visible for follow-up.
@@ -749,24 +856,14 @@ export default function BudgetApp() {
     showNotification(`Account reconciled successfully to $${target.toFixed(2)}.`);
   };
 
-  const getEnvelopeSpent = (envId) => {
-    return activeTransactions
-      .filter(t => t.envelopeId === envId && t.type === 'expense')
-      .reduce((sum, t) => sum + Number(t.amount), 0);
-  };
-
-  const getEnvelopeRemaining = (env) => {
-    return Number(env.assigned) - getEnvelopeSpent(env.id);
-  };
-
-  // How far an envelope is from its target.
-  // Repeating goals (bills): funded = amount assigned this cycle.
-  // Target-by-date goals (savings): funded = balance still sitting in the envelope.
-  const getTargetProgress = (env) => {
+  // How far an envelope is from its target, for the selected month.
+  // Repeating goals (bills): funded = what is available for the month (carried over + assigned).
+  // Target-by-date goals (savings): funded = the balance in the envelope at the end of the month.
+  const getTargetProgress = (env, row) => {
     if (!env.goalType || env.goalType === 'none') return null;
     const target = Number(env.targetAmount);
     if (!(target > 0)) return null;
-    const funded = env.goalType === 'target_by_date' ? getEnvelopeRemaining(env) : Number(env.assigned);
+    const funded = env.goalType === 'target_by_date' ? row.end : row.start + row.budgeted;
     const left = Math.max(0, target - funded);
     const pct = Math.min(100, Math.max(0, (funded / target) * 100));
     return { target, funded, left, pct };
@@ -804,16 +901,10 @@ export default function BudgetApp() {
   };
 
   const handleRemoveGroup = (groupName) => {
-    const groupEnvelopes = envelopes.filter(env => env.group === groupName && !env.isDeleted);
-    const refundedAmount = groupEnvelopes.reduce((sum, env) => sum + Number(env.assigned), 0);
-
-    if (refundedAmount > 0) {
-      setReadyToAssign(prev => prev + refundedAmount);
-    }
-
+    // Ready to Assign is worked out from live envelopes, so their money returns to it automatically.
+    // Assignments are kept, so restoring an envelope from the Trash puts them back.
     setGroups(groups.filter(g => g !== groupName));
-    // Zero out assigned so restoring an envelope later can't bring back money that was already refunded.
-    setEnvelopes(envelopes.map(env => (env.group === groupName && !env.isDeleted ? { ...env, isDeleted: true, assigned: 0 } : env)));
+    setEnvelopes(envelopes.map(env => (env.group === groupName && !env.isDeleted ? { ...env, isDeleted: true } : env)));
     showNotification(`Group '${groupName}' deleted.`);
   };
 
@@ -876,7 +967,7 @@ export default function BudgetApp() {
 
     const newEnv = {
       id: 'env-' + Date.now(),
-      assigned: 0,
+      budget: {},
       isDeleted: false,
       ...fields
     };
@@ -890,19 +981,39 @@ export default function BudgetApp() {
     showNotification(`Envelope '${newEnv.name}' created.`);
   };
 
-  const handleAssignFunds = (envId, newAssignedAmount) => {
-    const env = envelopes.find(e => e.id === envId);
-    if (!env) return;
-    const diff = Number(newAssignedAmount) - Number(env.assigned);
-    setReadyToAssign(prev => prev - diff);
-    setEnvelopes(envelopes.map(e => (e.id === envId ? { ...e, assigned: Number(newAssignedAmount) } : e)));
+  // Set what is assigned to an envelope for the month being viewed
+  const handleAssignMonth = (envId, rawValue) => {
+    const amount = rawValue === '' ? 0 : Number(rawValue);
+    if (isNaN(amount)) return;
+    setEnvelopes(prev => prev.map(e => (e.id === envId ? { ...e, budget: { ...(e.budget || {}), [budgetMonth]: amount } } : e)));
+  };
+
+  // Fill this month's empty envelopes with what was assigned last month (never overwrites a month you've already set)
+  const handleCopyLastMonth = () => {
+    const prevKey = addMonthKey(budgetMonth, -1);
+    let count = 0;
+    const next = envelopes.map(e => {
+      if (e.isDeleted) return e;
+      const b = e.budget || {};
+      if (b[budgetMonth] !== undefined) return e;
+      const prevAmt = Number(b[prevKey]) || 0;
+      if (prevAmt <= 0) return e;
+      count++;
+      return { ...e, budget: { ...b, [budgetMonth]: prevAmt } };
+    });
+    if (count === 0) {
+      showNotification('Nothing to copy: last month has no assignments, or this month is already filled in.');
+      return;
+    }
+    setEnvelopes(next);
+    showNotification(`Copied ${count} assignment${count === 1 ? '' : 's'} from ${monthLabel(prevKey)}.`);
   };
 
   const handleSoftDeleteEnvelope = (envId) => {
     const env = envelopes.find(e => e.id === envId);
     if (!env) return;
-    setReadyToAssign(prev => prev + Number(env.assigned));
-    setEnvelopes(envelopes.map(e => (e.id === envId ? { ...e, isDeleted: true, assigned: 0 } : e)));
+    // Assignments are kept (so a restore brings them back); its money returns to Ready to Assign while it is deleted.
+    setEnvelopes(envelopes.map(e => (e.id === envId ? { ...e, isDeleted: true } : e)));
     if (editingEnvId === envId) resetEnvForm();
     showNotification(`Envelope '${env.name}' deleted.`);
   };
@@ -923,9 +1034,6 @@ export default function BudgetApp() {
       lastReconciledBalance: null
     };
     setAccounts([...accounts, newAcc]);
-    if (!isCC) {
-      setReadyToAssign(prev => prev + newAcc.initialBalance);
-    }
     setNewAccName('');
     setNewAccBalance('');
     showNotification(`Account '${newAcc.name}' added.`);
@@ -934,10 +1042,6 @@ export default function BudgetApp() {
   const handleSoftDeleteAccount = (accId) => {
     const acc = accounts.find(a => a.id === accId);
     if (!acc) return;
-    const contribution = getRtaContribution(accId);
-    if (contribution !== 0) {
-      setReadyToAssign(prev => prev - contribution);
-    }
     setAccounts(accounts.map(a => (a.id === accId ? { ...a, isDeleted: true } : a)));
     if (reconcilingAccId === accId) setReconcilingAccId(null);
     showNotification(`Account '${acc.name}' moved to Trash.`);
@@ -1002,11 +1106,6 @@ export default function BudgetApp() {
         updated.cleared = true;
       }
 
-      const delta = (countsTowardRTA(updated) ? amt : 0) - (countsTowardRTA(old) ? Number(old.amount) : 0);
-      if (delta !== 0) {
-        setReadyToAssign(prev => prev + delta);
-      }
-
       setTransactions(transactions.map(t => (t.id === editingTxId ? updated : t)));
       cancelEditTx();
       showNotification('Transaction updated.');
@@ -1028,10 +1127,6 @@ export default function BudgetApp() {
     };
 
     setTransactions([newTx, ...transactions]);
-
-    if (countsTowardRTA(newTx)) {
-      setReadyToAssign(prev => prev + amt);
-    }
 
     setTxPayee('');
     setTxAmount('');
@@ -1133,11 +1228,7 @@ export default function BudgetApp() {
       reconciled: false
     }));
 
-    const rtaAdd = newTxs.filter(countsTowardRTA).reduce((sum, t) => sum + Number(t.amount), 0);
     setTransactions(prev => [...newTxs, ...prev]);
-    if (rtaAdd !== 0) {
-      setReadyToAssign(prev => prev + rtaAdd);
-    }
     closeImport();
     showNotification(`Imported ${newTxs.length} transaction${newTxs.length === 1 ? '' : 's'}.`);
   };
@@ -1167,9 +1258,6 @@ export default function BudgetApp() {
   const handleSoftDeleteTransaction = (txId) => {
     const tx = transactions.find(t => t.id === txId);
     if (!tx) return;
-    if (countsTowardRTA(tx)) {
-      setReadyToAssign(prev => prev - Number(tx.amount));
-    }
     setTransactions(transactions.map(t => (t.id === txId ? { ...t, isDeleted: true } : t)));
     setSelectedTxIds(prev => prev.filter(id => id !== txId)); // don't leave a stale selection behind
     if (editingTxId === txId) cancelEditTx();
@@ -1193,17 +1281,6 @@ export default function BudgetApp() {
 
   const handleDeleteSelectedTransactions = () => {
     if (selectedTxIds.length === 0) return;
-
-    let incomeAdjustment = 0;
-    transactions.forEach(t => {
-      if (selectedTxIds.includes(t.id) && !t.isDeleted && countsTowardRTA(t)) {
-        incomeAdjustment += Number(t.amount);
-      }
-    });
-
-    if (incomeAdjustment > 0) {
-      setReadyToAssign(prev => prev - incomeAdjustment);
-    }
 
     setTransactions(prev => prev.map(t => selectedTxIds.includes(t.id) ? { ...t, isDeleted: true } : t));
     if (selectedTxIds.includes(editingTxId)) cancelEditTx();
@@ -1357,8 +1434,6 @@ export default function BudgetApp() {
 
   const restoreItem = (type, id) => {
     if (type === 'tx') {
-      const tx = transactions.find(t => t.id === id);
-      if (tx && countsTowardRTA(tx)) setReadyToAssign(prev => prev + Number(tx.amount));
       setTransactions(transactions.map(t => (t.id === id ? { ...t, isDeleted: false } : t)));
     } else if (type === 'env') {
       const env = envelopes.find(e => e.id === id);
@@ -1366,8 +1441,6 @@ export default function BudgetApp() {
       if (env && !groups.includes(env.group)) setGroups(prev => [...prev, env.group]);
       setEnvelopes(envelopes.map(e => (e.id === id ? { ...e, isDeleted: false } : e)));
     } else if (type === 'acc') {
-      const contribution = getRtaContribution(id);
-      if (contribution !== 0) setReadyToAssign(prev => prev + contribution);
       setAccounts(accounts.map(a => (a.id === id ? { ...a, isDeleted: false } : a)));
     } else if (type === 'debt') {
       setDebts(debts.map(d => (d.id === id ? { ...d, isDeleted: false } : d)));
@@ -1650,8 +1723,10 @@ export default function BudgetApp() {
           <h1 style={{ margin: 0, fontSize: '1.15rem', fontWeight: 700, color: '#111827' }}>{TAB_LABELS[activeTab]}</h1>
         </div>
         <div style={{ textAlign: 'right', backgroundColor: '#eff6ff', border: '1px solid #bfdbfe', padding: '6px 12px', borderRadius: '8px' }}>
-          <div style={{ fontSize: '0.65rem', textTransform: 'uppercase', color: '#1d4ed8', letterSpacing: '0.03em' }}>Ready to Assign</div>
-          <div style={{ fontSize: '1.1rem', fontWeight: 700, color: readyToAssign < 0 ? '#dc2626' : '#1e3a8a' }}>${readyToAssign.toFixed(2)}</div>
+          <div style={{ fontSize: '0.65rem', textTransform: 'uppercase', color: '#1d4ed8', letterSpacing: '0.03em' }}>
+            Ready to Assign{budgetMonth !== todayMonth ? ` · ${monthLabel(budgetMonth, true)}` : ''}
+          </div>
+          <div style={{ fontSize: '1.1rem', fontWeight: 700, color: rtaShown < 0 ? '#dc2626' : '#1e3a8a' }}>{formatMoney(rtaShown)}</div>
         </div>
       </header>
 
@@ -1665,6 +1740,53 @@ export default function BudgetApp() {
       {/* BUDGET TAB */}
       {activeTab === 'budget' && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+          {/* Month selector */}
+          <div style={{ backgroundColor: 'white', padding: '12px 14px', borderRadius: '10px', boxShadow: '0 1px 3px rgba(0,0,0,0.1)' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                <button
+                  disabled={budgetMonth <= budgetEarliest}
+                  aria-label="Previous month"
+                  onClick={() => setBudgetMonth(addMonthKey(budgetMonth, -1))}
+                  style={{ width: '32px', height: '32px', borderRadius: '8px', border: '1px solid #e5e7eb', backgroundColor: 'white', color: budgetMonth <= budgetEarliest ? '#d1d5db' : '#1f2937', cursor: budgetMonth <= budgetEarliest ? 'not-allowed' : 'pointer', fontSize: '1rem' }}
+                >
+                  ‹
+                </button>
+                <div style={{ minWidth: '140px', textAlign: 'center', fontWeight: 700, fontSize: '0.95rem' }}>{monthLabel(budgetMonth)}</div>
+                <button
+                  disabled={budgetMonth >= budgetLatest}
+                  aria-label="Next month"
+                  onClick={() => setBudgetMonth(addMonthKey(budgetMonth, 1))}
+                  style={{ width: '32px', height: '32px', borderRadius: '8px', border: '1px solid #e5e7eb', backgroundColor: 'white', color: budgetMonth >= budgetLatest ? '#d1d5db' : '#1f2937', cursor: budgetMonth >= budgetLatest ? 'not-allowed' : 'pointer', fontSize: '1rem' }}
+                >
+                  ›
+                </button>
+                {budgetMonth !== todayMonth && (
+                  <button
+                    onClick={() => setBudgetMonth(todayMonth)}
+                    style={{ background: 'none', border: 'none', color: '#2563eb', fontWeight: 'bold', cursor: 'pointer', fontSize: '0.8rem' }}
+                  >
+                    This month
+                  </button>
+                )}
+              </div>
+              <button
+                onClick={handleCopyLastMonth}
+                style={{ backgroundColor: 'white', color: '#2563eb', border: '1px solid #bfdbfe', padding: '6px 12px', borderRadius: '6px', fontWeight: 'bold', cursor: 'pointer', fontSize: '0.8rem' }}
+              >
+                Copy last month's assignments
+              </button>
+            </div>
+            <div style={{ fontSize: '0.75rem', color: '#6b7280', marginTop: '8px' }}>
+              Money in {formatMoney(budgetView.inflow)} − assigned {formatMoney(budgetView.budgetedThrough)}
+              {budgetView.penalties > 0 ? ` − overspending from earlier months ${formatMoney(budgetView.penalties)}` : ''}
+              {' = '}<strong style={{ color: rtaShown < 0 ? '#dc2626' : '#1e3a8a' }}>{formatMoney(rtaShown)}</strong> Ready to Assign
+            </div>
+            <div style={{ fontSize: '0.72rem', color: '#9ca3af', marginTop: '2px' }}>
+              What's left in an envelope carries into the next month. Overspending resets the envelope to $0 and comes out of the next month's Ready to Assign.
+            </div>
+          </div>
+
           {groups.length > 0 && (
             <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
               <button
@@ -1755,9 +1877,10 @@ export default function BudgetApp() {
                       <div style={{ fontSize: '0.85rem', color: '#9ca3af', padding: '4px 0' }}>No envelopes in this group.</div>
                     ) : (
                       groupEnvelopes.map(env => {
-                        const spent = getEnvelopeSpent(env.id);
-                        const remaining = getEnvelopeRemaining(env);
-                        const progress = getTargetProgress(env);
+                        const row = envRow(env);
+                        const spent = row.spent;
+                        const remaining = row.end;
+                        const progress = getTargetProgress(env, row);
 
                         return (
                           <div key={env.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '10px', backgroundColor: '#f9fafb', borderRadius: '6px', flexWrap: 'wrap', gap: '10px' }}>
@@ -1780,19 +1903,30 @@ export default function BudgetApp() {
                                   </div>
                                 </div>
                               )}
+                              {row.start > 0 && (
+                                <div style={{ fontSize: '0.72rem', color: '#059669', marginTop: '3px' }}>
+                                  {formatMoney(row.start)} carried over from last month
+                                </div>
+                              )}
+                              {row.end < 0 && (
+                                <div style={{ fontSize: '0.72rem', color: '#dc2626', marginTop: '3px' }}>
+                                  Overspent by {formatMoney(-row.end)}. Unless covered, it comes out of {monthLabel(addMonthKey(budgetMonth, 1), true)}'s Ready to Assign.
+                                </div>
+                              )}
                             </div>
                             <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap', justifyContent: 'flex-end', flex: '1 1 200px' }}>
                               <div style={{ fontSize: '0.85rem' }}>
-                                <span style={{ color: '#6b7280' }}>Ass.: </span>
+                                <span style={{ color: '#6b7280' }}>Assigned: </span>
                                 <input
                                   type="number"
-                                  value={env.assigned}
-                                  onChange={e => handleAssignFunds(env.id, e.target.value)}
+                                  step="0.01"
+                                  value={row.budgeted}
+                                  onChange={e => handleAssignMonth(env.id, e.target.value)}
                                   style={{ width: '70px', padding: '4px', border: '1px solid #d1d5db', borderRadius: '4px', fontSize: '0.85rem' }}
                                 />
                               </div>
-                              <div style={{ fontSize: '0.85rem' }}>Spent: <strong>${spent.toFixed(2)}</strong></div>
-                              <div style={{ fontSize: '0.85rem' }}>Rem: <strong style={{ color: remaining < 0 ? '#dc2626' : '#059669' }}>${remaining.toFixed(2)}</strong></div>
+                              <div style={{ fontSize: '0.85rem' }}>Activity: <strong>{formatMoney(spent)}</strong></div>
+                              <div style={{ fontSize: '0.85rem' }}>Available: <strong style={{ color: remaining < 0 ? '#dc2626' : '#059669' }}>{formatMoney(remaining)}</strong></div>
                               <button
                                 onClick={() => startEditEnv(env)}
                                 title="Edit envelope"
