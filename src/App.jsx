@@ -694,7 +694,7 @@ export default function BudgetApp() {
 
       {/* Main Nav */}
       <nav style={{ display: 'flex', gap: '6px', overflowX: 'auto', paddingBottom: '8px', marginBottom: '16px', borderBottom: '2px solid #e5e7eb', WebkitOverflowScrolling: 'touch' }}>
-        {['budget', 'accounts', 'transactions', 'debts', 'trash'].map(tab => (
+        {['budget', 'new', 'accounts', 'transactions', 'debts', 'trash'].map(tab => (
           <button
             key={tab}
             onClick={() => setActiveTab(tab)}
@@ -711,7 +711,7 @@ export default function BudgetApp() {
               fontSize: '0.9rem'
             }}
           >
-            {tab === 'trash' ? `Trash (${totalTrashCount})` : tab}
+            {tab === 'trash' ? `Trash (${totalTrashCount})` : tab === 'new' ? '+ New' : tab}
           </button>
         ))}
       </nav>
@@ -719,7 +719,117 @@ export default function BudgetApp() {
       {/* BUDGET TAB */}
       {activeTab === 'budget' && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
-          {/* Add Group & Envelope Forms */}
+          {groups.length > 0 && (
+            <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+              <button
+                onClick={() => setActiveTab('new')}
+                style={{ backgroundColor: '#2563eb', color: 'white', border: 'none', padding: '6px 12px', borderRadius: '6px', fontWeight: 'bold', cursor: 'pointer', fontSize: '0.85rem' }}
+              >
+                + Group / Envelope
+              </button>
+            </div>
+          )}
+
+          {groups.length === 0 && (
+            <div style={{ backgroundColor: 'white', padding: '20px', borderRadius: '10px', textAlign: 'center', color: '#6b7280', boxShadow: '0 1px 3px rgba(0,0,0,0.1)' }}>
+              No budget groups or envelopes yet.{' '}
+              <button
+                onClick={() => setActiveTab('new')}
+                style={{ background: 'none', border: 'none', color: '#2563eb', fontWeight: 'bold', cursor: 'pointer', padding: 0, fontSize: 'inherit' }}
+              >
+                Add a group to get started
+              </button>
+            </div>
+          )}
+
+          {/* Group Categories */}
+          {groups.map(groupName => {
+            const groupEnvelopes = activeEnvelopes.filter(e => e.group === groupName);
+            const isCollapsed = collapsedGroups[groupName];
+
+            return (
+              <div key={groupName} style={{ backgroundColor: 'white', borderRadius: '10px', padding: '14px', boxShadow: '0 1px 3px rgba(0,0,0,0.1)' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '2px solid #e5e7eb', paddingBottom: '8px', marginBottom: '10px' }}>
+                  <button
+                    onClick={() => toggleGroupCollapse(groupName)}
+                    style={{ background: 'none', border: 'none', fontWeight: 'bold', fontSize: '1rem', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '6px', color: '#1e3a8a', padding: 0 }}
+                  >
+                    <span>{isCollapsed ? '▶' : '▼'}</span> {groupName}
+                  </button>
+                  <button
+                    onClick={() => handleRemoveGroup(groupName)}
+                    style={{ background: 'none', border: 'none', color: '#dc2626', cursor: 'pointer', fontSize: '0.8rem' }}
+                  >
+                    Delete Group
+                  </button>
+                </div>
+
+                {!isCollapsed && (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+                    {groupEnvelopes.length === 0 ? (
+                      <div style={{ fontSize: '0.85rem', color: '#9ca3af', padding: '4px 0' }}>No envelopes in this group.</div>
+                    ) : (
+                      groupEnvelopes.map(env => {
+                        const spent = getEnvelopeSpent(env.id);
+                        const remaining = getEnvelopeRemaining(env);
+                        const progress = getTargetProgress(env);
+
+                        return (
+                          <div key={env.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '10px', backgroundColor: '#f9fafb', borderRadius: '6px', flexWrap: 'wrap', gap: '10px' }}>
+                            <div style={{ flex: '1 1 160px' }}>
+                              <div style={{ fontWeight: '600', fontSize: '0.95rem' }}>{env.name}</div>
+                              {env.goalType !== 'none' && (
+                                <div style={{ fontSize: '0.75rem', color: '#6b7280' }}>
+                                  {getScheduleText(env)} {env.targetAmount > 0 ? `(Target: $${Number(env.targetAmount).toFixed(2)})` : ''} {env.targetDate ? `by ${formatDate(env.targetDate, 'us')}` : ''}
+                                </div>
+                              )}
+                              {progress && (
+                                <div style={{ marginTop: '6px' }}>
+                                  <div style={{ height: '6px', backgroundColor: '#e5e7eb', borderRadius: '3px', overflow: 'hidden' }}>
+                                    <div style={{ width: `${progress.pct}%`, height: '100%', backgroundColor: progress.left === 0 ? '#059669' : '#3b82f6' }} />
+                                  </div>
+                                  <div style={{ fontSize: '0.75rem', marginTop: '3px', fontWeight: '600', color: progress.left === 0 ? '#059669' : '#b45309' }}>
+                                    {progress.left === 0
+                                      ? 'Target reached ✓'
+                                      : `$${progress.left.toFixed(2)} left to reach target`}
+                                  </div>
+                                </div>
+                              )}
+                            </div>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap', justifyContent: 'flex-end', flex: '1 1 200px' }}>
+                              <div style={{ fontSize: '0.85rem' }}>
+                                <span style={{ color: '#6b7280' }}>Ass.: </span>
+                                <input
+                                  type="number"
+                                  value={env.assigned}
+                                  onChange={e => handleAssignFunds(env.id, e.target.value)}
+                                  style={{ width: '70px', padding: '4px', border: '1px solid #d1d5db', borderRadius: '4px', fontSize: '0.85rem' }}
+                                />
+                              </div>
+                              <div style={{ fontSize: '0.85rem' }}>Spent: <strong>${spent.toFixed(2)}</strong></div>
+                              <div style={{ fontSize: '0.85rem' }}>Rem: <strong style={{ color: remaining < 0 ? '#dc2626' : '#059669' }}>${remaining.toFixed(2)}</strong></div>
+                              <button
+                                onClick={() => handleSoftDeleteEnvelope(env.id)}
+                                style={{ background: 'none', border: 'none', color: '#dc2626', cursor: 'pointer', fontSize: '0.9rem', padding: '4px' }}
+                              >
+                                ✕
+                              </button>
+                            </div>
+                          </div>
+                        );
+                      })
+                    )}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {/* NEW (ADD GROUP / ENVELOPE) TAB */}
+      {activeTab === 'new' && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: '16px' }}>
             <div style={{ backgroundColor: 'white', padding: '14px', borderRadius: '10px', boxShadow: '0 1px 3px rgba(0,0,0,0.1)' }}>
               <h3 style={{ margin: '0 0 10px 0', fontSize: '1rem' }}>+ Add Group</h3>
@@ -864,94 +974,6 @@ export default function BudgetApp() {
             </div>
           </div>
 
-          {groups.length === 0 && (
-            <div style={{ backgroundColor: 'white', padding: '20px', borderRadius: '10px', textAlign: 'center', color: '#6b7280', boxShadow: '0 1px 3px rgba(0,0,0,0.1)' }}>
-              No budget groups or envelopes yet. Add a group above to get started!
-            </div>
-          )}
-
-          {/* Group Categories */}
-          {groups.map(groupName => {
-            const groupEnvelopes = activeEnvelopes.filter(e => e.group === groupName);
-            const isCollapsed = collapsedGroups[groupName];
-
-            return (
-              <div key={groupName} style={{ backgroundColor: 'white', borderRadius: '10px', padding: '14px', boxShadow: '0 1px 3px rgba(0,0,0,0.1)' }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '2px solid #e5e7eb', paddingBottom: '8px', marginBottom: '10px' }}>
-                  <button
-                    onClick={() => toggleGroupCollapse(groupName)}
-                    style={{ background: 'none', border: 'none', fontWeight: 'bold', fontSize: '1rem', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '6px', color: '#1e3a8a', padding: 0 }}
-                  >
-                    <span>{isCollapsed ? '▶' : '▼'}</span> {groupName}
-                  </button>
-                  <button
-                    onClick={() => handleRemoveGroup(groupName)}
-                    style={{ background: 'none', border: 'none', color: '#dc2626', cursor: 'pointer', fontSize: '0.8rem' }}
-                  >
-                    Delete Group
-                  </button>
-                </div>
-
-                {!isCollapsed && (
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
-                    {groupEnvelopes.length === 0 ? (
-                      <div style={{ fontSize: '0.85rem', color: '#9ca3af', padding: '4px 0' }}>No envelopes in this group.</div>
-                    ) : (
-                      groupEnvelopes.map(env => {
-                        const spent = getEnvelopeSpent(env.id);
-                        const remaining = getEnvelopeRemaining(env);
-                        const progress = getTargetProgress(env);
-
-                        return (
-                          <div key={env.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '10px', backgroundColor: '#f9fafb', borderRadius: '6px', flexWrap: 'wrap', gap: '10px' }}>
-                            <div style={{ flex: '1 1 160px' }}>
-                              <div style={{ fontWeight: '600', fontSize: '0.95rem' }}>{env.name}</div>
-                              {env.goalType !== 'none' && (
-                                <div style={{ fontSize: '0.75rem', color: '#6b7280' }}>
-                                  {getScheduleText(env)} {env.targetAmount > 0 ? `(Target: $${Number(env.targetAmount).toFixed(2)})` : ''} {env.targetDate ? `by ${formatDate(env.targetDate, 'us')}` : ''}
-                                </div>
-                              )}
-                              {progress && (
-                                <div style={{ marginTop: '6px' }}>
-                                  <div style={{ height: '6px', backgroundColor: '#e5e7eb', borderRadius: '3px', overflow: 'hidden' }}>
-                                    <div style={{ width: `${progress.pct}%`, height: '100%', backgroundColor: progress.left === 0 ? '#059669' : '#3b82f6' }} />
-                                  </div>
-                                  <div style={{ fontSize: '0.75rem', marginTop: '3px', fontWeight: '600', color: progress.left === 0 ? '#059669' : '#b45309' }}>
-                                    {progress.left === 0
-                                      ? 'Target reached ✓'
-                                      : `$${progress.left.toFixed(2)} left to reach target`}
-                                  </div>
-                                </div>
-                              )}
-                            </div>
-                            <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap', justifyContent: 'flex-end', flex: '1 1 200px' }}>
-                              <div style={{ fontSize: '0.85rem' }}>
-                                <span style={{ color: '#6b7280' }}>Ass.: </span>
-                                <input
-                                  type="number"
-                                  value={env.assigned}
-                                  onChange={e => handleAssignFunds(env.id, e.target.value)}
-                                  style={{ width: '70px', padding: '4px', border: '1px solid #d1d5db', borderRadius: '4px', fontSize: '0.85rem' }}
-                                />
-                              </div>
-                              <div style={{ fontSize: '0.85rem' }}>Spent: <strong>${spent.toFixed(2)}</strong></div>
-                              <div style={{ fontSize: '0.85rem' }}>Rem: <strong style={{ color: remaining < 0 ? '#dc2626' : '#059669' }}>${remaining.toFixed(2)}</strong></div>
-                              <button
-                                onClick={() => handleSoftDeleteEnvelope(env.id)}
-                                style={{ background: 'none', border: 'none', color: '#dc2626', cursor: 'pointer', fontSize: '0.9rem', padding: '4px' }}
-                              >
-                                ✕
-                              </button>
-                            </div>
-                          </div>
-                        );
-                      })
-                    )}
-                  </div>
-                )}
-              </div>
-            );
-          })}
         </div>
       )}
 
