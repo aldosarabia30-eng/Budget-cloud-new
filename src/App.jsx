@@ -455,6 +455,15 @@ export default function BudgetApp() {
   const [txType, setTxType] = useState('expense');
   const [txAccountId, setTxAccountId] = useState('');
   const [txToAccountId, setTxToAccountId] = useState(''); // destination account when the type is Transfer
+  // Transactions tab filters
+  const [txSearch, setTxSearch] = useState('');
+  const [txFilterAccount, setTxFilterAccount] = useState('');
+  const [txFilterEnvelope, setTxFilterEnvelope] = useState(''); // '' = any, '__none__' = uncategorized
+  const [txFilterType, setTxFilterType] = useState(''); // '' | expense | income | transfer
+  const [txFromDate, setTxFromDate] = useState('');
+  const [txToDate, setTxToDate] = useState('');
+  // Budget tab: which envelope has its "move money" / "cover overspending" panel open
+  const [moveUi, setMoveUi] = useState(null); // { envId, mode: 'move' | 'cover', otherId, amount }
   const [txSplitLines, setTxSplitLines] = useState(null); // split editor inside the add form: null = off
   const [txEnvelopeId, setTxEnvelopeId] = useState('');
   const [splitTxId, setSplitTxId] = useState(null); // transaction whose split editor is open
@@ -933,7 +942,49 @@ export default function BudgetApp() {
   // Likely transfers hiding as separate expense/income pairs (e.g. after importing both accounts)
   const transferMatches = useMemo(() => findTransferMatches(activeTransactions), [transactions]);
 
-  const groupedTransactions = activeTransactions.reduce((acc, tx) => {
+  // Transactions after the search box and filters
+  const txFiltersActive = !!(txSearch.trim() || txFilterAccount || txFilterEnvelope || txFilterType || txFromDate || txToDate);
+  const visibleTransactions = useMemo(() => {
+    const q = txSearch.trim().toLowerCase().replace(/^\$/, '');
+    const accName = new Map(accounts.map(a => [a.id, a.name.toLowerCase()]));
+    const envName = new Map(envelopes.map(e => [e.id, e.name.toLowerCase()]));
+    return activeTransactions.filter(t => {
+      if (txFilterAccount && t.accountId !== txFilterAccount) return false;
+      if (txFilterType) {
+        if (txFilterType === 'transfer' ? !t.isTransfer : (t.isTransfer || t.type !== txFilterType)) return false;
+      }
+      if (txFromDate && (t.date || '') < txFromDate) return false;
+      if (txToDate && (t.date || '') > txToDate) return false;
+      if (txFilterEnvelope) {
+        if (txFilterEnvelope === '__none__') {
+          const uncategorized = t.type === 'expense' && !t.isTransfer && (isSplitTx(t) ? t.splits.some(s => !s.envelopeId) : !t.envelopeId);
+          if (!uncategorized) return false;
+        } else if (!txParts(t).some(p => p.envelopeId === txFilterEnvelope)) return false;
+      }
+      if (q) {
+        const hay = [
+          t.payee, t.notes, accName.get(t.accountId),
+          Number(t.amount).toFixed(2), String(Number(t.amount)),
+          ...txParts(t).map(p => envName.get(p.envelopeId))
+        ].filter(Boolean).join(' ').toLowerCase();
+        if (!hay.includes(q)) return false;
+      }
+      return true;
+    });
+  }, [transactions, accounts, envelopes, txSearch, txFilterAccount, txFilterEnvelope, txFilterType, txFromDate, txToDate]);
+  // Never act on selected transactions that a filter is hiding
+  useEffect(() => {
+    setSelectedTxIds(prev => {
+      const vis = new Set(visibleTransactions.map(t => t.id));
+      const next = prev.filter(id => vis.has(id));
+      return next.length === prev.length ? prev : next;
+    });
+  }, [visibleTransactions]);
+  const clearTxFilters = () => {
+    setTxSearch(''); setTxFilterAccount(''); setTxFilterEnvelope(''); setTxFilterType(''); setTxFromDate(''); setTxToDate('');
+  };
+
+  const groupedTransactions = visibleTransactions.reduce((acc, tx) => {
     const dateKey = tx.date || getTodayISO();
     if (!acc[dateKey]) acc[dateKey] = [];
     acc[dateKey].push(tx);
@@ -1071,6 +1122,55 @@ export default function BudgetApp() {
     }
     setEnvelopes(next);
     showNotification(`Copied ${count} assignment${count === 1 ? '' : 's'} from ${monthLabel(prevKey)}.`);
+  };
+
+  // ----- Move money between envelopes / cover overspending -----
+  // A move is recorded by nudging the two envelopes' assigned amounts for the month being viewed, so Ready to Assign
+  // stays put and rollover, reports and everything else keep working from the same monthly numbers.
+  const moveSources = (targetId) =>
+    activeEnvelopes.filter(e => e.id !== targetId && envRow(e).end > 0.004);
+
+  const openMove = (env, mode) => {
+    const row = envRow(env);
+    if (mode === 'cover') {
+      const need = round2(-row.end);
+      const firstSource = moveSources(env.id).sort((a, b) => envRow(b).end - envRow(a).end)[0];
+      const otherId = rtaShown >= need && need > 0 ? 'rta' : (firstSource ? firstSource.id : '');
+      setMoveUi({ envId: env.id, mode, otherId, amount: String(need) });
+    } else {
+      setMoveUi({ envId: env.id, mode, otherId: '', amount: String(Math.max(0, round2(row.end))) });
+    }
+  };
+  const closeMove = () => setMoveUi(null);
+
+  const confirmMove = () => {
+    if (!moveUi) return;
+    const amount = round2(parseFloat(moveUi.amount));
+    if (!(amount > 0)) { showNotification('Enter an amount above $0.'); return; }
+    if (!moveUi.otherId) { showNotification(moveUi.mode === 'cover' ? 'Choose where the money comes from.' : 'Choose where to move the money.'); return; }
+    const main = envelopes.find(e => e.id === moveUi.envId);
+    if (!main) { closeMove(); return; }
+    // giver = who loses assigned money, taker = who gains it ('rta' = Ready to Assign, no envelope change)
+    const giverId = moveUi.mode === 'cover' ? moveUi.otherId : main.id;
+    const takerId = moveUi.mode === 'cover' ? main.id : moveUi.otherId;
+    if (giverId === 'rta') {
+      if (amount > rtaShown + 0.004) { showNotification(`Only ${formatMoney(Math.max(0, rtaShown))} is left in Ready to Assign.`); return; }
+    } else {
+      const giver = envelopes.find(e => e.id === giverId);
+      if (!giver) { closeMove(); return; }
+      if (amount > envRow(giver).end + 0.004) { showNotification(`'${giver.name}' only has ${formatMoney(Math.max(0, envRow(giver).end))} available.`); return; }
+    }
+    setEnvelopes(prev => prev.map(e => {
+      const cur = Number((e.budget || {})[budgetMonth]) || 0;
+      if (e.id === giverId && giverId !== 'rta') return { ...e, budget: { ...(e.budget || {}), [budgetMonth]: round2(cur - amount) } };
+      if (e.id === takerId && takerId !== 'rta') return { ...e, budget: { ...(e.budget || {}), [budgetMonth]: round2(cur + amount) } };
+      return e;
+    }));
+    const nameOf = (id) => (id === 'rta' ? 'Ready to Assign' : (envelopes.find(e => e.id === id) || {}).name);
+    showNotification(moveUi.mode === 'cover'
+      ? `Covered ${formatMoney(amount)} for '${main.name}' from ${nameOf(giverId)}.`
+      : `Moved ${formatMoney(amount)} from '${main.name}' to ${nameOf(takerId)}.`);
+    closeMove();
   };
 
   const handleSoftDeleteEnvelope = (envId) => {
@@ -1671,7 +1771,7 @@ export default function BudgetApp() {
 
   const handleSelectAllTx = (e) => {
     if (e.target.checked) {
-      setSelectedTxIds(activeTransactions.map(t => t.id));
+      setSelectedTxIds(visibleTransactions.map(t => t.id));
     } else {
       setSelectedTxIds([]);
     }
@@ -2339,6 +2439,24 @@ export default function BudgetApp() {
                               </div>
                               <div style={{ fontSize: '0.85rem' }}>Activity: <strong>{formatMoney(spent)}</strong></div>
                               <div style={{ fontSize: '0.85rem' }}>Available: <strong style={{ color: remaining < 0 ? '#dc2626' : '#059669' }}>{formatMoney(remaining)}</strong></div>
+                              {remaining < -0.004 && (
+                                <button
+                                  onClick={() => (moveUi && moveUi.envId === env.id ? closeMove() : openMove(env, 'cover'))}
+                                  aria-label={`Cover overspending on ${env.name}`}
+                                  style={{ backgroundColor: '#fee2e2', color: '#b91c1c', border: 'none', borderRadius: '6px', padding: '4px 8px', cursor: 'pointer', fontSize: '0.75rem', fontWeight: 'bold' }}
+                                >
+                                  Cover
+                                </button>
+                              )}
+                              {remaining > 0.004 && (
+                                <button
+                                  onClick={() => (moveUi && moveUi.envId === env.id ? closeMove() : openMove(env, 'move'))}
+                                  aria-label={`Move money from ${env.name}`}
+                                  style={{ backgroundColor: 'white', color: '#2563eb', border: '1px solid #bfdbfe', borderRadius: '6px', padding: '3px 8px', cursor: 'pointer', fontSize: '0.75rem', fontWeight: 'bold' }}
+                                >
+                                  Move
+                                </button>
+                              )}
                               <button
                                 onClick={() => startEditEnv(env)}
                                 title="Edit envelope"
@@ -2354,6 +2472,53 @@ export default function BudgetApp() {
                                 ✕
                               </button>
                             </div>
+                            {moveUi && moveUi.envId === env.id && (
+                              <div data-testid="move-panel" style={{ flexBasis: '100%', padding: '10px', backgroundColor: 'white', border: '1px solid #e5e7eb', borderRadius: '8px' }}>
+                                <div style={{ fontSize: '0.8rem', fontWeight: 'bold', marginBottom: '6px' }}>
+                                  {moveUi.mode === 'cover'
+                                    ? `Cover ${env.name}'s overspending in ${monthLabel(budgetMonth)}`
+                                    : `Move money out of ${env.name} (${formatMoney(Math.max(0, remaining))} available)`}
+                                </div>
+                                <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', alignItems: 'center' }}>
+                                  <span style={{ fontSize: '0.8rem', color: '#6b7280' }}>{moveUi.mode === 'cover' ? 'From' : 'To'}</span>
+                                  <select
+                                    value={moveUi.otherId}
+                                    onChange={e => setMoveUi({ ...moveUi, otherId: e.target.value })}
+                                    aria-label={moveUi.mode === 'cover' ? 'Take money from' : 'Move money to'}
+                                    style={{ padding: '5px', border: '1px solid #d1d5db', borderRadius: '6px', fontSize: '0.8rem', maxWidth: '100%' }}
+                                  >
+                                    <option value="">Choose…</option>
+                                    {(moveUi.mode === 'cover' ? rtaShown > 0.004 : true) && (
+                                      <option value="rta">Ready to Assign{moveUi.mode === 'cover' ? ` (${formatMoney(rtaShown)})` : ''}</option>
+                                    )}
+                                    {(moveUi.mode === 'cover'
+                                      ? moveSources(env.id)
+                                      : activeEnvelopes.filter(e => e.id !== env.id)
+                                    ).map(e => (
+                                      <option key={e.id} value={e.id}>
+                                        {e.name}{moveUi.mode === 'cover' ? ` (${formatMoney(envRow(e).end)} available)` : ''}
+                                      </option>
+                                    ))}
+                                  </select>
+                                  <input
+                                    type="number"
+                                    step="0.01"
+                                    min="0"
+                                    value={moveUi.amount}
+                                    onChange={e => setMoveUi({ ...moveUi, amount: e.target.value })}
+                                    aria-label="Amount to move"
+                                    style={{ width: '90px', padding: '5px', border: '1px solid #d1d5db', borderRadius: '6px', fontSize: '0.8rem' }}
+                                  />
+                                  <button onClick={confirmMove} style={{ backgroundColor: '#2563eb', color: 'white', border: 'none', borderRadius: '6px', padding: '5px 12px', cursor: 'pointer', fontSize: '0.8rem', fontWeight: 'bold' }}>
+                                    {moveUi.mode === 'cover' ? 'Cover' : 'Move'}
+                                  </button>
+                                  <button onClick={closeMove} style={{ background: 'none', border: 'none', color: '#6b7280', cursor: 'pointer', fontSize: '0.8rem' }}>Cancel</button>
+                                </div>
+                                <div style={{ fontSize: '0.72rem', color: '#6b7280', marginTop: '6px' }}>
+                                  This adjusts what is assigned in {monthLabel(budgetMonth)}. Later months follow automatically.
+                                </div>
+                              </div>
+                            )}
                           </div>
                         );
                       })
@@ -3561,20 +3726,62 @@ export default function BudgetApp() {
               )}
             </div>
 
-            {activeTransactions.length > 0 && (
-              <div style={{ display: 'flex', alignItems: 'center', gap: '8px', paddingBottom: '8px', borderBottom: '1px solid #e5e7eb', fontSize: '0.85rem', color: '#6b7280' }}>
+            <div data-testid="tx-filters" style={{ display: 'flex', gap: '6px', flexWrap: 'wrap', alignItems: 'center', marginBottom: '10px' }}>
+              <input
+                type="search"
+                placeholder="Search payee, notes, amount…"
+                value={txSearch}
+                onChange={e => setTxSearch(e.target.value)}
+                aria-label="Search transactions"
+                style={{ flex: '2 1 180px', padding: '7px', border: '1px solid #d1d5db', borderRadius: '6px', fontSize: '0.85rem' }}
+              />
+              <select value={txFilterAccount} onChange={e => setTxFilterAccount(e.target.value)} aria-label="Filter by account" style={{ flex: '1 1 110px', padding: '7px', border: '1px solid #d1d5db', borderRadius: '6px', fontSize: '0.85rem' }}>
+                <option value="">All accounts</option>
+                {activeAccounts.map(a => (<option key={a.id} value={a.id}>{a.name}</option>))}
+              </select>
+              <select value={txFilterEnvelope} onChange={e => setTxFilterEnvelope(e.target.value)} aria-label="Filter by envelope" style={{ flex: '1 1 110px', padding: '7px', border: '1px solid #d1d5db', borderRadius: '6px', fontSize: '0.85rem' }}>
+                <option value="">All envelopes</option>
+                <option value="__none__">Uncategorized</option>
+                {envelopeChoices.map(c => (
+                  <optgroup key={c.label} label={c.label}>
+                    {c.list.map(e => (<option key={e.id} value={e.id}>{e.name}</option>))}
+                  </optgroup>
+                ))}
+              </select>
+              <select value={txFilterType} onChange={e => setTxFilterType(e.target.value)} aria-label="Filter by type" style={{ flex: '1 1 100px', padding: '7px', border: '1px solid #d1d5db', borderRadius: '6px', fontSize: '0.85rem' }}>
+                <option value="">All types</option>
+                <option value="expense">Expenses</option>
+                <option value="income">Income</option>
+                <option value="transfer">Transfers</option>
+              </select>
+              <input type="date" value={txFromDate} onChange={e => setTxFromDate(e.target.value)} aria-label="From date" style={{ padding: '6px', border: '1px solid #d1d5db', borderRadius: '6px', fontSize: '0.85rem' }} />
+              <input type="date" value={txToDate} onChange={e => setTxToDate(e.target.value)} aria-label="To date" style={{ padding: '6px', border: '1px solid #d1d5db', borderRadius: '6px', fontSize: '0.85rem' }} />
+              {txFiltersActive && (
+                <>
+                  <span data-testid="tx-filter-count" style={{ fontSize: '0.8rem', color: '#6b7280' }}>
+                    {visibleTransactions.length} of {activeTransactions.length} shown
+                  </span>
+                  <button onClick={clearTxFilters} style={{ background: 'none', border: 'none', color: '#2563eb', cursor: 'pointer', fontSize: '0.8rem', fontWeight: '600' }}>Clear filters</button>
+                </>
+              )}
+            </div>
+
+            {visibleTransactions.length > 0 && (
+              <label style={{ display: 'flex', alignItems: 'center', gap: '8px', paddingBottom: '8px', borderBottom: '1px solid #e5e7eb', fontSize: '0.85rem', color: '#6b7280', cursor: 'pointer' }}>
                 <input
                   type="checkbox"
-                  checked={selectedTxIds.length === activeTransactions.length && activeTransactions.length > 0}
+                  checked={selectedTxIds.length === visibleTransactions.length && visibleTransactions.length > 0}
                   onChange={handleSelectAllTx}
                   style={{ cursor: 'pointer' }}
                 />
-                <span>Select All</span>
-              </div>
+                <span>{txFiltersActive ? `Select all ${visibleTransactions.length} shown` : 'Select All'}</span>
+              </label>
             )}
 
             {sortedTransactionDates.length === 0 ? (
-              <p style={{ color: '#6b7280', fontSize: '0.9rem', marginTop: '10px' }}>No transactions recorded yet.</p>
+              <p style={{ color: '#6b7280', fontSize: '0.9rem', marginTop: '10px' }}>
+                {txFiltersActive ? 'No transactions match your search or filters.' : 'No transactions recorded yet.'}
+              </p>
             ) : (
               sortedTransactionDates.map(dateStr => (
                 <div key={dateStr} style={{ marginTop: '12px' }}>
