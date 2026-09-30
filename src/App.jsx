@@ -1,5 +1,4 @@
-
-     import React, { useState, useEffect, useLayoutEffect, useRef, useMemo } from 'react';
+import React, { useState, useEffect, useLayoutEffect, useRef, useMemo } from 'react';
 import { createClient } from '@supabase/supabase-js';
 
 // --- SUPABASE CONFIGURATION ---
@@ -108,6 +107,21 @@ const buildEnvTimeline = (budgetMap, spendMap, throughKey) => {
   return rows;
 };
 
+// ---- split transaction helpers ----
+// An expense is either filed under one envelope (envelopeId) or split across several (splits: [{envelopeId, amount}]).
+// A split line with an empty envelopeId is the uncategorized part. Returns the envelope-charged parts only.
+const isSplitTx = (t) => !!t && t.type === 'expense' && Array.isArray(t.splits) && t.splits.length > 0;
+const txParts = (t) => {
+  if (!t || t.type !== 'expense') return [];
+  if (isSplitTx(t)) {
+    return t.splits
+      .filter(s => s.envelopeId)
+      .map(s => ({ envelopeId: s.envelopeId, amount: Number(s.amount) || 0 }));
+  }
+  return t.envelopeId ? [{ envelopeId: t.envelopeId, amount: Number(t.amount) || 0 }] : [];
+};
+// ---- end split transaction helpers ----
+
 // Older saves kept one lump "assigned" amount per envelope. Move it into the month the envelope was
 // first used (or this month), so balances are unchanged at the moment of upgrade.
 const migrateBudgetData = (d) => {
@@ -116,9 +130,11 @@ const migrateBudgetData = (d) => {
   const thisMonth = getTodayISO().slice(0, 7);
   const firstSpend = {};
   (d.transactions || []).forEach(t => {
-    if (t.isDeleted || t.type !== 'expense' || !t.envelopeId) return;
+    if (t.isDeleted) return;
     const k = monthKeyOf(t.date);
-    if (MONTH_RE.test(k) && (!firstSpend[t.envelopeId] || k < firstSpend[t.envelopeId])) firstSpend[t.envelopeId] = k;
+    txParts(t).forEach(p => {
+      if (MONTH_RE.test(k) && (!firstSpend[p.envelopeId] || k < firstSpend[p.envelopeId])) firstSpend[p.envelopeId] = k;
+    });
   });
   return {
     ...d,
@@ -399,6 +415,8 @@ export default function BudgetApp() {
   const [txType, setTxType] = useState('expense');
   const [txAccountId, setTxAccountId] = useState('');
   const [txEnvelopeId, setTxEnvelopeId] = useState('');
+  const [splitTxId, setSplitTxId] = useState(null); // transaction whose split editor is open
+  const [splitDraft, setSplitDraft] = useState([]); // [{ envelopeId, amount: string }]
   const [txDate, setTxDate] = useState(getTodayISO());
   const [txNotes, setTxNotes] = useState('');
 
@@ -720,10 +738,11 @@ export default function BudgetApp() {
     const key = budgetMonth;
     const spend = {};
     activeTransactions.forEach(t => {
-      if (t.type !== 'expense' || !t.envelopeId) return;
       const k = txMonth(t);
-      if (!spend[t.envelopeId]) spend[t.envelopeId] = {};
-      spend[t.envelopeId][k] = (spend[t.envelopeId][k] || 0) + Number(t.amount);
+      txParts(t).forEach(p => {
+        if (!spend[p.envelopeId]) spend[p.envelopeId] = {};
+        spend[p.envelopeId][k] = (spend[p.envelopeId][k] || 0) + p.amount;
+      });
     });
 
     const rowsByEnv = {};
@@ -1098,6 +1117,17 @@ export default function BudgetApp() {
         envelopeId: txType === 'expense' ? txEnvelopeId : '',
         notes: txNotes
       };
+      // Keep a split only while the amount and type stay the same; otherwise the parts no longer add up.
+      let splitCleared = false;
+      if (isSplitTx(old)) {
+        if (txType === 'expense' && Number(old.amount) === amt) {
+          updated.splits = old.splits;
+          updated.envelopeId = '';
+        } else {
+          delete updated.splits;
+          splitCleared = true;
+        }
+      }
 
       // Changing the money side of a reconciled transaction means it needs reconciling again
       const moneyChanged = Number(old.amount) !== amt || old.type !== txType || old.accountId !== txAccountId;
@@ -1108,7 +1138,8 @@ export default function BudgetApp() {
 
       setTransactions(transactions.map(t => (t.id === editingTxId ? updated : t)));
       cancelEditTx();
-      showNotification('Transaction updated.');
+      if (splitCleared && splitTxId === editingTxId) setSplitTxId(null);
+      showNotification(splitCleared ? 'Transaction updated. Its split was cleared because the amount or type changed.' : 'Transaction updated.');
       return;
     }
 
@@ -1234,9 +1265,84 @@ export default function BudgetApp() {
   };
 
   // Assign (or clear) an envelope right from the transaction list, without opening the edit form
+  // Pick one envelope for the whole transaction (drops any split)
+  const withSingleEnvelope = (t, envId) => {
+    const { splits, ...rest } = t;
+    return { ...rest, envelopeId: envId };
+  };
+
+  // ----- Split transactions -----
+  const openSplit = (tx) => {
+    setSplitTxId(tx.id);
+    if (isSplitTx(tx)) {
+      setSplitDraft(tx.splits.map(s => ({ envelopeId: s.envelopeId || '', amount: String(s.amount) })));
+    } else {
+      setSplitDraft([
+        { envelopeId: tx.envelopeId || '', amount: String(tx.amount) },
+        { envelopeId: '', amount: '' }
+      ]);
+    }
+  };
+  const closeSplit = () => {
+    setSplitTxId(null);
+    setSplitDraft([]);
+  };
+  const updateSplitLine = (i, patch) => setSplitDraft(prev => prev.map((l, idx) => (idx === i ? { ...l, ...patch } : l)));
+  const addSplitLine = () => setSplitDraft(prev => [...prev, { envelopeId: '', amount: '' }]);
+  const removeSplitLine = (i) => setSplitDraft(prev => prev.filter((_, idx) => idx !== i));
+  const splitRemaining = (total) =>
+    round2(Number(total) - splitDraft.reduce((s, l) => s + (parseFloat(l.amount) || 0), 0));
+  // Put whatever is still unassigned onto one line
+  const fillSplitRemainder = (i, total) => {
+    const others = splitDraft.reduce((s, l, idx) => (idx === i ? s : s + (parseFloat(l.amount) || 0)), 0);
+    const rest = round2(Number(total) - others);
+    if (rest > 0) updateSplitLine(i, { amount: String(rest) });
+  };
+
+  const handleSaveSplit = () => {
+    const tx = transactions.find(t => t.id === splitTxId);
+    if (!tx) { closeSplit(); return; }
+    const lines = splitDraft.filter(l => l.envelopeId || (parseFloat(l.amount) || 0) !== 0);
+    if (lines.some(l => !(parseFloat(l.amount) > 0))) {
+      showNotification('Every split line needs an amount above $0.');
+      return;
+    }
+    // Merge lines that use the same envelope
+    const merged = [];
+    lines.forEach(l => {
+      const amount = round2(parseFloat(l.amount));
+      const hit = merged.find(m => m.envelopeId === l.envelopeId);
+      if (hit) hit.amount = round2(hit.amount + amount);
+      else merged.push({ envelopeId: l.envelopeId, amount });
+    });
+    const total = merged.reduce((s, m) => s + m.amount, 0);
+    if (Math.abs(round2(total) - round2(Number(tx.amount))) > 0.004) {
+      showNotification(`Split lines must add up to $${Number(tx.amount).toFixed(2)}.`);
+      return;
+    }
+    if (merged.length <= 1) {
+      const only = merged[0] ? merged[0].envelopeId : '';
+      setTransactions(prev => prev.map(t => (t.id === tx.id ? withSingleEnvelope(t, only) : t)));
+      if (editingTxId === tx.id) setTxEnvelopeId(only);
+      showNotification(only ? 'Filed under one envelope (no split needed).' : 'Split removed.');
+    } else {
+      setTransactions(prev => prev.map(t => (t.id === tx.id ? { ...t, envelopeId: '', splits: merged } : t)));
+      if (editingTxId === tx.id) setTxEnvelopeId('');
+      showNotification(`Split across ${merged.length} envelopes.`);
+    }
+    closeSplit();
+  };
+
+  const handleRemoveSplit = (txId) => {
+    setTransactions(prev => prev.map(t => (t.id === txId ? withSingleEnvelope(t, '') : t)));
+    if (editingTxId === txId) setTxEnvelopeId('');
+    if (splitTxId === txId) closeSplit();
+    showNotification('Split removed. Choose an envelope for this transaction.');
+  };
+
   const handleAssignTxEnvelope = (txId, envId) => {
     const env = envelopes.find(e => e.id === envId);
-    setTransactions(prev => prev.map(t => (t.id === txId && t.type === 'expense' ? { ...t, envelopeId: envId } : t)));
+    setTransactions(prev => prev.map(t => (t.id === txId && t.type === 'expense' ? withSingleEnvelope(t, envId) : t)));
     if (editingTxId === txId) setTxEnvelopeId(envId); // keep the edit form from restoring an old value
     showNotification(env ? `Filed under '${env.name}'.` : 'Envelope cleared.');
   };
@@ -1250,7 +1356,7 @@ export default function BudgetApp() {
       showNotification('Select at least one expense to assign an envelope.');
       return;
     }
-    setTransactions(prev => prev.map(t => (ids.has(t.id) && !t.isDeleted && t.type === 'expense' ? { ...t, envelopeId: envId } : t)));
+    setTransactions(prev => prev.map(t => (ids.has(t.id) && !t.isDeleted && t.type === 'expense' ? withSingleEnvelope(t, envId) : t)));
     if (editingTxId && ids.has(editingTxId)) setTxEnvelopeId(envId);
     showNotification(`${count} transaction${count === 1 ? '' : 's'} filed under '${env ? env.name : 'envelope'}'.`);
   };
@@ -2530,12 +2636,12 @@ export default function BudgetApp() {
 
         // Where the money went
         const envById = new Map(envelopes.map(e => [e.id, e]));
-        const labelFor = (t) => {
+        const labelFor = (t, envId) => {
           if (reportBreakdown === 'payee') {
             const name = String(t.payee || '').trim();
             return { key: name.toLowerCase() || '(no payee)', label: name || '(no payee)', sub: '' };
           }
-          const env = t.envelopeId ? envById.get(t.envelopeId) : null;
+          const env = envId ? envById.get(envId) : null;
           if (!env) return { key: '__none__', label: 'Uncategorized', sub: '' };
           if (reportBreakdown === 'group') return { key: 'g:' + env.group, label: env.group, sub: '' };
           return { key: 'e:' + env.id, label: env.name, sub: env.group };
@@ -2543,10 +2649,16 @@ export default function BudgetApp() {
         const tally = (list) => {
           const m = new Map();
           list.filter(t => t.type === 'expense').forEach(t => {
-            const { key, label, sub } = labelFor(t);
-            const row = m.get(key) || { key, label, sub, amount: 0 };
-            row.amount += Number(t.amount);
-            m.set(key, row);
+            // A split expense counts toward each of its envelopes; any unassigned part is Uncategorized.
+            const pieces = isSplitTx(t) && reportBreakdown !== 'payee'
+              ? t.splits.map(s => ({ envId: s.envelopeId, amount: Number(s.amount) || 0 }))
+              : [{ envId: t.envelopeId, amount: Number(t.amount) }];
+            pieces.forEach(p => {
+              const { key, label, sub } = labelFor(t, p.envId);
+              const row = m.get(key) || { key, label, sub, amount: 0 };
+              row.amount += p.amount;
+              m.set(key, row);
+            });
           });
           return m;
         };
@@ -2820,7 +2932,12 @@ export default function BudgetApp() {
                   <option key={acc.id} value={acc.id}>{acc.name}</option>
                 ))}
               </select>
-              {txType === 'expense' && (
+              {txType === 'expense' && editingTxId && isSplitTx(transactions.find(t => t.id === editingTxId)) && (
+                <div style={{ gridColumn: 'span 2', fontSize: '0.8rem', color: '#6b7280', padding: '6px 0' }}>
+                  Split across several envelopes. Use the Split button in the list to change it. Changing the amount clears the split.
+                </div>
+              )}
+              {txType === 'expense' && !(editingTxId && isSplitTx(transactions.find(t => t.id === editingTxId))) && (
                 <select
                   value={txEnvelopeId}
                   onChange={e => setTxEnvelopeId(e.target.value)}
@@ -3095,7 +3212,19 @@ export default function BudgetApp() {
                             <div style={{ fontSize: '0.75rem', color: '#6b7280', wordBreak: 'break-word' }}>
                               {acc?.name} {tx.notes ? `• ${tx.notes}` : ''}
                             </div>
-                            {tx.type === 'expense' && (
+                            {isSplitTx(tx) && (
+                              <div style={{ marginTop: '4px', display: 'flex', flexDirection: 'column', gap: '2px' }}>
+                                {tx.splits.map((s, i) => {
+                                  const se = envelopes.find(e => e.id === s.envelopeId);
+                                  return (
+                                    <div key={i} data-testid="split-part" style={{ fontSize: '0.75rem', color: s.envelopeId ? '#374151' : '#b45309' }}>
+                                      {se ? se.name + (se.isDeleted ? ' (deleted)' : '') : 'No envelope'}: ${Number(s.amount).toFixed(2)}
+                                    </div>
+                                  );
+                                })}
+                              </div>
+                            )}
+                            {tx.type === 'expense' && !isSplitTx(tx) && (
                               <select
                                 value={tx.envelopeId || ''}
                                 onChange={e => handleAssignTxEnvelope(tx.id, e.target.value)}
@@ -3124,6 +3253,108 @@ export default function BudgetApp() {
                                 ))}
                               </select>
                             )}
+                            {tx.type === 'expense' && (
+                              <button
+                                type="button"
+                                onClick={() => (splitTxId === tx.id ? closeSplit() : openSplit(tx))}
+                                style={{ marginTop: '4px', marginLeft: isSplitTx(tx) ? 0 : '6px', background: 'none', border: 'none', color: '#2563eb', cursor: 'pointer', padding: '2px 0', fontSize: '0.75rem', fontWeight: '600' }}
+                              >
+                                {splitTxId === tx.id ? 'Close split' : isSplitTx(tx) ? 'Edit split' : 'Split'}
+                              </button>
+                            )}
+                            {isSplitTx(tx) && (
+                              <button
+                                type="button"
+                                onClick={() => handleRemoveSplit(tx.id)}
+                                style={{ marginTop: '4px', marginLeft: '10px', background: 'none', border: 'none', color: '#6b7280', cursor: 'pointer', padding: '2px 0', fontSize: '0.75rem' }}
+                              >
+                                Remove split
+                              </button>
+                            )}
+                            {splitTxId === tx.id && (() => {
+                              const left = splitRemaining(tx.amount);
+                              return (
+                                <div data-testid="split-editor" style={{ marginTop: '8px', padding: '10px', backgroundColor: '#f9fafb', border: '1px solid #e5e7eb', borderRadius: '8px' }}>
+                                  <div style={{ fontSize: '0.8rem', fontWeight: 'bold', marginBottom: '6px' }}>
+                                    Split ${Number(tx.amount).toFixed(2)} across envelopes
+                                  </div>
+                                  {splitDraft.map((line, i) => (
+                                    <div key={i} style={{ display: 'flex', gap: '6px', marginBottom: '6px', alignItems: 'center' }}>
+                                      <select
+                                        value={line.envelopeId}
+                                        onChange={e => updateSplitLine(i, { envelopeId: e.target.value })}
+                                        aria-label={`Split line ${i + 1} envelope`}
+                                        style={{ flex: '1 1 auto', minWidth: 0, padding: '5px', border: '1px solid #d1d5db', borderRadius: '6px', fontSize: '0.8rem' }}
+                                      >
+                                        <option value="">No envelope</option>
+                                        {line.envelopeId && envelopes.find(e => e.id === line.envelopeId && e.isDeleted) && (
+                                          <option value={line.envelopeId}>{envelopes.find(e => e.id === line.envelopeId).name} (deleted)</option>
+                                        )}
+                                        {envelopeChoices.map(c => (
+                                          <optgroup key={c.label} label={c.label}>
+                                            {c.list.map(e => (
+                                              <option key={e.id} value={e.id}>{e.name}</option>
+                                            ))}
+                                          </optgroup>
+                                        ))}
+                                      </select>
+                                      <input
+                                        type="number"
+                                        step="0.01"
+                                        min="0"
+                                        value={line.amount}
+                                        onChange={e => updateSplitLine(i, { amount: e.target.value })}
+                                        aria-label={`Split line ${i + 1} amount`}
+                                        placeholder="0.00"
+                                        style={{ width: '80px', padding: '5px', border: '1px solid #d1d5db', borderRadius: '6px', fontSize: '0.8rem' }}
+                                      />
+                                      <button
+                                        type="button"
+                                        onClick={() => fillSplitRemainder(i, tx.amount)}
+                                        title="Put the remaining amount on this line"
+                                        aria-label={`Fill remainder on line ${i + 1}`}
+                                        style={{ background: 'none', border: '1px solid #d1d5db', borderRadius: '6px', cursor: 'pointer', padding: '4px 6px', fontSize: '0.7rem', color: '#374151' }}
+                                      >
+                                        Rest
+                                      </button>
+                                      {splitDraft.length > 2 && (
+                                        <button
+                                          type="button"
+                                          onClick={() => removeSplitLine(i)}
+                                          aria-label={`Remove split line ${i + 1}`}
+                                          style={{ background: 'none', border: 'none', color: '#dc2626', cursor: 'pointer', padding: '2px 4px' }}
+                                        >
+                                          ✕
+                                        </button>
+                                      )}
+                                    </div>
+                                  ))}
+                                  <div style={{ fontSize: '0.8rem', marginBottom: '8px', color: Math.abs(left) < 0.005 ? '#059669' : '#b45309' }}>
+                                    {Math.abs(left) < 0.005
+                                      ? 'Fully assigned'
+                                      : left > 0
+                                        ? `$${left.toFixed(2)} left to assign`
+                                        : `$${Math.abs(left).toFixed(2)} over`}
+                                  </div>
+                                  <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+                                    <button type="button" onClick={addSplitLine} style={{ background: 'white', border: '1px solid #d1d5db', borderRadius: '6px', padding: '5px 10px', cursor: 'pointer', fontSize: '0.8rem' }}>
+                                      + Add line
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={handleSaveSplit}
+                                      disabled={Math.abs(left) >= 0.005}
+                                      style={{ backgroundColor: Math.abs(left) >= 0.005 ? '#9ca3af' : '#2563eb', color: 'white', border: 'none', borderRadius: '6px', padding: '5px 12px', cursor: Math.abs(left) >= 0.005 ? 'not-allowed' : 'pointer', fontSize: '0.8rem', fontWeight: 'bold' }}
+                                    >
+                                      Save split
+                                    </button>
+                                    <button type="button" onClick={closeSplit} style={{ background: 'none', border: 'none', color: '#6b7280', cursor: 'pointer', fontSize: '0.8rem' }}>
+                                      Cancel
+                                    </button>
+                                  </div>
+                                </div>
+                              );
+                            })()}
                           </div>
                         </div>
                         <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexShrink: 0 }}>
