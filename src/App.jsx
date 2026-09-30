@@ -59,6 +59,7 @@ const TAB_LABELS = {
   accounts: 'Accounts',
   investments: 'Investments',
   transactions: 'Transactions',
+  reports: 'Reports',
   debts: 'Debts',
   trash: 'Trash'
 };
@@ -71,6 +72,59 @@ const formatMoney = (n) => {
   return (v < 0 ? '-$' : '$') + Math.abs(v).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 };
 const round2 = (n) => Math.round(Number(n) * 100) / 100;
+
+const REPORT_MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+
+const compactMoney = (n) => {
+  const v = Math.abs(Number(n) || 0);
+  if (v >= 1000000) return '$' + (v / 1000000).toFixed(1).replace(/\.0$/, '') + 'M';
+  if (v >= 1000) return '$' + (v / 1000).toFixed(v >= 10000 ? 0 : 1).replace(/\.0$/, '') + 'k';
+  return '$' + Math.round(v);
+};
+
+// Grouped bar chart: money out (blue) and money in (green) for each month. Click a month to open it.
+const ReportChart = ({ data, selectedKey, onSelect }) => {
+  const W = 640;
+  const H = 210;
+  const padL = 46;
+  const padR = 8;
+  const padT = 10;
+  const padB = 34;
+  const innerW = W - padL - padR;
+  const innerH = H - padT - padB;
+  const max = Math.max(1, ...data.flatMap(d => [d.spent, d.income]));
+  const mag = Math.pow(10, Math.floor(Math.log10(max)));
+  const niceMax = ([1, 2, 4, 6, 8, 10].find(st => st * mag >= max) || 10) * mag;
+  const slot = innerW / data.length;
+  const barW = Math.min(20, slot * 0.36);
+  const y = (v) => padT + innerH - (v / niceMax) * innerH;
+  const ticks = [0, 0.25, 0.5, 0.75, 1].map(f => f * niceMax);
+  return (
+    <svg viewBox={`0 0 ${W} ${H}`} style={{ width: '100%', height: 'auto', display: 'block' }} role="img" aria-label="Money spent and received by month">
+      {ticks.map((t, i) => (
+        <g key={i}>
+          <line x1={padL} x2={W - padR} y1={y(t)} y2={y(t)} stroke="#e5e7eb" strokeWidth="1" />
+          <text x={padL - 6} y={y(t) + 3} textAnchor="end" fontSize="10" fill="#6b7280">{compactMoney(t)}</text>
+        </g>
+      ))}
+      {data.map((d, i) => {
+        const cx = padL + slot * i + slot / 2;
+        const sel = d.key === selectedKey;
+        const base = padT + innerH;
+        return (
+          <g key={d.key} onClick={() => onSelect && onSelect(d.key)} style={{ cursor: onSelect ? 'pointer' : 'default' }}>
+            <title>{`${d.full}: spent ${formatMoney(d.spent)}, income ${formatMoney(d.income)}`}</title>
+            <rect x={cx - slot / 2 + 1} y={padT} width={slot - 2} height={innerH} fill={sel ? '#eff6ff' : 'transparent'} rx="4" />
+            <rect x={cx - barW - 1} y={y(d.spent)} width={barW} height={Math.max(0, base - y(d.spent))} fill="#2563eb" rx="2" />
+            <rect x={cx + 1} y={y(d.income)} width={barW} height={Math.max(0, base - y(d.income))} fill="#10b981" rx="2" />
+            <text x={cx} y={H - 18} textAnchor="middle" fontSize="10" fill={sel ? '#1e3a8a' : '#6b7280'} fontWeight={sel ? 700 : 400}>{d.label}</text>
+            {d.sub && <text x={cx} y={H - 5} textAnchor="middle" fontSize="9" fill="#9ca3af">{d.sub}</text>}
+          </g>
+        );
+      })}
+    </svg>
+  );
+};
 
 // Helper to get local date string YYYY-MM-DD
 const getTodayISO = () => {
@@ -318,6 +372,12 @@ export default function BudgetApp() {
   const [invAmount, setInvAmount] = useState('');
   const [invDate, setInvDate] = useState(getTodayISO());
   const [invShowAll, setInvShowAll] = useState({});
+
+  // Reports
+  const [reportMode, setReportMode] = useState('month'); // 'month' | 'year'
+  const [reportMonth, setReportMonth] = useState(() => getTodayISO().slice(0, 7));
+  const [reportYear, setReportYear] = useState(() => new Date().getFullYear());
+  const [reportBreakdown, setReportBreakdown] = useState('group'); // 'group' | 'envelope' | 'payee'
 
   // Group drag-to-reorder
   const [dragState, setDragState] = useState(null); // { name, dy, target, measuring }
@@ -1454,7 +1514,7 @@ export default function BudgetApp() {
         </div>
 
         <nav style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
-          {['budget', 'new', 'accounts', 'investments', 'transactions', 'debts', 'trash'].map(tab => {
+          {['budget', 'new', 'accounts', 'investments', 'transactions', 'reports', 'debts', 'trash'].map(tab => {
             const isActive = activeTab === tab;
             return (
               <button
@@ -2204,6 +2264,312 @@ export default function BudgetApp() {
                 </div>
               );
             })}
+          </div>
+        );
+      })()}
+
+      {/* REPORTS TAB */}
+      {activeTab === 'reports' && (() => {
+        const ADJ = 'Reconciliation Adjustment'; // bookkeeping entries, not real spending
+        const reportTx = activeTransactions.filter(t => t.payee !== ADJ && /^\d{4}-\d{2}-\d{2}$/.test(t.date || ''));
+        const isMonth = reportMode === 'month';
+        const inPeriod = (t, kind, key) => (kind === 'month' ? t.date.slice(0, 7) === key : t.date.slice(0, 4) === String(key));
+        const shiftMonth = (key, delta) => {
+          const [yy, mm] = key.split('-').map(Number);
+          const d = new Date(yy, mm - 1 + delta, 1);
+          return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+        };
+        const monthName = (key, short) => {
+          const [yy, mm] = key.split('-').map(Number);
+          const n = REPORT_MONTHS[mm - 1];
+          return `${short ? n.slice(0, 3) : n} ${yy}`;
+        };
+
+        const todayISO = getTodayISO();
+        const todayKey = todayISO.slice(0, 7);
+        const thisYear = new Date().getFullYear();
+        const earliest = reportTx.reduce((min, t) => (t.date < min ? t.date : min), todayISO);
+        const latest = reportTx.reduce((max, t) => (t.date > max ? t.date : max), todayISO);
+        const canPrev = isMonth ? reportMonth > earliest.slice(0, 7) : reportYear > Number(earliest.slice(0, 4));
+        const canNext = isMonth ? reportMonth < latest.slice(0, 7) : reportYear < Number(latest.slice(0, 4));
+
+        const curKey = isMonth ? reportMonth : String(reportYear);
+        const prevKey = isMonth ? shiftMonth(reportMonth, -1) : String(reportYear - 1);
+        const periodLabel = isMonth ? monthName(reportMonth, false) : String(reportYear);
+        const prevLabel = isMonth ? monthName(prevKey, true) : prevKey;
+
+        const sum = (list, type) => list.filter(t => t.type === type).reduce((acc, t) => acc + Number(t.amount), 0);
+        const curTx = reportTx.filter(t => inPeriod(t, reportMode, curKey));
+        const prevTx = reportTx.filter(t => inPeriod(t, reportMode, prevKey));
+        const spent = sum(curTx, 'expense');
+        const income = sum(curTx, 'income');
+        const prevSpent = sum(prevTx, 'expense');
+        const net = income - spent;
+        const spentDelta = prevSpent > 0 ? ((spent - prevSpent) / prevSpent) * 100 : null;
+
+        let avgLabel;
+        let avgValue;
+        if (isMonth) {
+          const [yy, mm] = reportMonth.split('-').map(Number);
+          const daysInMonth = new Date(yy, mm, 0).getDate();
+          const days = reportMonth === todayKey ? Number(todayISO.slice(8, 10)) : daysInMonth;
+          avgLabel = 'Avg per day';
+          avgValue = spent / Math.max(1, days);
+        } else {
+          const months = reportYear === thisYear ? new Date().getMonth() + 1 : 12;
+          avgLabel = 'Avg per month';
+          avgValue = spent / months;
+        }
+
+        // Where the money went
+        const envById = new Map(envelopes.map(e => [e.id, e]));
+        const labelFor = (t) => {
+          if (reportBreakdown === 'payee') {
+            const name = String(t.payee || '').trim();
+            return { key: name.toLowerCase() || '(no payee)', label: name || '(no payee)', sub: '' };
+          }
+          const env = t.envelopeId ? envById.get(t.envelopeId) : null;
+          if (!env) return { key: '__none__', label: 'Uncategorized', sub: '' };
+          if (reportBreakdown === 'group') return { key: 'g:' + env.group, label: env.group, sub: '' };
+          return { key: 'e:' + env.id, label: env.name, sub: env.group };
+        };
+        const tally = (list) => {
+          const m = new Map();
+          list.filter(t => t.type === 'expense').forEach(t => {
+            const { key, label, sub } = labelFor(t);
+            const row = m.get(key) || { key, label, sub, amount: 0 };
+            row.amount += Number(t.amount);
+            m.set(key, row);
+          });
+          return m;
+        };
+        const curMap = tally(curTx);
+        const prevMap = tally(prevTx);
+        const allRows = [...curMap.values()].sort((a, b) => b.amount - a.amount);
+        const rows = reportBreakdown === 'payee' ? allRows.slice(0, 15) : allRows;
+        const maxAmt = rows.length ? rows[0].amount : 0;
+        const PALETTE = ['#2563eb', '#059669', '#d97706', '#7c3aed', '#db2777', '#0891b2', '#65a30d', '#dc2626', '#4f46e5', '#0d9488'];
+
+        // Trend: 12 months ending at the selected month, or the 12 months of the selected year
+        const trendKeys = isMonth
+          ? Array.from({ length: 12 }, (_, i) => shiftMonth(reportMonth, i - 11))
+          : Array.from({ length: 12 }, (_, i) => `${reportYear}-${String(i + 1).padStart(2, '0')}`);
+        const trend = trendKeys.map(k => {
+          const l = reportTx.filter(t => t.date.slice(0, 7) === k);
+          const mm = Number(k.slice(5, 7));
+          return {
+            key: k,
+            label: REPORT_MONTHS[mm - 1].slice(0, 3),
+            sub: mm === 1 ? k.slice(0, 4) : '',
+            full: monthName(k, false),
+            spent: sum(l, 'expense'),
+            income: sum(l, 'income')
+          };
+        });
+
+        // Year over year
+        const yearSet = new Set(reportTx.map(t => t.date.slice(0, 4)));
+        yearSet.add(String(thisYear));
+        const years = [...yearSet].sort().reverse();
+        const yoy = years.map(yr => {
+          const l = reportTx.filter(t => t.date.slice(0, 4) === yr);
+          return { year: yr, spent: sum(l, 'expense'), income: sum(l, 'income') };
+        });
+
+        const cardStyle = { backgroundColor: 'white', padding: '14px', borderRadius: '10px', boxShadow: '0 1px 3px rgba(0,0,0,0.1)' };
+        const pill = (active) => ({
+          padding: '6px 12px',
+          borderRadius: '16px',
+          border: '1px solid ' + (active ? '#1e3a8a' : '#e5e7eb'),
+          backgroundColor: active ? '#1e3a8a' : 'white',
+          color: active ? 'white' : '#4b5563',
+          fontWeight: 600,
+          cursor: 'pointer',
+          fontSize: '0.8rem'
+        });
+        const arrowBtn = (enabled) => ({
+          width: '32px',
+          height: '32px',
+          borderRadius: '8px',
+          border: '1px solid #e5e7eb',
+          backgroundColor: 'white',
+          color: enabled ? '#1f2937' : '#d1d5db',
+          cursor: enabled ? 'pointer' : 'not-allowed',
+          fontSize: '1rem'
+        });
+        const stat = (label, value, color, sub) => (
+          <div style={{ ...cardStyle, padding: '12px' }}>
+            <div style={{ fontSize: '0.7rem', color: '#6b7280', textTransform: 'uppercase', letterSpacing: '0.03em' }}>{label}</div>
+            <div style={{ fontSize: '1.15rem', fontWeight: 700, color: color || '#1f2937', marginTop: '2px' }}>{value}</div>
+            {sub && <div style={{ fontSize: '0.72rem', color: '#6b7280', marginTop: '2px' }}>{sub}</div>}
+          </div>
+        );
+
+        return (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+            {/* Period controls */}
+            <div style={{ ...cardStyle, display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
+              <div style={{ display: 'flex', gap: '6px' }}>
+                <button onClick={() => setReportMode('month')} style={pill(isMonth)}>Monthly</button>
+                <button onClick={() => setReportMode('year')} style={pill(!isMonth)}>Yearly</button>
+              </div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                <button
+                  disabled={!canPrev}
+                  aria-label="Previous period"
+                  onClick={() => (isMonth ? setReportMonth(shiftMonth(reportMonth, -1)) : setReportYear(y => y - 1))}
+                  style={arrowBtn(canPrev)}
+                >
+                  ‹
+                </button>
+                <div style={{ minWidth: '130px', textAlign: 'center', fontWeight: 700, fontSize: '0.95rem' }}>{periodLabel}</div>
+                <button
+                  disabled={!canNext}
+                  aria-label="Next period"
+                  onClick={() => (isMonth ? setReportMonth(shiftMonth(reportMonth, 1)) : setReportYear(y => y + 1))}
+                  style={arrowBtn(canNext)}
+                >
+                  ›
+                </button>
+              </div>
+            </div>
+
+            {/* Summary */}
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: '10px' }}>
+              {stat(
+                'Spent',
+                formatMoney(spent),
+                '#1f2937',
+                spentDelta === null
+                  ? (prevSpent === 0 ? `Nothing spent in ${prevLabel}` : '')
+                  : `${spentDelta > 0 ? '▲' : spentDelta < 0 ? '▼' : ''} ${Math.abs(spentDelta).toFixed(0)}% vs ${prevLabel}`
+              )}
+              {stat('Income', formatMoney(income), '#059669')}
+              {stat('Net', (net >= 0 ? '+' : '') + formatMoney(net), net >= 0 ? '#059669' : '#dc2626', net >= 0 ? 'Saved' : 'Overspent')}
+              {stat(avgLabel, formatMoney(avgValue))}
+            </div>
+
+            {/* Trend */}
+            <div style={cardStyle}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: '8px', flexWrap: 'wrap', marginBottom: '6px' }}>
+                <h3 style={{ margin: 0, fontSize: '1rem' }}>{isMonth ? 'Month to month' : `${reportYear} by month`}</h3>
+                <div style={{ display: 'flex', gap: '12px', fontSize: '0.75rem', color: '#4b5563' }}>
+                  <span><span style={{ display: 'inline-block', width: '10px', height: '10px', backgroundColor: '#2563eb', borderRadius: '2px', marginRight: '4px' }} />Spent</span>
+                  <span><span style={{ display: 'inline-block', width: '10px', height: '10px', backgroundColor: '#10b981', borderRadius: '2px', marginRight: '4px' }} />Income</span>
+                </div>
+              </div>
+              <ReportChart
+                data={trend}
+                selectedKey={isMonth ? reportMonth : null}
+                onSelect={(key) => { setReportMode('month'); setReportMonth(key); }}
+              />
+              <div style={{ fontSize: '0.72rem', color: '#9ca3af', marginTop: '4px' }}>
+                {isMonth ? 'The last 12 months. Click a month to open it.' : 'Click a month to see its breakdown.'}
+              </div>
+            </div>
+
+            {/* Where the money went */}
+            <div style={cardStyle}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '8px', flexWrap: 'wrap', marginBottom: '6px' }}>
+                <h3 style={{ margin: 0, fontSize: '1rem' }}>Where the money went</h3>
+                <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
+                  <button onClick={() => setReportBreakdown('group')} style={pill(reportBreakdown === 'group')}>Groups</button>
+                  <button onClick={() => setReportBreakdown('envelope')} style={pill(reportBreakdown === 'envelope')}>Envelopes</button>
+                  <button onClick={() => setReportBreakdown('payee')} style={pill(reportBreakdown === 'payee')}>Payees</button>
+                </div>
+              </div>
+
+              {rows.length === 0 ? (
+                <p style={{ color: '#6b7280', fontSize: '0.9rem', margin: '10px 0 0 0' }}>No spending recorded for {periodLabel}.</p>
+              ) : (
+                <div>
+                  {rows.map((r, i) => {
+                    const prev = prevMap.get(r.key) ? prevMap.get(r.key).amount : 0;
+                    const diff = r.amount - prev;
+                    const color = r.key === '__none__' ? '#9ca3af' : PALETTE[i % PALETTE.length];
+                    return (
+                      <div key={r.key} style={{ padding: '8px 0', borderBottom: '1px solid #f3f4f6' }}>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', gap: '8px', fontSize: '0.88rem' }}>
+                          <div style={{ minWidth: 0, wordBreak: 'break-word' }}>
+                            <strong>{r.label}</strong>
+                            {r.sub && <span style={{ color: '#9ca3af', fontSize: '0.75rem' }}> · {r.sub}</span>}
+                          </div>
+                          <div style={{ whiteSpace: 'nowrap' }}>
+                            <strong>{formatMoney(r.amount)}</strong>{' '}
+                            <span style={{ color: '#6b7280', fontSize: '0.75rem' }}>{spent > 0 ? ((r.amount / spent) * 100).toFixed(0) : 0}%</span>
+                          </div>
+                        </div>
+                        <div style={{ height: '6px', backgroundColor: '#f3f4f6', borderRadius: '3px', marginTop: '5px', overflow: 'hidden' }}>
+                          <div style={{ width: `${maxAmt > 0 ? (r.amount / maxAmt) * 100 : 0}%`, height: '100%', backgroundColor: color }} />
+                        </div>
+                        <div style={{ fontSize: '0.72rem', marginTop: '3px', color: prev === 0 ? '#9ca3af' : diff > 0 ? '#dc2626' : diff < 0 ? '#059669' : '#6b7280' }}>
+                          {prev === 0
+                            ? `Nothing in ${prevLabel}`
+                            : diff === 0
+                              ? `Same as ${prevLabel}`
+                              : `${diff > 0 ? '▲' : '▼'} ${formatMoney(Math.abs(diff))} ${diff > 0 ? 'more' : 'less'} than ${prevLabel}`}
+                        </div>
+                      </div>
+                    );
+                  })}
+                  {reportBreakdown === 'payee' && allRows.length > rows.length && (
+                    <div style={{ fontSize: '0.75rem', color: '#9ca3af', paddingTop: '8px' }}>Showing the top {rows.length} of {allRows.length} payees.</div>
+                  )}
+                  {reportBreakdown !== 'payee' && curMap.has('__none__') && (
+                    <div style={{ fontSize: '0.75rem', color: '#9ca3af', paddingTop: '8px' }}>
+                      "Uncategorized" is spending that isn't filed under an envelope. Edit those transactions to assign one.
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+
+            {/* Year over year */}
+            {yoy.length > 1 && (
+              <div style={cardStyle}>
+                <h3 style={{ margin: '0 0 8px 0', fontSize: '1rem' }}>Year to year</h3>
+                <div style={{ overflowX: 'auto', WebkitOverflowScrolling: 'touch' }}>
+                  <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.85rem', minWidth: '360px' }}>
+                    <thead>
+                      <tr style={{ borderBottom: '1px solid #e5e7eb', textAlign: 'left', color: '#6b7280' }}>
+                        <th style={{ padding: '6px 4px' }}>Year</th>
+                        <th style={{ padding: '6px 4px', textAlign: 'right' }}>Spent</th>
+                        <th style={{ padding: '6px 4px', textAlign: 'right' }}>Income</th>
+                        <th style={{ padding: '6px 4px', textAlign: 'right' }}>Net</th>
+                        <th style={{ padding: '6px 4px', textAlign: 'right' }}>Spending change</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {yoy.map((row, i) => {
+                        const before = yoy[i + 1];
+                        const chg = before && before.spent > 0 ? ((row.spent - before.spent) / before.spent) * 100 : null;
+                        const rowNet = row.income - row.spent;
+                        return (
+                          <tr
+                            key={row.year}
+                            onClick={() => { setReportMode('year'); setReportYear(Number(row.year)); }}
+                            style={{ borderBottom: '1px solid #f3f4f6', cursor: 'pointer', backgroundColor: !isMonth && String(reportYear) === row.year ? '#eff6ff' : 'transparent' }}
+                          >
+                            <td style={{ padding: '6px 4px', fontWeight: 600 }}>{row.year}</td>
+                            <td style={{ padding: '6px 4px', textAlign: 'right' }}>{formatMoney(row.spent)}</td>
+                            <td style={{ padding: '6px 4px', textAlign: 'right', color: '#059669' }}>{formatMoney(row.income)}</td>
+                            <td style={{ padding: '6px 4px', textAlign: 'right', color: rowNet >= 0 ? '#059669' : '#dc2626' }}>{(rowNet >= 0 ? '+' : '') + formatMoney(rowNet)}</td>
+                            <td style={{ padding: '6px 4px', textAlign: 'right', color: chg === null ? '#9ca3af' : chg > 0 ? '#dc2626' : '#059669' }}>
+                              {chg === null ? '—' : `${chg > 0 ? '▲' : chg < 0 ? '▼' : ''} ${Math.abs(chg).toFixed(0)}%`}
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+                <div style={{ fontSize: '0.72rem', color: '#9ca3af', marginTop: '6px' }}>Click a year to open it. The current year only covers the months so far.</div>
+              </div>
+            )}
+
+            <div style={{ fontSize: '0.72rem', color: '#9ca3af' }}>
+              Reports use your transactions only. Investment accounts and reconciliation adjustments are left out.
+            </div>
           </div>
         );
       })()}
