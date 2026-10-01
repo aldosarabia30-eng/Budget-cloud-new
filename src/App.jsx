@@ -93,16 +93,23 @@ const monthLabel = (key, short) => {
 // One envelope, month by month. What is left at the end of a month carries into the next one.
 // An envelope that ends a month below zero starts the next month at $0: that overspending is taken
 // out of Ready to Assign instead (see `overspend`).
-const buildEnvTimeline = (budgetMap, spendMap, throughKey) => {
+// `incomeMap` is money sent straight into this envelope from income transactions (see incomeAllocs).
+const buildEnvTimeline = (budgetMap, spendMap, throughKey, incomeMap, cardMap) => {
   const rows = new Map();
-  const keys = [...Object.keys(budgetMap || {}), ...Object.keys(spendMap || {})].filter(k => MONTH_RE.test(k)).sort();
+  const keys = [...Object.keys(budgetMap || {}), ...Object.keys(spendMap || {}), ...Object.keys(incomeMap || {})].filter(k => MONTH_RE.test(k)).sort();
   if (!keys.length || keys[0] > throughKey) return rows;
   let carry = 0;
   for (let k = keys[0], n = 0; k <= throughKey && n < 1200; k = addMonthKey(k, 1), n++) {
     const budgeted = Number(budgetMap && budgetMap[k]) || 0;
     const spent = Number(spendMap && spendMap[k]) || 0;
-    const end = Math.round((carry + budgeted - spent) * 100) / 100;
-    rows.set(k, { start: carry, budgeted, spent, end, overspend: end < 0 ? -end : 0 });
+    const income = Number(incomeMap && incomeMap[k]) || 0;
+    const end = Math.round((carry + budgeted + income - spent) * 100) / 100;
+    const overspend = end < 0 ? -end : 0;
+    // Overspending made with a credit card is "credit overspending": the card debt is not covered by money in the
+    // card's payment category, but Ready to Assign is not touched. The rest of an overspend is cash overspending.
+    const cardSpent = Number(cardMap && cardMap[k]) || 0;
+    const creditOver = Math.round(Math.min(overspend, Math.max(0, cardSpent)) * 100) / 100;
+    rows.set(k, { start: carry, budgeted, income, spent, cardSpent, end, overspend, creditOver, cashOver: Math.round((overspend - creditOver) * 100) / 100 });
     carry = end > 0 ? end : 0;
   }
   return rows;
@@ -120,6 +127,14 @@ const txParts = (t) => {
       .map(s => ({ envelopeId: s.envelopeId, amount: Number(s.amount) || 0 }));
   }
   return t.envelopeId ? [{ envelopeId: t.envelopeId, amount: Number(t.amount) || 0 }] : [];
+};
+// Income can be sent straight into envelopes: allocations: [{envelopeId, amount}] on an income transaction.
+// Whatever is not allocated stays in Ready to Assign. Each allocation counts as assigned in the month of the income.
+const incomeAllocs = (t) => {
+  if (!t || t.type !== 'income' || t.isTransfer || !Array.isArray(t.allocations)) return [];
+  return t.allocations
+    .filter(a => a && a.envelopeId && Number(a.amount) > 0)
+    .map(a => ({ envelopeId: a.envelopeId, amount: Number(a.amount) }));
 };
 // Split amounts can be typed as a sum, e.g. "13.97+4.50+2" (a trailing "+" is ignored while typing).
 // Returns the total in dollars, or NaN when the text isn't a valid amount/sum.
@@ -166,6 +181,25 @@ const SplitAmountInput = ({ value, onChange, ariaLabel, width, placeholder, onFo
     </div>
   );
 };
+// Colored "Available" pill, as on YNAB: green = money available, grey = empty, red = overspent, orange = overspent on a credit card only
+const availColors = (end, row) => {
+  if (end < -0.004) return row && row.cashOver <= 0.004 && row.creditOver > 0.004 ? { bg: '#ffe7c2', fg: '#8a4b00' } : { bg: '#fde2e0', fg: '#b42318' };
+  if (end > 0.004) return { bg: '#cdeed6', fg: '#17603a' };
+  return { bg: '#e9ecf1', fg: '#5a6372' };
+};
+const AvailPill = ({ value, row, onClick, label }) => {
+  const c = availColors(value, row);
+  return (
+    <span
+      onClick={onClick}
+      aria-label={label}
+      style={{ display: 'inline-block', minWidth: '64px', textAlign: 'center', padding: '3px 10px', borderRadius: '999px', backgroundColor: c.bg, color: c.fg, fontWeight: 700, fontSize: '0.85rem', cursor: onClick ? 'pointer' : 'default', whiteSpace: 'nowrap' }}
+    >
+      {formatMoney(value)}
+    </span>
+  );
+};
+
 // Assigned box on an envelope row: type a number or a sum. Each valid value is applied as you type.
 const AssignedInput = ({ value, onCommit, ariaLabel }) => {
   const [draft, setDraft] = useState(null);
@@ -173,7 +207,8 @@ const AssignedInput = ({ value, onCommit, ariaLabel }) => {
     <SplitAmountInput
       value={draft === null ? String(value) : draft}
       ariaLabel={ariaLabel}
-      width="84px"
+      width="92px"
+      inputStyle={{ textAlign: 'right' }}
       placeholder="0.00"
       onFocus={() => setDraft(String(value))}
       onChange={v => {
@@ -1108,6 +1143,7 @@ export default function BudgetApp() {
     try { const v = JSON.parse(sessionStorage.getItem('budget-unlocked-tx') || '[]'); return Array.isArray(v) ? v : []; } catch (e) { return []; }
   });
   useEffect(() => { try { sessionStorage.setItem('budget-unlocked-tx', JSON.stringify(unlockedTxIds)); } catch (e) { /* storage unavailable */ } }, [unlockedTxIds]);
+  const [selectedEnvId, setSelectedEnvId] = useState(null); // envelope row opened for actions
   const [unlockAskId, setUnlockAskId] = useState(null); // row showing the "unlock?" question
   const [splitTxId, setSplitTxId] = useState(null); // transaction whose split editor is open
   const [splitDraft, setSplitDraft] = useState([]); // [{ envelopeId, amount: string }]
@@ -1472,11 +1508,29 @@ export default function BudgetApp() {
   const budgetView = useMemo(() => {
     const key = budgetMonth;
     const spend = {};
+    const cardSpend = {}; // the part of an envelope's spending that was put on a credit card
+    const cardParts = []; // [{ accId, envelopeId, k, amount }]
     activeTransactions.forEach(t => {
       const k = txMonth(t);
+      const onCard = isCreditCard(accounts.find(a => a.id === t.accountId));
       txParts(t).forEach(p => {
         if (!spend[p.envelopeId]) spend[p.envelopeId] = {};
         spend[p.envelopeId][k] = (spend[p.envelopeId][k] || 0) + p.amount;
+        if (onCard) {
+          if (!cardSpend[p.envelopeId]) cardSpend[p.envelopeId] = {};
+          cardSpend[p.envelopeId][k] = (cardSpend[p.envelopeId][k] || 0) + p.amount;
+          cardParts.push({ accId: t.accountId, envelopeId: p.envelopeId, k, amount: p.amount });
+        }
+      });
+    });
+
+    const incomeIn = {}; // money sent into envelopes straight from income
+    activeTransactions.forEach(t => {
+      if (!countsTowardRTA(t)) return;
+      const k = txMonth(t);
+      incomeAllocs(t).forEach(a => {
+        if (!incomeIn[a.envelopeId]) incomeIn[a.envelopeId] = {};
+        incomeIn[a.envelopeId][k] = (incomeIn[a.envelopeId][k] || 0) + a.amount;
       });
     });
 
@@ -1485,13 +1539,52 @@ export default function BudgetApp() {
     let penalties = 0; // overspending from months before the selected one
     activeEnvelopes.forEach(env => {
       const budget = env.budget || {};
-      const rows = buildEnvTimeline(budget, spend[env.id], key);
+      const rows = buildEnvTimeline(budget, spend[env.id], key, incomeIn[env.id], cardSpend[env.id]);
       rowsByEnv[env.id] = rows;
-      rows.forEach((r, k) => { if (k < key) penalties += r.overspend; });
+      rows.forEach((r, k) => { if (k < key) penalties += r.cashOver; });
       Object.keys(budget).forEach(k => {
         if (MONTH_RE.test(k) && k <= key) budgetedThrough += Number(budget[k]) || 0;
       });
+      Object.keys(incomeIn[env.id] || {}).forEach(k => {
+        if (MONTH_RE.test(k) && k <= key) budgetedThrough += incomeIn[env.id][k];
+      });
     });
+
+    // ----- Credit card payment categories (like YNAB) -----
+    // Spending on a card, filed under an envelope, moves that money out of the envelope into the card's payment
+    // category. Paying the card (a transfer into it) uses that money up. Credit overspending is not moved.
+    const cc = {};
+    const ccOf = (id) => (cc[id] = cc[id] || { setAside: 0, setAsideMonth: 0, paid: 0, paidMonth: 0, assigned: 0, assignedMonth: 0 });
+    cardParts.forEach(cp => {
+      if (cp.k > key) return;
+      const row = rowsByEnv[cp.envelopeId] && rowsByEnv[cp.envelopeId].get(cp.k);
+      let frac = 1;
+      if (row && row.cardSpent > 0.004) frac = (row.cardSpent - row.creditOver) / row.cardSpent;
+      const c = ccOf(cp.accId);
+      c.setAside += cp.amount * frac;
+      if (cp.k === key) c.setAsideMonth += cp.amount * frac;
+    });
+    activeTransactions.forEach(t => {
+      if (!t.isTransfer || txMonth(t) > key) return;
+      if (!isCreditCard(accounts.find(a => a.id === t.accountId))) return;
+      const amt = (t.type === 'income' ? 1 : -1) * Number(t.amount); // money paid into the card
+      const c = ccOf(t.accountId);
+      c.paid += amt;
+      if (txMonth(t) === key) c.paidMonth += amt;
+    });
+    let ccAssignedThrough = 0;
+    activeAccounts.filter(isCreditCard).forEach(a => {
+      const c = ccOf(a.id);
+      Object.keys(a.paymentBudget || {}).forEach(k => {
+        if (!MONTH_RE.test(k) || k > key) return;
+        const v = Number(a.paymentBudget[k]) || 0;
+        c.assigned += v;
+        ccAssignedThrough += v;
+        if (k === key) c.assignedMonth += v;
+      });
+    });
+    Object.values(cc).forEach(c => { c.available = round2(c.setAside + c.assigned - c.paid); });
+    budgetedThrough += ccAssignedThrough;
 
     const opening = activeAccounts.filter(a => !isCreditCard(a)).reduce((sum, a) => sum + Number(a.initialBalance), 0);
     const income = activeTransactions
@@ -1500,6 +1593,7 @@ export default function BudgetApp() {
 
     return {
       rowsByEnv,
+      cc,
       inflow: round2(opening + income),
       budgetedThrough: round2(budgetedThrough),
       penalties: round2(penalties),
@@ -1508,7 +1602,7 @@ export default function BudgetApp() {
   }, [envelopes, accounts, transactions, budgetMonth]);
 
   const rtaShown = Math.abs(budgetView.rta) < 0.005 ? 0 : budgetView.rta;
-  const EMPTY_ENV_ROW = { start: 0, budgeted: 0, spent: 0, end: 0, overspend: 0 };
+  const EMPTY_ENV_ROW = { start: 0, budgeted: 0, income: 0, spent: 0, end: 0, overspend: 0 };
   const envRow = (env) => (budgetView.rowsByEnv[env.id] && budgetView.rowsByEnv[env.id].get(budgetMonth)) || EMPTY_ENV_ROW;
 
   // Months you can browse: back to your earliest data, forward one year for planning ahead
@@ -1620,7 +1714,7 @@ export default function BudgetApp() {
     if (!env.goalType || env.goalType === 'none') return null;
     const target = Number(env.targetAmount);
     if (!(target > 0)) return null;
-    const funded = env.goalType === 'target_by_date' ? row.end : row.start + row.budgeted;
+    const funded = env.goalType === 'target_by_date' ? row.end : row.start + row.budgeted + row.income;
     const left = Math.max(0, target - funded);
     const pct = Math.min(100, Math.max(0, (funded / target) * 100));
     return { target, funded, left, pct };
@@ -1812,6 +1906,14 @@ export default function BudgetApp() {
     const amount = rawValue === '' ? 0 : Number(rawValue);
     if (isNaN(amount)) return;
     setEnvelopes(prev => prev.map(e => (e.id === envId ? { ...e, budget: { ...(e.budget || {}), [budgetMonth]: amount } } : e)));
+  };
+
+  // Money set aside for a card's payment this month, beyond what spending on the card sets aside by itself
+  // (e.g. to start paying down debt you already had)
+  const handleAssignPayment = (accId, rawValue) => {
+    const amount = rawValue === '' ? 0 : Number(rawValue);
+    if (isNaN(amount)) return;
+    setAccounts(prev => prev.map(a => (a.id === accId ? { ...a, paymentBudget: { ...(a.paymentBudget || {}), [budgetMonth]: amount } } : a)));
   };
 
   // Fill this month's empty envelopes with what was assigned last month (never overwrites a month you've already set)
@@ -2138,6 +2240,11 @@ export default function BudgetApp() {
       return;
     }
 
+    if (!isTransferForm && amt === 0) {
+      showNotification('Enter an amount other than $0.');
+      return;
+    }
+
     // ----- Transfers between two accounts -----
     if (isTransferForm) {
       const from = accounts.find(a => a.id === txAccountId);
@@ -2227,6 +2334,14 @@ export default function BudgetApp() {
         }
       }
 
+      // Income sent to envelopes: keep it while it still fits in the new amount
+      let allocDropped = false;
+      if (Array.isArray(old.allocations)) {
+        const allocTotal = old.allocations.reduce((s, a) => s + (Number(a.amount) || 0), 0);
+        if (txType === 'income' && allocTotal <= amt + 0.004) updated.allocations = old.allocations;
+        else { delete updated.allocations; allocDropped = true; }
+      }
+
       // Changing the money side of a reconciled transaction means it needs reconciling again
       const moneyChanged = Number(old.amount) !== amt || old.type !== txType || old.accountId !== txAccountId;
       if (moneyChanged && old.reconciled) {
@@ -2238,7 +2353,8 @@ export default function BudgetApp() {
       cancelEditTx();
       setUnlockedTxIds(prev => prev.filter(id => id !== old.id)); // relock once the change is saved
       if (splitCleared && splitTxId === editingTxId) setSplitTxId(null);
-      showNotification(splitCleared ? 'Transaction updated. Its split was cleared because the amount or type changed.' : 'Transaction updated.');
+      showNotification(splitCleared ? 'Transaction updated. Its split was cleared because the amount or type changed.'
+        : allocDropped ? 'Transaction updated. Its envelope amounts were cleared because they no longer fit the income.' : 'Transaction updated.');
       return;
     }
 
@@ -2256,6 +2372,14 @@ export default function BudgetApp() {
       ? (txSplitLines && !splits ? ((cleanSplitLines(txSplitLines, amt).lines || [])[0]?.envelopeId || '') : txEnvelopeId)
       : '';
 
+    let allocations = null;
+    if (txType === 'income' && txSplitLines) {
+      if (!(amt > 0)) { showNotification('Enter an income amount above $0 to send it to envelopes.'); return; }
+      const res = cleanAllocLines(txSplitLines, amt);
+      if (res.error) { showNotification(res.error); return; }
+      if (res.lines.length) allocations = res.lines;
+    }
+
     const newTx = {
       id: 'tx-' + Date.now(),
       date: txDate || getTodayISO(),
@@ -2270,6 +2394,7 @@ export default function BudgetApp() {
       reconciled: false
     };
     if (splits) newTx.splits = splits;
+    if (allocations) newTx.allocations = allocations;
 
     setTransactions([newTx, ...transactions]);
 
@@ -2278,7 +2403,9 @@ export default function BudgetApp() {
     setTxNotes('');
     setTxSplitLines(null);
     setTxDate(getTodayISO());
-    showNotification(splits ? `Transaction recorded, split across ${splits.length} envelopes.` : 'Transaction recorded.');
+    showNotification(splits ? `Transaction recorded, split across ${splits.length} envelopes.`
+      : allocations ? `Income recorded. ${formatMoney(allocations.reduce((s, a) => s + a.amount, 0))} went into ${allocations.length} envelope${allocations.length === 1 ? '' : 's'}.`
+      : 'Transaction recorded.');
   };
 
   // ----- Linking existing transactions as transfers -----
@@ -2287,7 +2414,7 @@ export default function BudgetApp() {
     const accA = accounts.find(x => x.id === a.accountId);
     const accB = accounts.find(x => x.id === b.accountId);
     const transferId = 'xfer-' + Date.now() + '-' + Math.random().toString(36).slice(2, 6);
-    const strip = ({ splits, ...rest }) => rest;
+    const strip = ({ splits, allocations, ...rest }) => rest;
     const mk = (t, other) => ({
       ...strip(t),
       envelopeId: '',
@@ -2325,7 +2452,7 @@ export default function BudgetApp() {
   const handleLinkAllMatches = () => {
     const pairs = transferMatches;
     if (!pairs.length) return;
-    const strip = ({ splits, ...rest }) => rest;
+    const strip = ({ splits, allocations, ...rest }) => rest;
     const stamp = Date.now();
     const byId = new Map();
     pairs.forEach((p, i) => {
@@ -2462,7 +2589,10 @@ export default function BudgetApp() {
   const openSplit = (tx) => {
     if (isTxLocked(tx)) { showNotification(LOCKED_MSG); return; }
     setSplitTxId(tx.id);
-    if (isSplitTx(tx)) {
+    if (tx.type === 'income') {
+      const al = incomeAllocs(tx);
+      setSplitDraft(al.length ? al.map(a => ({ envelopeId: a.envelopeId, amount: String(a.amount) })) : [{ envelopeId: '', amount: '' }]);
+    } else if (isSplitTx(tx)) {
       setSplitDraft(tx.splits.map(s => ({ envelopeId: s.envelopeId || '', amount: String(s.amount) })));
     } else {
       setSplitDraft([
@@ -2488,7 +2618,7 @@ export default function BudgetApp() {
   };
 
   // Lines editor used by the Add Transaction form (the list's own editor keeps its state in splitDraft)
-  const renderFormSplit = (draft, setDraft, total) => {
+  const renderFormSplit = (draft, setDraft, total, income = false) => {
     const set = (i, patch) => setDraft(draft.map((l, idx) => (idx === i ? { ...l, ...patch } : l)));
     const left = round2((evalAmount(total) || 0) - draft.reduce((s, l) => s + (evalAmount(l.amount) || 0), 0));
     return (
@@ -2501,7 +2631,7 @@ export default function BudgetApp() {
               aria-label={`New split line ${i + 1} envelope`}
               style={{ flex: '1 1 auto', minWidth: 0, padding: '6px', border: '1px solid #d1d5db', borderRadius: '6px', fontSize: '0.85rem' }}
             >
-              <option value="">No envelope</option>
+              <option value="">{income ? 'Choose envelope' : 'No envelope'}</option>
               {envelopeChoices.map(c => (
                 <optgroup key={c.label} label={c.label}>
                   {c.list.map(e => (<option key={e.id} value={e.id}>{e.name}</option>))}
@@ -2522,7 +2652,7 @@ export default function BudgetApp() {
             >
               Rest
             </button>
-            {draft.length > 2 && (
+            {draft.length > (income ? 1 : 2) && (
               <button type="button" onClick={() => setDraft(draft.filter((_, idx) => idx !== i))} aria-label={`Remove new split line ${i + 1}`} style={{ background: 'none', border: 'none', color: '#dc2626', cursor: 'pointer', padding: '2px 4px' }}>✕</button>
             )}
           </div>
@@ -2532,17 +2662,48 @@ export default function BudgetApp() {
           <span style={{ color: !(evalAmount(total) > 0) ? '#6b7280' : Math.abs(left) < 0.005 ? '#059669' : '#b45309' }}>
             {!(evalAmount(total) > 0)
               ? 'Enter the amount first'
-              : Math.abs(left) < 0.005 ? 'Fully assigned' : left > 0 ? `$${left.toFixed(2)} left to assign` : `$${Math.abs(left).toFixed(2)} over`}
+              : income
+                ? (left < -0.005 ? `$${Math.abs(left).toFixed(2)} over` : Math.abs(left) < 0.005 ? 'All of it goes to envelopes' : `$${left.toFixed(2)} stays in Ready to Assign`)
+                : Math.abs(left) < 0.005 ? 'Fully assigned' : left > 0 ? `$${left.toFixed(2)} left to assign` : `$${Math.abs(left).toFixed(2)} over`}
           </span>
         </div>
       </div>
     );
   };
 
+  // Income allocations: lines need an envelope and an amount; the total may be less than the income (the rest stays in Ready to Assign)
+  const cleanAllocLines = (draft, total) => {
+    const lines = draft.filter(l => l.envelopeId || String(l.amount || '').trim() !== '');
+    if (lines.some(l => !l.envelopeId)) return { error: 'Choose an envelope for every line.' };
+    if (lines.some(l => !(evalAmount(l.amount) > 0))) return { error: 'Every line needs an amount above $0.' };
+    const merged = [];
+    lines.forEach(l => {
+      const amount = round2(evalAmount(l.amount));
+      const hit = merged.find(m => m.envelopeId === l.envelopeId);
+      if (hit) hit.amount = round2(hit.amount + amount);
+      else merged.push({ envelopeId: l.envelopeId, amount });
+    });
+    const sum = round2(merged.reduce((s, m) => s + m.amount, 0));
+    if (sum > round2(Number(total)) + 0.004) return { error: `Envelopes can't get more than the $${Number(total).toFixed(2)} you received.` };
+    return { lines: merged };
+  };
+
   const handleSaveSplit = () => {
     const tx = transactions.find(t => t.id === splitTxId);
     if (!tx) { closeSplit(); return; }
     if (isTxLocked(tx)) { showNotification(LOCKED_MSG); return; }
+    if (tx.type === 'income') {
+      const res = cleanAllocLines(splitDraft, tx.amount);
+      if (res.error) { showNotification(res.error); return; }
+      setTransactions(prev => prev.map(t => {
+        if (t.id !== tx.id) return t;
+        const { allocations, ...rest } = t;
+        return res.lines.length ? { ...rest, allocations: res.lines } : rest;
+      }));
+      showNotification(res.lines.length ? `Sent ${formatMoney(res.lines.reduce((s, a) => s + a.amount, 0))} to ${res.lines.length} envelope${res.lines.length === 1 ? '' : 's'}. The rest stays in Ready to Assign.` : 'Envelope amounts removed. All of it is back in Ready to Assign.');
+      closeSplit();
+      return;
+    }
     const lines = splitDraft.filter(l => l.envelopeId || (evalAmount(l.amount) || 0) !== 0);
     if (lines.some(l => !(Math.abs(evalAmount(l.amount)) > 0))) {
       showNotification('Every split line needs an amount other than $0.');
@@ -2995,8 +3156,76 @@ export default function BudgetApp() {
     </label>
   );
 
+  // ----- Shell pieces (YNAB-style sidebar, month bar, Ready to Assign pill) -----
+  const SIDE_BG = '#1f2f4f';
+  const sideItem = (key, active, onClick, label, right, opts = {}) => (
+    <button
+      key={key}
+      onClick={onClick}
+      style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '8px', width: '100%', textAlign: 'left', padding: opts.small ? '6px 10px' : '8px 10px', borderRadius: '6px', border: 'none', cursor: 'pointer', fontSize: opts.small ? '0.84rem' : '0.9rem', fontWeight: active ? 600 : 500, backgroundColor: active ? 'rgba(255,255,255,0.14)' : 'transparent', color: active ? 'white' : '#c9d3e6' }}
+    >
+      <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{label}</span>
+      {right}
+    </button>
+  );
+  const sideHeading = (label, total) => (
+    <div style={{ display: 'flex', justifyContent: 'space-between', padding: '14px 10px 4px', fontSize: '0.68rem', fontWeight: 700, letterSpacing: '0.08em', color: '#8fa0c0' }}>
+      <span>{label}</span><span>{formatMoney(total)}</span>
+    </div>
+  );
+  const sideBalance = (n) => (
+    <span style={{ fontSize: '0.8rem', fontVariantNumeric: 'tabular-nums', color: n < -0.004 ? '#ffa8a1' : '#e6ecf7', flexShrink: 0 }}>{formatMoney(n)}</span>
+  );
+  const sideAccounts = activeAccounts.filter(a => !a.isHidden).map(a => ({ acc: a, bal: getAccountBalance(a.id) }));
+  const sideCash = sideAccounts.filter(x => !isCreditCard(x.acc));
+  const sideCredit = sideAccounts.filter(x => isCreditCard(x.acc));
+  const sumBal = (list) => list.reduce((t, x) => t + x.bal, 0);
+  const openAccountRegister = (accId) => { setTxFilterAccount(accId); if (!editingTxId) setTxAccountId(accId); openTab('transactions'); };
+
+  const rtaTone = rtaShown < -0.004 ? { bg: '#fde2e0', fg: '#b42318', sub: 'Over-assigned' }
+    : rtaShown < 0.004 ? { bg: '#e9ecf1', fg: '#4b5563', sub: 'Ready to Assign' }
+    : { bg: '#cdeed6', fg: '#17603a', sub: 'Ready to Assign' };
+  const rtaPill = (
+    <div data-testid="rta-pill" style={{ display: 'flex', flexDirection: 'column', alignItems: isMobile ? 'center' : 'flex-end', backgroundColor: rtaTone.bg, color: rtaTone.fg, padding: isMobile ? '8px 14px' : '6px 14px', borderRadius: '10px', minWidth: '110px', width: isMobile ? '100%' : 'auto', boxSizing: 'border-box' }}>
+      <span style={{ fontSize: '1.1rem', fontWeight: 800, lineHeight: 1.15 }}>{formatMoney(rtaShown)}</span>
+      <span style={{ fontSize: '0.66rem', fontWeight: 700, letterSpacing: '0.04em', textTransform: 'uppercase' }}>
+        {rtaTone.sub}{budgetMonth !== todayMonth ? ` · ${monthLabel(budgetMonth, true)}` : ''}
+      </span>
+    </div>
+  );
+  const monthNav = (
+    <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+      <button
+        disabled={budgetMonth <= budgetEarliest}
+        aria-label="Previous month"
+        onClick={() => setBudgetMonth(addMonthKey(budgetMonth, -1))}
+        style={{ width: '32px', height: '32px', borderRadius: '50%', border: 'none', backgroundColor: 'transparent', color: budgetMonth <= budgetEarliest ? '#cbd2dc' : '#1f2937', cursor: budgetMonth <= budgetEarliest ? 'not-allowed' : 'pointer', fontSize: '1.3rem', lineHeight: 1 }}
+      >
+        ‹
+      </button>
+      <div style={{ minWidth: '130px', textAlign: 'center', fontWeight: 700, fontSize: '1.05rem' }}>{monthLabel(budgetMonth)}</div>
+      <button
+        disabled={budgetMonth >= budgetLatest}
+        aria-label="Next month"
+        onClick={() => setBudgetMonth(addMonthKey(budgetMonth, 1))}
+        style={{ width: '32px', height: '32px', borderRadius: '50%', border: 'none', backgroundColor: 'transparent', color: budgetMonth >= budgetLatest ? '#cbd2dc' : '#1f2937', cursor: budgetMonth >= budgetLatest ? 'not-allowed' : 'pointer', fontSize: '1.3rem', lineHeight: 1 }}
+      >
+        ›
+      </button>
+      {budgetMonth !== todayMonth && (
+        <button
+          onClick={() => setBudgetMonth(todayMonth)}
+          style={{ background: 'none', border: 'none', color: '#2f6fb3', fontWeight: 'bold', cursor: 'pointer', fontSize: '0.8rem' }}
+        >
+          This month
+        </button>
+      )}
+    </div>
+  );
+  const MOBILE_TABS = [['budget', 'Budget', '◔'], ['accounts', 'Accounts', '▦'], ['transactions', 'Transactions', '☰'], ['reports', 'Reports', '◭']];
+
   return (
-    <div style={{ display: 'flex', minHeight: '100vh', fontFamily: 'system-ui, -apple-system, sans-serif', color: '#1f2937', backgroundColor: '#f9fafb' }}>
+    <div style={{ display: 'flex', minHeight: '100vh', fontFamily: 'system-ui, -apple-system, sans-serif', color: '#1f2937', backgroundColor: '#f4f5f7' }}>
 
       {/* Mobile overlay behind the drawer */}
       {isMobile && sidebarOpen && (
@@ -3009,12 +3238,12 @@ export default function BudgetApp() {
       {/* Side menu */}
       <aside
         style={{
-          width: '210px',
+          width: '240px',
           flexShrink: 0,
           boxSizing: 'border-box',
-          backgroundColor: 'white',
-          borderRight: '1px solid #e5e7eb',
-          padding: '16px 12px',
+          backgroundColor: SIDE_BG,
+          color: '#c9d3e6',
+          padding: '16px 10px',
           display: !isMobile && !sidebarOpen ? 'none' : 'flex',
           flexDirection: 'column',
           height: '100vh',
@@ -3027,58 +3256,48 @@ export default function BudgetApp() {
           transition: 'transform 0.2s ease'
         }}
       >
-        <div style={{ fontWeight: 700, fontSize: '1rem', color: '#1e3a8a', padding: '4px 8px 16px 8px' }}>
+        <div style={{ fontWeight: 700, fontSize: '1rem', color: 'white', padding: '4px 10px 14px 10px' }}>
           Envelope Budgeting
         </div>
 
         <nav style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
-          {['budget', 'new', 'accounts', 'investments', 'transactions', 'reports', 'debts', 'import', 'trash'].map(tab => {
-            const isActive = activeTab === tab;
-            return (
-              <button
-                key={tab}
-                onClick={() => openTab(tab)}
-                style={{
-                  display: 'flex',
-                  justifyContent: 'space-between',
-                  alignItems: 'center',
-                  width: '100%',
-                  textAlign: 'left',
-                  padding: '9px 10px',
-                  borderRadius: '8px',
-                  border: 'none',
-                  cursor: 'pointer',
-                  fontSize: '0.9rem',
-                  fontWeight: isActive ? 600 : 500,
-                  backgroundColor: isActive ? '#eff6ff' : 'transparent',
-                  color: isActive ? '#1e3a8a' : '#4b5563'
-                }}
-              >
-                <span>{NAV_LABELS[tab]}</span>
-                {tab === 'trash' && totalTrashCount > 0 && (
-                  <span style={{ fontSize: '0.7rem', backgroundColor: '#e5e7eb', color: '#4b5563', borderRadius: '10px', padding: '1px 7px' }}>
-                    {totalTrashCount}
-                  </span>
-                )}
-              </button>
-            );
-          })}
+          {sideItem('budget', activeTab === 'budget', () => openTab('budget'), 'Budget')}
+          {sideItem('reports', activeTab === 'reports', () => openTab('reports'), 'Reports')}
+          {sideItem('transactions', activeTab === 'transactions' && !txFilterAccount, () => { setTxFilterAccount(''); openTab('transactions'); }, 'Transactions')}
         </nav>
 
-        <div style={{ marginTop: 'auto', padding: '16px 8px 0 8px', borderTop: '1px solid #f3f4f6' }}>
-          <div style={{ fontSize: '0.7rem', color: '#9ca3af', wordBreak: 'break-all', marginBottom: '8px' }}>
+        {sideCash.length > 0 && sideHeading('CASH', sumBal(sideCash))}
+        {sideCash.map(x => sideItem('acc-' + x.acc.id, activeTab === 'transactions' && txFilterAccount === x.acc.id, () => openAccountRegister(x.acc.id), x.acc.name, sideBalance(x.bal), { small: true }))}
+        {sideCredit.length > 0 && sideHeading('CREDIT', sumBal(sideCredit))}
+        {sideCredit.map(x => sideItem('acc-' + x.acc.id, activeTab === 'transactions' && txFilterAccount === x.acc.id, () => openAccountRegister(x.acc.id), x.acc.name, sideBalance(x.bal), { small: true }))}
+        {activeInvestments.length > 0 && sideHeading('TRACKING', invTotals.value)}
+        {activeInvestments.length > 0 && sideItem('investments', activeTab === 'investments', () => openTab('investments'), 'Investments', sideBalance(invTotals.value), { small: true })}
+
+        <div style={{ height: '1px', backgroundColor: 'rgba(255,255,255,0.12)', margin: '14px 0 8px' }} />
+        <nav style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
+          {['new', 'accounts', 'investments', 'debts', 'import', 'trash'].filter(tab => tab !== 'investments' || activeInvestments.length === 0).map(tab =>
+            sideItem(tab, activeTab === tab, () => openTab(tab), NAV_LABELS[tab],
+              tab === 'trash' && totalTrashCount > 0
+                ? <span style={{ fontSize: '0.7rem', backgroundColor: 'rgba(255,255,255,0.18)', color: 'white', borderRadius: '10px', padding: '1px 7px' }}>{totalTrashCount}</span>
+                : null,
+              { small: true })
+          )}
+        </nav>
+
+        <div style={{ marginTop: 'auto', padding: '16px 10px 0 10px', borderTop: '1px solid rgba(255,255,255,0.12)' }}>
+          <div style={{ fontSize: '0.7rem', color: '#8fa0c0', wordBreak: 'break-all', marginBottom: '8px' }}>
             Budget ID: {budgetId}
           </div>
           <button
             onClick={copyShareLink}
-            style={{ width: '100%', backgroundColor: 'white', color: '#2563eb', border: '1px solid #bfdbfe', padding: '6px 8px', borderRadius: '6px', fontSize: '0.75rem', cursor: 'pointer', fontWeight: 600 }}
+            style={{ width: '100%', backgroundColor: 'transparent', color: '#cfe0f7', border: '1px solid rgba(255,255,255,0.28)', padding: '6px 8px', borderRadius: '6px', fontSize: '0.75rem', cursor: 'pointer', fontWeight: 600 }}
           >
             Copy Share Link
           </button>
           {switchIdInput === null ? (
             <button
               onClick={() => setSwitchIdInput('')}
-              style={{ width: '100%', background: 'none', color: '#6b7280', border: 'none', padding: '6px 8px', fontSize: '0.72rem', cursor: 'pointer', textDecoration: 'underline' }}
+              style={{ width: '100%', background: 'none', color: '#8fa0c0', border: 'none', padding: '6px 8px', fontSize: '0.72rem', cursor: 'pointer', textDecoration: 'underline' }}
             >
               Use a different budget ID
             </button>
@@ -3093,8 +3312,8 @@ export default function BudgetApp() {
                 style={{ width: '100%', boxSizing: 'border-box', padding: '6px', fontSize: '0.75rem', border: '1px solid #d1d5db', borderRadius: '6px' }}
               />
               <div style={{ display: 'flex', gap: '6px', marginTop: '6px' }}>
-                <button onClick={switchBudget} style={{ flex: 1, backgroundColor: '#2563eb', color: 'white', border: 'none', borderRadius: '6px', padding: '5px', fontSize: '0.75rem', cursor: 'pointer', fontWeight: 600 }}>Switch</button>
-                <button onClick={() => setSwitchIdInput(null)} style={{ background: 'none', border: 'none', color: '#6b7280', fontSize: '0.75rem', cursor: 'pointer' }}>Cancel</button>
+                <button onClick={switchBudget} style={{ flex: 1, backgroundColor: '#2f6fb3', color: 'white', border: 'none', borderRadius: '6px', padding: '5px', fontSize: '0.75rem', cursor: 'pointer', fontWeight: 600 }}>Switch</button>
+                <button onClick={() => setSwitchIdInput(null)} style={{ background: 'none', border: 'none', color: '#8fa0c0', fontSize: '0.75rem', cursor: 'pointer' }}>Cancel</button>
               </div>
             </div>
           )}
@@ -3103,26 +3322,25 @@ export default function BudgetApp() {
 
       {/* Main content */}
       <div style={{ flex: 1, minWidth: 0 }}>
-        <div style={{ width: '100%', maxWidth: '900px', margin: '0 auto', padding: '12px', boxSizing: 'border-box' }}>
+        <div style={{ width: '100%', maxWidth: '1040px', margin: '0 auto', padding: isMobile ? '10px 10px 96px' : '16px 20px', boxSizing: 'border-box' }}>
 
       {/* Top bar */}
-      <header style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '12px', marginBottom: '16px' }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-          <button
-            onClick={() => setSidebarOpen(o => !o)}
-            aria-label="Toggle menu"
-            style={{ backgroundColor: 'white', border: '1px solid #e5e7eb', borderRadius: '8px', width: '36px', height: '36px', cursor: 'pointer', fontSize: '1.1rem', color: '#374151' }}
-          >
-            ☰
-          </button>
-          <h1 style={{ margin: 0, fontSize: '1.15rem', fontWeight: 700, color: '#111827' }}>{TAB_LABELS[activeTab]}</h1>
+      <header style={{ display: 'flex', justifyContent: isMobile ? 'center' : 'space-between', alignItems: 'center', gap: '10px', marginBottom: '14px', flexWrap: 'wrap' }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: isMobile ? 'center' : 'flex-start', gap: '10px', minWidth: 0, width: isMobile ? '100%' : 'auto' }}>
+          {!isMobile && (
+            <button
+              onClick={() => setSidebarOpen(o => !o)}
+              aria-label="Toggle menu"
+              style={{ backgroundColor: 'white', border: '1px solid #e3e6eb', borderRadius: '8px', width: '36px', height: '36px', cursor: 'pointer', fontSize: '1.1rem', color: '#374151' }}
+            >
+              ☰
+            </button>
+          )}
+          {activeTab === 'budget'
+            ? monthNav
+            : <h1 style={{ margin: 0, fontSize: '1.15rem', fontWeight: 700, color: '#111827' }}>{TAB_LABELS[activeTab]}{activeTab === 'transactions' && txFilterAccount ? ` · ${(accounts.find(a => a.id === txFilterAccount) || {}).name || ''}` : ''}</h1>}
         </div>
-        <div style={{ textAlign: 'right', backgroundColor: '#eff6ff', border: '1px solid #bfdbfe', padding: '6px 12px', borderRadius: '8px' }}>
-          <div style={{ fontSize: '0.65rem', textTransform: 'uppercase', color: '#1d4ed8', letterSpacing: '0.03em' }}>
-            Ready to Assign{budgetMonth !== todayMonth ? ` · ${monthLabel(budgetMonth, true)}` : ''}
-          </div>
-          <div style={{ fontSize: '1.1rem', fontWeight: 700, color: rtaShown < 0 ? '#dc2626' : '#1e3a8a' }}>{formatMoney(rtaShown)}</div>
-        </div>
+        {(activeTab === 'budget' || !isMobile) && rtaPill}
       </header>
 
       {/* Notification Toast */}
@@ -3135,49 +3353,22 @@ export default function BudgetApp() {
       {/* BUDGET TAB */}
       {activeTab === 'budget' && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
-          {/* Month selector */}
-          <div style={{ backgroundColor: 'white', padding: '12px 14px', borderRadius: '10px', boxShadow: '0 1px 3px rgba(0,0,0,0.1)' }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                <button
-                  disabled={budgetMonth <= budgetEarliest}
-                  aria-label="Previous month"
-                  onClick={() => setBudgetMonth(addMonthKey(budgetMonth, -1))}
-                  style={{ width: '32px', height: '32px', borderRadius: '8px', border: '1px solid #e5e7eb', backgroundColor: 'white', color: budgetMonth <= budgetEarliest ? '#d1d5db' : '#1f2937', cursor: budgetMonth <= budgetEarliest ? 'not-allowed' : 'pointer', fontSize: '1rem' }}
-                >
-                  ‹
-                </button>
-                <div style={{ minWidth: '140px', textAlign: 'center', fontWeight: 700, fontSize: '0.95rem' }}>{monthLabel(budgetMonth)}</div>
-                <button
-                  disabled={budgetMonth >= budgetLatest}
-                  aria-label="Next month"
-                  onClick={() => setBudgetMonth(addMonthKey(budgetMonth, 1))}
-                  style={{ width: '32px', height: '32px', borderRadius: '8px', border: '1px solid #e5e7eb', backgroundColor: 'white', color: budgetMonth >= budgetLatest ? '#d1d5db' : '#1f2937', cursor: budgetMonth >= budgetLatest ? 'not-allowed' : 'pointer', fontSize: '1rem' }}
-                >
-                  ›
-                </button>
-                {budgetMonth !== todayMonth && (
-                  <button
-                    onClick={() => setBudgetMonth(todayMonth)}
-                    style={{ background: 'none', border: 'none', color: '#2563eb', fontWeight: 'bold', cursor: 'pointer', fontSize: '0.8rem' }}
-                  >
-                    This month
-                  </button>
-                )}
-              </div>
+          {/* Month summary */}
+          <div style={{ backgroundColor: 'white', padding: '10px 14px', borderRadius: '8px', border: '1px solid #e3e6eb' }}>
+            <div style={{ display: 'flex', justifyContent: 'flex-end', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
               <button
                 onClick={handleCopyLastMonth}
-                style={{ backgroundColor: 'white', color: '#2563eb', border: '1px solid #bfdbfe', padding: '6px 12px', borderRadius: '6px', fontWeight: 'bold', cursor: 'pointer', fontSize: '0.8rem' }}
+                style={{ backgroundColor: 'white', color: '#2f6fb3', border: '1px solid #c9dcf0', padding: '5px 10px', borderRadius: '6px', fontWeight: 'bold', cursor: 'pointer', fontSize: '0.78rem' }}
               >
                 Copy last month's assignments
               </button>
             </div>
-            <div style={{ fontSize: '0.75rem', color: '#6b7280', marginTop: '8px' }}>
+            <div style={{ fontSize: '0.75rem', color: '#6b7280', marginTop: '4px' }}>
               Money in {formatMoney(budgetView.inflow)} − assigned {formatMoney(budgetView.budgetedThrough)}
               {budgetView.penalties > 0 ? ` − overspending from earlier months ${formatMoney(budgetView.penalties)}` : ''}
               {' = '}<strong style={{ color: rtaShown < 0 ? '#dc2626' : '#1e3a8a' }}>{formatMoney(rtaShown)}</strong> Ready to Assign
             </div>
-            <div style={{ fontSize: '0.72rem', color: '#9ca3af', marginTop: '2px' }}>
+            <div style={{ fontSize: '0.72rem', color: '#9ca3af', marginTop: '2px', display: isMobile ? 'none' : 'block' }}>
               What's left in an envelope carries into the next month. Overspending resets the envelope to $0 and comes out of the next month's Ready to Assign.
             </div>
           </div>
@@ -3212,11 +3403,22 @@ export default function BudgetApp() {
             </label>
           )}
 
+          {/* Column headings */}
+          {!isMobile && groups.length > 0 && (
+            <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0,1fr) 118px 104px 124px', columnGap: '10px', padding: '0 14px', fontSize: '0.68rem', fontWeight: 700, letterSpacing: '0.06em', color: '#6b7280', marginBottom: '-8px' }}>
+              <div>CATEGORY</div><div style={{ textAlign: 'right' }}>ASSIGNED</div><div style={{ textAlign: 'right' }}>ACTIVITY</div><div style={{ textAlign: 'right' }}>AVAILABLE</div>
+            </div>
+          )}
+
           {/* Group Categories */}
           {groups.map(groupName => {
             const groupEnvelopes = activeEnvelopes.filter(e => e.group === groupName && (showHiddenEnvelopes || !e.isHidden));
             const groupHasHidden = activeEnvelopes.some(e => e.group === groupName && e.isHidden);
             const isCollapsed = collapsedGroups[groupName] || dragState !== null; // everything folds while dragging
+            const groupTotals = groupEnvelopes.reduce((t, e) => {
+              const r = envRow(e);
+              return { assigned: t.assigned + r.budgeted + r.income, activity: t.activity + r.spent, available: t.available + r.end };
+            }, { assigned: 0, activity: 0, available: 0 });
 
             // Visual position while a group is being dragged (the real order is committed on drop)
             let dragStyle = {};
@@ -3244,10 +3446,10 @@ export default function BudgetApp() {
               <div
                 key={groupName}
                 ref={el => { groupRefs.current[groupName] = el; }}
-                style={{ backgroundColor: 'white', borderRadius: '10px', padding: '14px', boxShadow: '0 1px 3px rgba(0,0,0,0.1)', ...dragStyle }}
+                style={{ backgroundColor: 'white', borderRadius: '8px', padding: 0, border: '1px solid #e3e6eb', overflow: 'hidden', ...dragStyle }}
               >
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '2px solid #e5e7eb', paddingBottom: '8px', marginBottom: '10px' }}>
-                  <div style={{ display: 'flex', alignItems: 'center', minWidth: 0 }}>
+                <div style={{ display: 'grid', gridTemplateColumns: isMobile ? 'minmax(0,1fr) auto' : 'minmax(0,1fr) 118px 104px 124px', alignItems: 'center', columnGap: '10px', backgroundColor: '#f1f3f6', padding: isMobile ? '8px 12px' : '7px 14px', borderBottom: '1px solid #e3e6eb' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', minWidth: 0, gap: '4px' }}>
                   {groups.length > 1 && (
                     <button
                       onPointerDown={e => startGroupDrag(e, groupName)}
@@ -3261,23 +3463,26 @@ export default function BudgetApp() {
                   )}
                   <button
                     onClick={() => toggleGroupCollapse(groupName)}
-                    style={{ background: 'none', border: 'none', fontWeight: 'bold', fontSize: '1rem', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '6px', color: '#1e3a8a', padding: 0 }}
+                    style={{ background: 'none', border: 'none', fontWeight: 700, fontSize: '0.92rem', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '6px', color: '#1f2937', padding: 0, textAlign: 'left' }}
                   >
-                    <span>{isCollapsed ? '▶' : '▼'}</span> {groupName}
+                    <span style={{ fontSize: '0.7rem', color: '#6b7280' }}>{isCollapsed ? '▶' : '▼'}</span> {groupName}
                   </button>
-                  </div>
                   <button
                     onClick={() => handleRemoveGroup(groupName)}
-                    style={{ background: 'none', border: 'none', color: '#dc2626', cursor: 'pointer', fontSize: '0.8rem' }}
+                    style={{ background: 'none', border: 'none', color: '#9ca3af', cursor: 'pointer', fontSize: '0.72rem', marginLeft: '8px' }}
                   >
                     Delete Group
                   </button>
+                  </div>
+                  {!isMobile && <div style={{ textAlign: 'right', fontSize: '0.82rem', fontWeight: 600, color: '#4b5563' }}>{formatMoney(groupTotals.assigned)}</div>}
+                  {!isMobile && <div style={{ textAlign: 'right', fontSize: '0.82rem', fontWeight: 600, color: '#4b5563' }}>{formatMoney(groupTotals.activity)}</div>}
+                  <div style={{ textAlign: 'right', fontSize: '0.82rem', fontWeight: 700, color: groupTotals.available < -0.004 ? '#b42318' : '#4b5563' }}>{formatMoney(groupTotals.available)}</div>
                 </div>
 
                 {!isCollapsed && (
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 0 }}>
                     {groupEnvelopes.length === 0 ? (
-                      <div style={{ fontSize: '0.85rem', color: '#9ca3af', padding: '4px 0' }}>{groupHasHidden ? 'All envelopes in this group are hidden.' : 'No envelopes in this group.'}</div>
+                      <div style={{ fontSize: '0.85rem', color: '#9ca3af', padding: '10px 14px' }}>{groupHasHidden ? 'All envelopes in this group are hidden.' : 'No envelopes in this group.'}</div>
                     ) : (
                       groupEnvelopes.map(env => {
                         const row = envRow(env);
@@ -3285,9 +3490,10 @@ export default function BudgetApp() {
                         const remaining = row.end;
                         const progress = getTargetProgress(env, row);
 
+                        const selected = selectedEnvId === env.id;
                         return (
-                          <div key={env.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '10px', backgroundColor: env.isHidden ? '#f3f4f6' : '#f9fafb', opacity: env.isHidden ? 0.75 : 1, borderRadius: '6px', flexWrap: 'wrap', gap: '10px' }}>
-                            <div style={{ flex: '1 1 160px' }}>
+                          <div key={env.id} data-testid="env-row" style={{ display: 'grid', gridTemplateColumns: isMobile ? 'minmax(0,1fr) auto' : 'minmax(0,1fr) 118px 104px 124px', alignItems: 'center', columnGap: '10px', rowGap: '8px', padding: isMobile ? '10px 12px' : '8px 14px', backgroundColor: selected ? '#eef4fb' : env.isHidden ? '#f3f4f6' : 'white', opacity: env.isHidden ? 0.75 : 1, borderBottom: '1px solid #eef0f3' }}>
+                            <div onClick={() => setSelectedEnvId(selected ? null : env.id)} style={{ minWidth: 0, cursor: 'pointer' }}>
                               <div style={{ fontWeight: '600', fontSize: '0.95rem' }}>
                                 {env.name}
                                 {env.isHidden && <span data-testid="hidden-badge" style={{ marginLeft: '8px', fontSize: '0.7rem', fontWeight: 600, color: '#6b7280', backgroundColor: '#e5e7eb', borderRadius: '999px', padding: '1px 8px' }}>hidden</span>}
@@ -3309,6 +3515,11 @@ export default function BudgetApp() {
                                   </div>
                                 </div>
                               )}
+                              {row.income > 0 && (
+                                <div data-testid="income-note" style={{ fontSize: '0.72rem', color: '#059669', marginTop: '3px' }}>
+                                  + {formatMoney(row.income)} from income this month
+                                </div>
+                              )}
                               {row.start > 0 && (
                                 <div style={{ fontSize: '0.72rem', color: '#059669', marginTop: '3px' }}>
                                   {formatMoney(row.start)} carried over from last month
@@ -3316,21 +3527,44 @@ export default function BudgetApp() {
                               )}
                               {row.end < 0 && (
                                 <div style={{ fontSize: '0.72rem', color: '#dc2626', marginTop: '3px' }}>
-                                  Overspent by {formatMoney(-row.end)}. Unless covered, it comes out of {monthLabel(addMonthKey(budgetMonth, 1), true)}'s Ready to Assign.
+                                  Overspent by {formatMoney(-row.end)}.{' '}
+                                  {row.cashOver > 0.004
+                                    ? `Unless covered, ${row.creditOver > 0.004 ? formatMoney(row.cashOver) + ' of it ' : 'it '}comes out of ${monthLabel(addMonthKey(budgetMonth, 1), true)}'s Ready to Assign.`
+                                    : 'It was put on a credit card, so your card payment will be short by that much unless you cover it.'}
+                                  {row.cashOver > 0.004 && row.creditOver > 0.004 ? ` ${formatMoney(row.creditOver)} was on a credit card and leaves that card's payment short.` : ''}
                                 </div>
                               )}
                             </div>
-                            <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap', justifyContent: 'flex-end', flex: '1 1 200px' }}>
-                              <div style={{ fontSize: '0.85rem' }}>
-                                <span style={{ color: '#6b7280' }}>Assigned: </span>
+                            {!isMobile && (
+                              <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
                                 <AssignedInput
                                   value={row.budgeted}
                                   ariaLabel={`Assigned ${env.name}`}
                                   onCommit={n => handleAssignMonth(env.id, n)}
                                 />
                               </div>
-                              <div style={{ fontSize: '0.85rem' }}>Activity: <strong>{formatMoney(spent)}</strong></div>
-                              <div style={{ fontSize: '0.85rem' }}>Available: <strong style={{ color: remaining < 0 ? '#dc2626' : '#059669' }}>{formatMoney(remaining)}</strong></div>
+                            )}
+                            {!isMobile && (
+                              <div style={{ textAlign: 'right', fontSize: '0.88rem', color: '#4b5563' }}>{formatMoney(spent)}</div>
+                            )}
+                            <div style={{ textAlign: 'right' }}>
+                              <AvailPill value={remaining} row={row} label={`Available ${env.name}`} onClick={() => setSelectedEnvId(selected ? null : env.id)} />
+                            </div>
+                            {selected && (
+                              <div data-testid="env-actions" style={{ gridColumn: '1 / -1', display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap', paddingTop: '2px' }}>
+                                {isMobile && (
+                                  <>
+                                    <div style={{ fontSize: '0.85rem' }}>
+                                      <span style={{ color: '#6b7280' }}>Assigned: </span>
+                                      <AssignedInput
+                                        value={row.budgeted}
+                                        ariaLabel={`Assigned ${env.name}`}
+                                        onCommit={n => handleAssignMonth(env.id, n)}
+                                      />
+                                    </div>
+                                    <div style={{ fontSize: '0.85rem' }}>Activity: <strong>{formatMoney(spent)}</strong></div>
+                                  </>
+                                )}
                               {remaining < -0.004 && (
                                 <button
                                   onClick={() => (moveUi && moveUi.envId === env.id ? closeMove() : openMove(env, 'cover'))}
@@ -3381,9 +3615,10 @@ export default function BudgetApp() {
                               >
                                 ✕
                               </button>
-                            </div>
+                              </div>
+                            )}
                             {moveUi && moveUi.envId === env.id && (
-                              <div data-testid="move-panel" style={{ flexBasis: '100%', padding: '10px', backgroundColor: 'white', border: '1px solid #e5e7eb', borderRadius: '8px' }}>
+                              <div data-testid="move-panel" style={{ gridColumn: '1 / -1', padding: '10px', backgroundColor: 'white', border: '1px solid #e5e7eb', borderRadius: '8px' }}>
                                 <div style={{ fontSize: '0.8rem', fontWeight: 'bold', marginBottom: '6px' }}>
                                   {moveUi.mode === 'cover'
                                     ? `Cover ${env.name}'s overspending in ${monthLabel(budgetMonth)}`
@@ -3427,7 +3662,7 @@ export default function BudgetApp() {
                               </div>
                             )}
                             {hideEnvUi === env.id && (
-                              <div data-testid="hide-panel" style={{ flexBasis: '100%', padding: '10px', backgroundColor: 'white', border: '1px solid #e5e7eb', borderRadius: '8px', fontSize: '0.8rem' }}>
+                              <div data-testid="hide-panel" style={{ gridColumn: '1 / -1', padding: '10px', backgroundColor: 'white', border: '1px solid #e5e7eb', borderRadius: '8px', fontSize: '0.8rem' }}>
                                 {remaining > 0.004 ? (
                                   <>
                                     <div style={{ marginBottom: '8px' }}>
@@ -3461,6 +3696,59 @@ export default function BudgetApp() {
               </div>
             );
           })}
+
+          {/* Credit card payments */}
+          {(() => {
+            const cards = activeAccounts.filter(a => isCreditCard(a) && !a.isHidden);
+            if (!cards.length) return null;
+            const cols = isMobile ? 'minmax(0,1fr) auto' : 'minmax(0,1fr) 118px 104px 124px';
+            const info = cards.map(acc => {
+              const c = budgetView.cc[acc.id] || { setAside: 0, setAsideMonth: 0, paid: 0, paidMonth: 0, assigned: 0, assignedMonth: 0, available: 0 };
+              const owed = Math.max(0, round2(-getAccountBalance(acc.id)));
+              return { acc, c, owed, short: round2(owed - c.available) };
+            });
+            const total = info.reduce((t, x) => ({ a: t.a + x.c.assignedMonth + x.c.setAsideMonth, act: t.act - x.c.paidMonth, av: t.av + x.c.available }), { a: 0, act: 0, av: 0 });
+            return (
+              <div data-testid="cc-payments" style={{ backgroundColor: 'white', borderRadius: '8px', border: '1px solid #e3e6eb', overflow: 'hidden' }}>
+                <div style={{ display: 'grid', gridTemplateColumns: cols, alignItems: 'center', columnGap: '10px', backgroundColor: '#f1f3f6', padding: isMobile ? '8px 12px' : '7px 14px', borderBottom: '1px solid #e3e6eb' }}>
+                  <div style={{ fontWeight: 700, fontSize: '0.92rem', color: '#1f2937' }}>Credit Card Payments</div>
+                  {!isMobile && <div style={{ textAlign: 'right', fontSize: '0.82rem', fontWeight: 600, color: '#4b5563' }}>{formatMoney(total.a)}</div>}
+                  {!isMobile && <div style={{ textAlign: 'right', fontSize: '0.82rem', fontWeight: 600, color: '#4b5563' }}>{formatMoney(total.act)}</div>}
+                  <div style={{ textAlign: 'right', fontSize: '0.82rem', fontWeight: 700, color: '#4b5563' }}>{formatMoney(total.av)}</div>
+                </div>
+                {info.map(({ acc, c, owed, short }) => (
+                  <div key={acc.id} data-testid="cc-row" style={{ display: 'grid', gridTemplateColumns: cols, alignItems: 'center', columnGap: '10px', rowGap: '6px', padding: isMobile ? '10px 12px' : '8px 14px', borderBottom: '1px solid #eef0f3' }}>
+                    <div style={{ minWidth: 0 }}>
+                      <div style={{ fontWeight: 600, fontSize: '0.95rem' }}>{acc.name}</div>
+                      <div style={{ fontSize: '0.72rem', color: '#6b7280', marginTop: '2px' }}>
+                        Set aside {formatMoney(c.setAsideMonth)} · Paid {formatMoney(c.paidMonth)}
+                      </div>
+                      <div style={{ fontSize: '0.75rem', marginTop: '2px', color: owed === 0 || short <= 0.004 ? '#17603a' : '#8a4b00', fontWeight: 600 }}>
+                        {owed === 0 ? 'Nothing owed' : short <= 0.004 ? `Covers the full ${formatMoney(owed)} balance` : `${formatMoney(short)} short of the ${formatMoney(owed)} balance`}
+                      </div>
+                    </div>
+                    {!isMobile && (
+                      <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+                        <AssignedInput value={c.assignedMonth} ariaLabel={`Assigned payment ${acc.name}`} onCommit={n => handleAssignPayment(acc.id, n)} />
+                      </div>
+                    )}
+                    {!isMobile && <div style={{ textAlign: 'right', fontSize: '0.88rem', color: '#4b5563' }}>{formatMoney(-c.paidMonth)}</div>}
+                    <div style={{ textAlign: 'right' }}>
+                      <span style={{ display: 'inline-block', minWidth: '64px', textAlign: 'center', padding: '3px 10px', borderRadius: '999px', fontWeight: 700, fontSize: '0.85rem', whiteSpace: 'nowrap', backgroundColor: owed > 0 && short > 0.004 ? '#ffe7c2' : availColors(c.available).bg, color: owed > 0 && short > 0.004 ? '#8a4b00' : availColors(c.available).fg }}>
+                        {formatMoney(c.available)}
+                      </span>
+                    </div>
+                    {isMobile && (
+                      <div style={{ gridColumn: '1 / -1', fontSize: '0.85rem' }}>
+                        <span style={{ color: '#6b7280' }}>Assigned: </span>
+                        <AssignedInput value={c.assignedMonth} ariaLabel={`Assigned payment ${acc.name}`} onCommit={n => handleAssignPayment(acc.id, n)} />
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            );
+          })()}
         </div>
       )}
 
@@ -4382,7 +4670,7 @@ export default function BudgetApp() {
               />
               <select
                 value={txType}
-                onChange={e => { setTxType(e.target.value); if (e.target.value !== 'expense') setTxSplitLines(null); }}
+                onChange={e => { setTxType(e.target.value); setTxSplitLines(null); }}
                 aria-label="Type"
                 disabled={!!editingTxId && txType === 'transfer'}
                 style={{ padding: '8px', border: '1px solid #d1d5db', borderRadius: '6px', fontSize: '0.9rem' }}
@@ -4414,6 +4702,16 @@ export default function BudgetApp() {
                     <option key={acc.id} value={acc.id}>{acc.name}</option>
                   ))}
                 </select>
+              )}
+              {txType === 'income' && !editingTxId && txSplitLines && renderFormSplit(txSplitLines, setTxSplitLines, txAmount, true)}
+              {txType === 'income' && !editingTxId && !isCreditCard(accounts.find(a => a.id === txAccountId)) && (
+                <button
+                  type="button"
+                  onClick={() => (txSplitLines ? setTxSplitLines(null) : setTxSplitLines([{ envelopeId: '', amount: '' }]))}
+                  style={{ gridColumn: '1 / -1', justifySelf: 'start', background: 'none', border: 'none', color: '#2563eb', cursor: 'pointer', padding: 0, fontSize: '0.85rem', fontWeight: '600' }}
+                >
+                  {txSplitLines ? 'Keep it all in Ready to Assign' : 'Send some to envelopes'}
+                </button>
               )}
               {txType === 'expense' && editingTxId && isSplitTx(transactions.find(t => t.id === editingTxId)) && (
                 <div style={{ gridColumn: 'span 2', fontSize: '0.8rem', color: '#6b7280', padding: '6px 0' }}>
@@ -4832,6 +5130,31 @@ export default function BudgetApp() {
                                 })}
                               </div>
                             )}
+                            {incomeAllocs(tx).length > 0 && countsTowardRTA(tx) && (
+                              <div style={{ marginTop: '4px', display: 'flex', flexDirection: 'column', gap: '2px' }}>
+                                {incomeAllocs(tx).map((a, i) => {
+                                  const ae = envelopes.find(e => e.id === a.envelopeId);
+                                  return (
+                                    <div key={i} data-testid="income-alloc" style={{ fontSize: '0.75rem', color: '#059669' }}>
+                                      → {ae ? ae.name + (ae.isDeleted ? ' (deleted)' : '') : 'Unknown envelope'}: {plainMoney(a.amount)}
+                                    </div>
+                                  );
+                                })}
+                                <div style={{ fontSize: '0.72rem', color: '#6b7280' }}>
+                                  {plainMoney(round2(Number(tx.amount) - incomeAllocs(tx).reduce((s, a) => s + a.amount, 0)))} stays in Ready to Assign
+                                </div>
+                              </div>
+                            )}
+                            {countsTowardRTA(tx) && (
+                              <button
+                                type="button"
+                                onClick={() => (splitTxId === tx.id ? closeSplit() : openSplit(tx))}
+                                disabled={locked}
+                                style={{ opacity: locked ? 0.4 : 1, marginTop: '4px', background: 'none', border: 'none', color: '#2563eb', cursor: 'pointer', padding: '2px 0', fontSize: '0.75rem', fontWeight: '600' }}
+                              >
+                                {splitTxId === tx.id ? 'Close' : incomeAllocs(tx).length ? 'Edit envelopes' : 'Send to envelopes'}
+                              </button>
+                            )}
                             {tx.type === 'expense' && !tx.isTransfer && !isSplitTx(tx) && (
                               <select
                                 value={tx.envelopeId || ''}
@@ -4884,10 +5207,11 @@ export default function BudgetApp() {
                             )}
                             {splitTxId === tx.id && (() => {
                               const left = splitRemaining(tx.amount);
+                              const inc = tx.type === 'income';
                               return (
                                 <div data-testid="split-editor" style={{ marginTop: '8px', padding: '10px', backgroundColor: '#f9fafb', border: '1px solid #e5e7eb', borderRadius: '8px' }}>
                                   <div style={{ fontSize: '0.8rem', fontWeight: 'bold', marginBottom: '6px' }}>
-                                    Split ${Number(tx.amount).toFixed(2)} across envelopes
+                                    {inc ? `Send part of $${Number(tx.amount).toFixed(2)} straight to envelopes` : `Split $${Number(tx.amount).toFixed(2)} across envelopes`}
                                   </div>
                                   {splitDraft.map((line, i) => (
                                     <div key={i} style={{ display: 'flex', gap: '6px', marginBottom: '6px', alignItems: 'center' }}>
@@ -4897,7 +5221,7 @@ export default function BudgetApp() {
                                         aria-label={`Split line ${i + 1} envelope`}
                                         style={{ flex: '1 1 auto', minWidth: 0, padding: '5px', border: '1px solid #d1d5db', borderRadius: '6px', fontSize: '0.8rem' }}
                                       >
-                                        <option value="">No envelope</option>
+                                        <option value="">{inc ? 'Choose envelope' : 'No envelope'}</option>
                                         {line.envelopeId && envelopes.find(e => e.id === line.envelopeId && (e.isDeleted || e.isHidden)) && (
                                           <option value={line.envelopeId}>{envelopes.find(e => e.id === line.envelopeId).name} ({envelopes.find(e => e.id === line.envelopeId).isDeleted ? 'deleted' : 'hidden'})</option>
                                         )}
@@ -4919,7 +5243,7 @@ export default function BudgetApp() {
                                       >
                                         Rest
                                       </button>
-                                      {splitDraft.length > 2 && (
+                                      {splitDraft.length > (inc ? 1 : 2) && (
                                         <button
                                           type="button"
                                           onClick={() => removeSplitLine(i)}
@@ -4931,8 +5255,10 @@ export default function BudgetApp() {
                                       )}
                                     </div>
                                   ))}
-                                  <div style={{ fontSize: '0.8rem', marginBottom: '8px', color: Math.abs(left) < 0.005 ? '#059669' : '#b45309' }}>
-                                    {Math.abs(left) < 0.005
+                                  <div style={{ fontSize: '0.8rem', marginBottom: '8px', color: inc ? (left < -0.005 ? '#b45309' : '#059669') : Math.abs(left) < 0.005 ? '#059669' : '#b45309' }}>
+                                    {inc
+                                      ? (left < -0.005 ? `$${Math.abs(left).toFixed(2)} over` : Math.abs(left) < 0.005 ? 'All of it goes to envelopes' : `$${left.toFixed(2)} stays in Ready to Assign`)
+                                      : Math.abs(left) < 0.005
                                       ? 'Fully assigned'
                                       : left > 0
                                         ? `$${left.toFixed(2)} left to assign`
@@ -4945,10 +5271,10 @@ export default function BudgetApp() {
                                     <button
                                       type="button"
                                       onClick={handleSaveSplit}
-                                      disabled={Math.abs(left) >= 0.005}
-                                      style={{ backgroundColor: Math.abs(left) >= 0.005 ? '#9ca3af' : '#2563eb', color: 'white', border: 'none', borderRadius: '6px', padding: '5px 12px', cursor: Math.abs(left) >= 0.005 ? 'not-allowed' : 'pointer', fontSize: '0.8rem', fontWeight: 'bold' }}
+                                      disabled={inc ? left < -0.005 : Math.abs(left) >= 0.005}
+                                      style={{ backgroundColor: (inc ? left < -0.005 : Math.abs(left) >= 0.005) ? '#9ca3af' : '#2563eb', color: 'white', border: 'none', borderRadius: '6px', padding: '5px 12px', cursor: (inc ? left < -0.005 : Math.abs(left) >= 0.005) ? 'not-allowed' : 'pointer', fontSize: '0.8rem', fontWeight: 'bold' }}
                                     >
-                                      Save split
+                                      {inc ? 'Save' : 'Save split'}
                                     </button>
                                     <button type="button" onClick={closeSplit} style={{ background: 'none', border: 'none', color: '#6b7280', cursor: 'pointer', fontSize: '0.8rem' }}>
                                       Cancel
@@ -5346,6 +5672,41 @@ export default function BudgetApp() {
 
         </div>
       </div>
+
+      {/* Phone layout: floating add button and bottom tab bar */}
+      {isMobile && ['budget', 'accounts', 'transactions'].includes(activeTab) && (
+        <button
+          onClick={() => { setTxFilterAccount(''); openTab('transactions'); scrollToTop(); }}
+          aria-label="Add transaction"
+          style={{ position: 'fixed', right: '16px', bottom: '72px', width: '52px', height: '52px', borderRadius: '50%', border: 'none', backgroundColor: '#2f6fb3', color: 'white', fontSize: '1.8rem', lineHeight: 1, boxShadow: '0 4px 12px rgba(0,0,0,0.25)', cursor: 'pointer', zIndex: 30 }}
+        >
+          +
+        </button>
+      )}
+      {isMobile && (
+        <nav data-testid="mobile-tabs" style={{ position: 'fixed', left: 0, right: 0, bottom: 0, height: '58px', display: 'flex', backgroundColor: 'white', borderTop: '1px solid #e3e6eb', zIndex: 30 }}>
+          {MOBILE_TABS.map(([tab, label, glyph]) => {
+            const active = activeTab === tab;
+            return (
+              <button
+                key={tab}
+                onClick={() => { if (tab === 'transactions') setTxFilterAccount(''); openTab(tab); }}
+                style={{ flex: 1, background: 'none', border: 'none', cursor: 'pointer', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: '2px', color: active ? '#2f6fb3' : '#6b7280', fontWeight: active ? 700 : 500, fontSize: '0.68rem', borderTop: active ? '2px solid #2f6fb3' : '2px solid transparent' }}
+              >
+                <span style={{ fontSize: '1.1rem', lineHeight: 1 }}>{glyph}</span>
+                {label}
+              </button>
+            );
+          })}
+          <button
+            onClick={() => setSidebarOpen(true)}
+            style={{ flex: 1, background: 'none', border: 'none', cursor: 'pointer', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: '2px', color: '#6b7280', fontSize: '0.68rem', borderTop: '2px solid transparent' }}
+          >
+            <span style={{ fontSize: '1.1rem', lineHeight: 1 }}>⋯</span>
+            More
+          </button>
+        </nav>
+      )}
     </div>
   );
 }
