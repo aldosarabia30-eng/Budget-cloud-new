@@ -865,6 +865,39 @@ const compactMoney = (n) => {
 };
 
 // Grouped bar chart: money out (blue) and money in (green) for each month. Click a month to open it.
+// Simple line chart for one series: points = [{ label, value }]. Handles negative values.
+const LineChart = ({ points, color = '#2f6fb3', ariaLabel, format = (v) => formatMoney(v) }) => {
+  const W = 640, H = 210, padL = 62, padR = 10, padT = 12, padB = 30;
+  if (!points.length) return null;
+  const vals = points.map(p => p.value);
+  let lo = Math.min(0, ...vals), hi = Math.max(0, ...vals);
+  if (hi === lo) hi = lo + 1;
+  const span = hi - lo;
+  const x = (i) => padL + (points.length === 1 ? (W - padL - padR) / 2 : (i * (W - padL - padR)) / (points.length - 1));
+  const y = (v) => padT + (1 - (v - lo) / span) * (H - padT - padB);
+  const path = points.map((p, i) => `${i ? 'L' : 'M'}${x(i).toFixed(1)},${y(p.value).toFixed(1)}`).join(' ');
+  const step = Math.max(1, Math.ceil(points.length / 8));
+  const ticks = [lo, lo + span / 2, hi];
+  return (
+    <svg viewBox={`0 0 ${W} ${H}`} role="img" aria-label={ariaLabel} style={{ width: '100%', height: 'auto', display: 'block' }}>
+      {ticks.map((t, i) => (
+        <g key={i}>
+          <line x1={padL} x2={W - padR} y1={y(t)} y2={y(t)} stroke="#eef0f3" />
+          <text x={padL - 6} y={y(t) + 4} fontSize="11" textAnchor="end" fill="#6b7280">{format(t)}</text>
+        </g>
+      ))}
+      {lo < 0 && <line x1={padL} x2={W - padR} y1={y(0)} y2={y(0)} stroke="#cbd2dc" strokeDasharray="4 3" />}
+      <path d={path} fill="none" stroke={color} strokeWidth="2.5" strokeLinejoin="round" />
+      {points.map((p, i) => (
+        <g key={i}>
+          <circle cx={x(i)} cy={y(p.value)} r={points.length > 24 ? 2 : 3.5} fill={color}><title>{`${p.label}: ${format(p.value)}`}</title></circle>
+          {i % step === 0 && <text x={x(i)} y={H - 10} fontSize="11" textAnchor={i === points.length - 1 && i > 0 ? 'end' : i === 0 ? 'start' : 'middle'} fill="#6b7280">{p.label}</text>}
+        </g>
+      ))}
+    </svg>
+  );
+};
+
 const ReportChart = ({ data, selectedKey, onSelect }) => {
   const W = 640;
   const H = 210;
@@ -1144,6 +1177,10 @@ export default function BudgetApp() {
   });
   useEffect(() => { try { sessionStorage.setItem('budget-unlocked-tx', JSON.stringify(unlockedTxIds)); } catch (e) { /* storage unavailable */ } }, [unlockedTxIds]);
   const [selectedEnvId, setSelectedEnvId] = useState(null); // envelope row opened for actions
+  const [envFilter, setEnvFilter] = useState('all'); // 'all' | 'underfunded' | 'overspent' | 'available'
+  const [autoMenuOpen, setAutoMenuOpen] = useState(false);
+  const [reportView, setReportView] = useState('spending'); // 'spending' | 'networth' | 'age'
+  const autoPayeeEnvRef = useRef('');
   const [unlockAskId, setUnlockAskId] = useState(null); // row showing the "unlock?" question
   const [splitTxId, setSplitTxId] = useState(null); // transaction whose split editor is open
   const [splitDraft, setSplitDraft] = useState([]); // [{ envelopeId, amount: string }]
@@ -1215,6 +1252,8 @@ export default function BudgetApp() {
   // Sync guards: never save before the initial load finishes, and never echo remote data back.
   const loadedRef = useRef(false);
   const lastJsonRef = useRef('');
+  const histRef = useRef({ undo: [], redo: [], prev: null, prevKey: '', lastPush: 0, skip: false, reset: false, resetUntil: 0 });
+  const [, setHistTick] = useState(0);
 
   // Fetch budget data from Supabase & subscribe to real-time changes
   useEffect(() => {
@@ -1225,6 +1264,8 @@ export default function BudgetApp() {
     const applyRemote = (raw) => {
       // Older saves kept one lump "assigned" per envelope; convert to monthly assignments.
       const d = migrateBudgetData(raw);
+      histRef.current.reset = true; // data loaded from the server starts a fresh undo history
+      histRef.current.resetUntil = Date.now() + 500;
       // Remember what the server has (not the converted copy) so a converted budget gets saved back.
       lastJsonRef.current = snapshot(raw);
       setAccounts(d.accounts ?? []);
@@ -1293,6 +1334,73 @@ export default function BudgetApp() {
 
     return () => clearTimeout(timer);
   }, [budgetId, accounts, groups, collapsedGroups, collapsedAccountTx, envelopes, transactions, debts, investments]);
+
+  // ----- Undo / redo -----
+  // Every change to the budget data is remembered. Edits made within ~1.2 s of each other (typing in a box) count as one step.
+  const histKey = (d) => stable({ accounts: d.accounts, groups: d.groups, envelopes: d.envelopes, transactions: d.transactions, debts: d.debts, investments: d.investments });
+  useEffect(() => {
+    const h = histRef.current;
+    const cur = { accounts, groups, envelopes, transactions, debts, investments };
+    const key = histKey(cur);
+    const now = Date.now();
+    if (h.prev === null || h.reset || now < h.resetUntil) {
+      h.undo = []; h.redo = []; h.prev = cur; h.prevKey = key; h.reset = false;
+      setHistTick(t => t + 1);
+      return;
+    }
+    if (key === h.prevKey) return;
+    if (h.skip) { h.skip = false; h.prev = cur; h.prevKey = key; setHistTick(t => t + 1); return; }
+    if (now - h.lastPush > 1200 || !h.undo.length) {
+      h.undo.push(h.prev);
+      if (h.undo.length > 50) h.undo.shift();
+    }
+    h.lastPush = now;
+    h.redo = [];
+    h.prev = cur;
+    h.prevKey = key;
+    setHistTick(t => t + 1);
+  }, [accounts, groups, envelopes, transactions, debts, investments]);
+
+  const applySnapshot = (snap) => {
+    const h = histRef.current;
+    if (histKey(snap) !== h.prevKey) h.skip = true;
+    setAccounts(snap.accounts); setGroups(snap.groups); setEnvelopes(snap.envelopes);
+    setTransactions(snap.transactions); setDebts(snap.debts); setInvestments(snap.investments);
+  };
+  const undo = () => {
+    const h = histRef.current;
+    if (!h.undo.length) return;
+    const snap = h.undo.pop();
+    h.redo.push(h.prev);
+    h.lastPush = 0;
+    applySnapshot(snap);
+    setHistTick(t => t + 1);
+    showNotification('Undone.');
+  };
+  const redo = () => {
+    const h = histRef.current;
+    if (!h.redo.length) return;
+    const snap = h.redo.pop();
+    h.undo.push(h.prev);
+    h.lastPush = 0;
+    applySnapshot(snap);
+    setHistTick(t => t + 1);
+    showNotification('Redone.');
+  };
+  const undoRef = useRef({});
+  undoRef.current = { undo, redo };
+  useEffect(() => {
+    const onKey = (e) => {
+      if (!(e.ctrlKey || e.metaKey) || String(e.key).toLowerCase() !== 'z') return;
+      const el = e.target;
+      const tag = el && el.tagName;
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || (el && el.isContentEditable)) return; // let text boxes undo their own typing
+      e.preventDefault();
+      if (e.shiftKey) undoRef.current.redo(); else undoRef.current.undo();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, []);
 
   // Keep the side menu sensible when the window is resized (open on desktop, closed drawer on mobile)
   useEffect(() => {
@@ -1799,17 +1907,44 @@ export default function BudgetApp() {
   const sortedTransactionDates = Object.keys(groupedTransactions).sort((a, b) => b.localeCompare(a));
 
   // Auto-pick an envelope only on a confident match (3+ chars, prefix match), not on any shared letter.
+  // Payees you've used before, most recent first, each with the envelope you last filed it under
+  const payeeMemory = useMemo(() => {
+    const map = new Map();
+    activeTransactions.forEach(t => {
+      if (t.isTransfer || !t.payee || t.payee === 'Reconciliation Adjustment') return;
+      const key = String(t.payee).trim().toLowerCase();
+      if (!key) return;
+      const cur = map.get(key);
+      const envId = t.type === 'expense' && !isSplitTx(t) ? t.envelopeId || '' : '';
+      if (!cur) map.set(key, { name: String(t.payee).trim(), date: t.date || '', envId, envDate: envId ? t.date || '' : '', count: 1 });
+      else {
+        cur.count++;
+        if ((t.date || '') > cur.date) { cur.date = t.date || ''; cur.name = String(t.payee).trim(); }
+        if (envId && (t.date || '') >= cur.envDate) { cur.envId = envId; cur.envDate = t.date || ''; }
+      }
+    });
+    return [...map.values()].sort((a, b) => (b.date || '').localeCompare(a.date || '') || b.count - a.count);
+  }, [transactions]);
+
   const handlePayeeChange = (val) => {
     setTxPayee(val);
+    if (editingTxId || txType !== 'expense' || txSplitLines) return;
     const typed = val.trim().toLowerCase();
-    if (typed.length < 3) return;
-    const matchedEnv = visibleEnvelopes.find(env => {
-      const name = env.name.toLowerCase();
-      return name.startsWith(typed) || (name.length >= 3 && typed.startsWith(name));
-    });
-    if (matchedEnv) {
-      setTxEnvelopeId(matchedEnv.id);
+    if (typed.length < 2) return;
+    // Don't override an envelope the person picked themselves
+    if (txEnvelopeId && txEnvelopeId !== autoPayeeEnvRef.current) return;
+    const known = payeeMemory.find(p => p.name.toLowerCase() === typed);
+    let envId = '';
+    if (known && known.envId && visibleEnvelopes.some(e => e.id === known.envId)) envId = known.envId;
+    else if (typed.length >= 3) {
+      const matchedEnv = visibleEnvelopes.find(env => {
+        const name = env.name.toLowerCase();
+        return name.startsWith(typed) || (name.length >= 3 && typed.startsWith(name));
+      });
+      if (matchedEnv) envId = matchedEnv.id;
     }
+    if (envId) { autoPayeeEnvRef.current = envId; setTxEnvelopeId(envId); }
+    else if (txEnvelopeId && txEnvelopeId === autoPayeeEnvRef.current) { autoPayeeEnvRef.current = ''; setTxEnvelopeId(''); }
   };
 
   const handleAddGroup = (e) => {
@@ -1937,6 +2072,83 @@ export default function BudgetApp() {
     showNotification(`Copied ${count} assignment${count === 1 ? '' : 's'} from ${monthLabel(prevKey)}.`);
   };
 
+  // ----- Needed this month, filters and Auto-Assign -----
+  // How much more this envelope needs assigned in the month shown to stay on track with its goal.
+  const getNeeded = (env, row) => {
+    const prog = getTargetProgress(env, row);
+    if (!prog || prog.left <= 0.004) return 0;
+    if (env.goalType === 'target_by_date' && /^\d{4}-\d{2}/.test(env.targetDate || '')) {
+      const [ty, tm] = env.targetDate.slice(0, 7).split('-').map(Number);
+      const [by, bm] = budgetMonth.split('-').map(Number);
+      const monthsLeft = Math.max(1, (ty - by) * 12 + (tm - bm) + 1);
+      const perMonth = (prog.target - row.start) / monthsLeft;
+      return Math.max(0, Math.min(prog.left, Math.ceil((perMonth - row.budgeted - row.income) * 100) / 100));
+    }
+    return Math.max(0, Math.round(prog.left * 100) / 100);
+  };
+
+  const AUTO_OPTIONS = [
+    ['underfunded', 'Underfunded', 'Fill each goal to what it needs this month'],
+    ['lastAssigned', 'Assigned last month', "Match last month's assignments"],
+    ['lastSpent', 'Spent last month', 'Assign what each envelope spent last month'],
+    ['avgAssigned', 'Average assigned', 'Average of the last 3 months'],
+    ['avgSpent', 'Average spent', 'Average spending of the last 3 months'],
+    ['reset', 'Reset assigned', "Set this month's assignments to $0"]
+  ];
+  const runAutoAssign = (mode) => {
+    setAutoMenuOpen(false);
+    const rowOf = (env, key) => (budgetView.rowsByEnv[env.id] && budgetView.rowsByEnv[env.id].get(key)) || null;
+    const prevKeys = [1, 2, 3].map(n => addMonthKey(budgetMonth, -n));
+    const ordered = groups.flatMap(g => visibleEnvelopes.filter(e => e.group === g));
+    let remaining = Math.max(0, rtaShown);
+    const updates = new Map();
+    let total = 0;
+    ordered.forEach(env => {
+      const row = envRow(env);
+      if (mode === 'reset') {
+        if (row.budgeted !== 0) { updates.set(env.id, 0); total += row.budgeted; }
+        return;
+      }
+      let target;
+      if (mode === 'underfunded') target = row.budgeted + getNeeded(env, row);
+      else if (mode === 'lastAssigned') target = (rowOf(env, prevKeys[0]) || { budgeted: 0 }).budgeted;
+      else if (mode === 'lastSpent') target = Math.max(0, (rowOf(env, prevKeys[0]) || { spent: 0 }).spent);
+      else if (mode === 'avgAssigned') target = prevKeys.reduce((t, k) => t + (rowOf(env, k) || { budgeted: 0 }).budgeted, 0) / 3;
+      else target = Math.max(0, prevKeys.reduce((t, k) => t + (rowOf(env, k) || { spent: 0 }).spent, 0) / 3);
+      target = round2(target);
+      const delta = round2(target - row.budgeted);
+      if (delta <= 0.004) return; // never lowers what is already assigned
+      const take = round2(Math.min(delta, remaining));
+      if (take <= 0.004) return;
+      remaining = round2(remaining - take);
+      updates.set(env.id, round2(row.budgeted + take));
+      total = round2(total + take);
+    });
+    if (!updates.size) {
+      showNotification(mode === 'reset' ? 'Nothing is assigned this month.' : rtaShown <= 0.004 ? 'There is no Ready to Assign money to use.' : 'Nothing to auto-assign.');
+      return;
+    }
+    setEnvelopes(prev => prev.map(e => (updates.has(e.id) ? { ...e, budget: { ...(e.budget || {}), [budgetMonth]: updates.get(e.id) } } : e)));
+    showNotification(mode === 'reset'
+      ? `Reset ${updates.size} envelope${updates.size === 1 ? '' : 's'} to $0. Use Undo to bring them back.`
+      : `Assigned ${formatMoney(total)} across ${updates.size} envelope${updates.size === 1 ? '' : 's'}. Use Undo to revert.`);
+  };
+
+  const envCounts = { underfunded: 0, overspent: 0, available: 0 };
+  visibleEnvelopes.forEach(e => {
+    const r = envRow(e);
+    if (getNeeded(e, r) > 0.004) envCounts.underfunded++;
+    if (r.end < -0.004) envCounts.overspent++;
+    if (r.end > 0.004) envCounts.available++;
+  });
+  const passesEnvFilter = (env) => {
+    if (envFilter === 'all') return true;
+    const r = envRow(env);
+    if (envFilter === 'underfunded') return getNeeded(env, r) > 0.004;
+    if (envFilter === 'overspent') return r.end < -0.004;
+    return r.end > 0.004;
+  };
+
   // ----- Import from Actual Budget -----
   const axPreview = useMemo(() => {
     if (!ax) return null;
@@ -1978,6 +2190,69 @@ export default function BudgetApp() {
       a.remove();
       setTimeout(() => URL.revokeObjectURL(url), 1000);
     } catch (err) { /* a failed backup download should not block the import; the in-app Undo still works */ }
+  };
+
+  // ----- Export -----
+  const downloadText = (filename, text, mime) => {
+    try {
+      const blob = new Blob([text], { type: mime });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    } catch (err) {
+      showNotification("Couldn't start the download in this browser.");
+    }
+  };
+  const csvCell = (v) => {
+    const t = v == null ? '' : String(v);
+    return /[",\n\r]/.test(t) ? '"' + t.replace(/"/g, '""') + '"' : t;
+  };
+  const toCSV = (rows) => '\ufeff' + rows.map(r => r.map(csvCell).join(',')).join('\r\n') + '\r\n';
+
+  const exportTransactionsCSV = () => {
+    const accName = new Map(accounts.map(a => [a.id, a.name]));
+    const envLabel = (id) => { const e = envelopes.find(x => x.id === id); return e ? `${e.group}: ${e.name}` : ''; };
+    const rows = [['Date', 'Account', 'Payee', 'Envelope', 'Notes', 'Outflow', 'Inflow', 'Cleared', 'Reconciled']];
+    [...activeTransactions].sort((a, b) => String(a.date).localeCompare(String(b.date))).forEach(t => {
+      const acc = accName.get(t.accountId) || '';
+      const status = [t.cleared || t.reconciled ? 'Yes' : 'No', t.reconciled ? 'Yes' : 'No'];
+      const money = (amt) => (t.type === 'income' ? ['', Number(amt).toFixed(2)] : [Number(amt).toFixed(2), '']);
+      if (isSplitTx(t)) {
+        t.splits.forEach((sp, i) => rows.push([t.date, acc, t.payee, envLabel(sp.envelopeId), `${t.notes ? t.notes + ' ' : ''}(split ${i + 1}/${t.splits.length})`, ...money(sp.amount), ...status]));
+      } else {
+        const env = t.type === 'income'
+          ? incomeAllocs(t).map(a => `${envLabel(a.envelopeId)} ${a.amount.toFixed(2)}`).join(' | ')
+          : t.isTransfer ? '' : envLabel(t.envelopeId);
+        rows.push([t.date, acc, t.payee, env, t.notes || '', ...money(t.amount), ...status]);
+      }
+    });
+    downloadText(`transactions-${getTodayISO()}.csv`, toCSV(rows), 'text/csv;charset=utf-8');
+    showNotification(`Exported ${rows.length - 1} rows.`);
+  };
+
+  const exportBudgetCSV = () => {
+    const spend = {}; const inc = {};
+    activeTransactions.forEach(t => {
+      const k = txMonth(t);
+      txParts(t).forEach(p => { (spend[p.envelopeId] = spend[p.envelopeId] || {})[k] = ((spend[p.envelopeId] || {})[k] || 0) + p.amount; });
+      if (countsTowardRTA(t)) incomeAllocs(t).forEach(a => { (inc[a.envelopeId] = inc[a.envelopeId] || {})[k] = ((inc[a.envelopeId] || {})[k] || 0) + a.amount; });
+    });
+    const through = todayMonth > budgetEarliest ? todayMonth : budgetEarliest;
+    const rows = [['Month', 'Group', 'Envelope', 'Assigned', 'From income', 'Activity', 'Available']];
+    activeEnvelopes.forEach(env => {
+      const tl = buildEnvTimeline(env.budget || {}, spend[env.id], through, inc[env.id]);
+      [...tl.keys()].sort().forEach(k => {
+        const r = tl.get(k);
+        rows.push([k, env.group, env.name, r.budgeted.toFixed(2), r.income.toFixed(2), r.spent.toFixed(2), r.end.toFixed(2)]);
+      });
+    });
+    downloadText(`budget-by-month-${getTodayISO()}.csv`, toCSV(rows), 'text/csv;charset=utf-8');
+    showNotification(`Exported ${rows.length - 1} rows.`);
   };
 
   const handleRunActualImport = () => {
@@ -3156,6 +3431,130 @@ export default function BudgetApp() {
     </label>
   );
 
+  // ----- Net worth and age of money reports -----
+  const renderOtherReport = (view, viewPills) => {
+    const card = { backgroundColor: 'white', padding: '14px', borderRadius: '10px', boxShadow: '0 1px 3px rgba(0,0,0,0.1)' };
+    const statBox = (label, value, color, sub) => (
+      <div style={{ ...card, padding: '12px' }}>
+        <div style={{ fontSize: '0.7rem', color: '#6b7280', textTransform: 'uppercase', letterSpacing: '0.03em' }}>{label}</div>
+        <div style={{ fontSize: '1.15rem', fontWeight: 700, color: color || '#1f2937', marginTop: '2px' }}>{value}</div>
+        {sub && <div style={{ fontSize: '0.72rem', color: '#6b7280', marginTop: '2px' }}>{sub}</div>}
+      </div>
+    );
+    const dated = activeTransactions.filter(t => /^\d{4}-\d{2}-\d{2}$/.test(t.date || ''));
+    const firstMonth = dated.reduce((m, t) => (t.date.slice(0, 7) < m ? t.date.slice(0, 7) : m), todayMonth);
+    const lastMonth = dated.reduce((m, t) => (t.date.slice(0, 7) > m ? t.date.slice(0, 7) : m), todayMonth);
+    const monthKeys = [];
+    for (let k = firstMonth; k <= lastMonth && monthKeys.length < 600; k = addMonthKey(k, 1)) monthKeys.push(k);
+    const shortLabel = (k) => `${monthLabel(k, true).slice(0, 3)} ${k.slice(2, 4)}`;
+
+    if (view === 'networth') {
+      const accs = activeAccounts;
+      const monthSums = new Map(); // accountId -> Map(month -> net change)
+      dated.forEach(t => {
+        const m = monthSums.get(t.accountId) || new Map();
+        const k = t.date.slice(0, 7);
+        m.set(k, (m.get(k) || 0) + (t.type === 'income' ? 1 : -1) * Number(t.amount));
+        monthSums.set(t.accountId, m);
+      });
+      const running = new Map(accs.map(a => [a.id, Number(a.initialBalance) || 0]));
+      const series = monthKeys.map(k => {
+        let total = 0;
+        accs.forEach(a => {
+          const m = monthSums.get(a.id);
+          running.set(a.id, running.get(a.id) + ((m && m.get(k)) || 0));
+          total += running.get(a.id);
+        });
+        return { label: shortLabel(k), value: round2(total), key: k };
+      });
+      const cash = accs.filter(a => !isCreditCard(a)).reduce((t, a) => t + getAccountBalance(a.id), 0);
+      const cards = accs.filter(isCreditCard).reduce((t, a) => t + getAccountBalance(a.id), 0);
+      const invValue = activeInvestments.reduce((t, i) => t + (Number(i.value) || 0), 0);
+      const otherDebt = debts.filter(d => !d.isDeleted).reduce((t, d) => t + (Number(d.balance) || 0), 0);
+      const nowTotal = round2(cash + cards + invValue - otherDebt);
+      const first = series[0] ? series[0].value : 0;
+      const last = series.length ? series[series.length - 1].value : 0;
+      return (
+        <div data-testid="networth-report" style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+          {viewPills}
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: '10px' }}>
+            {statBox('Net worth', formatMoney(nowTotal), nowTotal < 0 ? '#dc2626' : '#1f2937', 'Everything below, today')}
+            {statBox('Cash & savings', formatMoney(cash), '#059669')}
+            {statBox('Credit cards', formatMoney(cards), cards < 0 ? '#dc2626' : '#1f2937')}
+            {statBox('Investments', formatMoney(invValue), '#1f2937', 'Current value')}
+            {statBox('Other debts', formatMoney(-otherDebt), otherDebt > 0 ? '#dc2626' : '#1f2937', 'From the Debts tab')}
+          </div>
+          <div style={card}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: '8px', flexWrap: 'wrap', marginBottom: '6px' }}>
+              <h3 style={{ margin: 0, fontSize: '1rem' }}>Accounts over time</h3>
+              {series.length > 1 && (
+                <span style={{ fontSize: '0.8rem', color: last - first >= 0 ? '#059669' : '#dc2626', fontWeight: 600 }}>
+                  {last - first >= 0 ? '▲' : '▼'} {formatMoney(Math.abs(last - first))} since {series[0].label}
+                </span>
+              )}
+            </div>
+            <LineChart points={series} ariaLabel="Account balances over time" />
+            <div style={{ fontSize: '0.72rem', color: '#9ca3af', marginTop: '4px' }}>
+              Month-end total of all your accounts (credit card debt counts against you). Investments and Debts-tab balances are shown only as they are today, because their history isn't tracked.
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+    // ---- Age of money: how old the dollars you spend are (first in, first out) ----
+    const cashIds = new Set(activeAccounts.filter(a => !isCreditCard(a)).map(a => a.id));
+    const cardIds = new Set(activeAccounts.filter(isCreditCard).map(a => a.id));
+    const toMs = (d) => new Date(d + 'T00:00:00').getTime();
+    const events = [];
+    const openingTotal = activeAccounts.filter(a => !isCreditCard(a)).reduce((t, a) => t + Math.max(0, Number(a.initialBalance) || 0), 0);
+    if (openingTotal > 0 && dated.length) events.push({ date: dated.reduce((m, t) => (t.date < m ? t.date : m), dated[0].date), kind: 'in', amount: openingTotal, order: 0 });
+    dated.forEach(t => {
+      const amt = Number(t.amount) || 0;
+      if (!cashIds.has(t.accountId)) return;
+      if (t.type === 'income' && !t.isTransfer && amt > 0) events.push({ date: t.date, kind: 'in', amount: amt, order: 1 });
+      else if (t.type === 'expense' && !t.isTransfer) events.push(amt >= 0 ? { date: t.date, kind: 'out', amount: amt, order: 2 } : { date: t.date, kind: 'in', amount: -amt, order: 1 });
+      else if (t.type === 'expense' && t.isTransfer && cardIds.has(t.transferAccountId)) events.push({ date: t.date, kind: 'out', amount: amt, order: 2 }); // paying a card
+    });
+    events.sort((a, b) => a.date.localeCompare(b.date) || a.order - b.order);
+    const queue = [];
+    const ages = []; // [{ date, age }]
+    events.forEach(ev => {
+      if (ev.kind === 'in') { queue.push({ ms: toMs(ev.date), left: ev.amount }); return; }
+      let need = ev.amount, taken = 0, weighted = 0;
+      while (need > 0.004 && queue.length) {
+        const head = queue[0];
+        const use = Math.min(head.left, need);
+        taken += use; weighted += use * head.ms; need -= use; head.left -= use;
+        if (head.left <= 0.004) queue.shift();
+      }
+      if (taken > 0.004) ages.push({ date: ev.date, age: Math.max(0, (toMs(ev.date) - weighted / taken) / 86400000) });
+    });
+    const avgLast = (list) => { const l = list.slice(-10); return l.length ? l.reduce((t, a) => t + a.age, 0) / l.length : null; };
+    const current = avgLast(ages);
+    const ageSeries = monthKeys.map(k => {
+      const upTo = ages.filter(a => a.date.slice(0, 7) <= k);
+      const v = avgLast(upTo);
+      return v === null ? null : { label: shortLabel(k), value: Math.round(v) };
+    }).filter(Boolean);
+    return (
+      <div data-testid="age-report" style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+        {viewPills}
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: '10px' }}>
+          {statBox('Age of money', current === null ? '—' : `${Math.round(current)} day${Math.round(current) === 1 ? '' : 's'}`, '#1f2937', current === null ? 'Not enough spending yet' : 'Average of your last 10 outflows')}
+          {statBox('Outflows counted', String(ages.length), '#1f2937', 'Spending from cash accounts and card payments')}
+        </div>
+        <div style={card}>
+          <h3 style={{ margin: '0 0 6px 0', fontSize: '1rem' }}>Month by month</h3>
+          {ageSeries.length ? <LineChart points={ageSeries} ariaLabel="Age of money by month" format={(v) => `${Math.round(v)}d`} color="#7c3aed" /> : <p style={{ color: '#6b7280', fontSize: '0.9rem', margin: 0 }}>Add some income and spending to see this.</p>}
+          <div style={{ fontSize: '0.72rem', color: '#9ca3af', marginTop: '4px' }}>
+            Each time you spend, the money comes from your oldest income first. The age is how many days that money sat before you spent it. The higher it is, the more of a buffer you have between paychecks and bills.
+          </div>
+        </div>
+      </div>
+    );
+  };
+
   // ----- Shell pieces (YNAB-style sidebar, month bar, Ready to Assign pill) -----
   const SIDE_BG = '#1f2f4f';
   const sideItem = (key, active, onClick, label, right, opts = {}) => (
@@ -3220,6 +3619,13 @@ export default function BudgetApp() {
           This month
         </button>
       )}
+    </div>
+  );
+  const undoBtnStyle = (enabled) => ({ width: '34px', height: '34px', borderRadius: '8px', border: '1px solid #e3e6eb', backgroundColor: 'white', color: enabled ? '#1f2937' : '#cbd2dc', cursor: enabled ? 'pointer' : 'not-allowed', fontSize: '1.05rem', lineHeight: 1 });
+  const undoRedoButtons = (
+    <div style={{ display: 'flex', gap: '4px' }}>
+      <button onClick={undo} disabled={!histRef.current.undo.length} aria-label="Undo" title="Undo (Ctrl+Z)" style={undoBtnStyle(!!histRef.current.undo.length)}>↶</button>
+      <button onClick={redo} disabled={!histRef.current.redo.length} aria-label="Redo" title="Redo (Ctrl+Shift+Z)" style={undoBtnStyle(!!histRef.current.redo.length)}>↷</button>
     </div>
   );
   const MOBILE_TABS = [['budget', 'Budget', '◔'], ['accounts', 'Accounts', '▦'], ['transactions', 'Transactions', '☰'], ['reports', 'Reports', '◭']];
@@ -3336,6 +3742,7 @@ export default function BudgetApp() {
               ☰
             </button>
           )}
+          {undoRedoButtons}
           {activeTab === 'budget'
             ? monthNav
             : <h1 style={{ margin: 0, fontSize: '1.15rem', fontWeight: 700, color: '#111827' }}>{TAB_LABELS[activeTab]}{activeTab === 'transactions' && txFilterAccount ? ` · ${(accounts.find(a => a.id === txFilterAccount) || {}).name || ''}` : ''}</h1>}
@@ -3403,6 +3810,57 @@ export default function BudgetApp() {
             </label>
           )}
 
+          {/* Filters and Auto-Assign */}
+          {groups.length > 0 && (
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '8px', flexWrap: 'wrap', position: 'relative' }}>
+              <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
+                {[['all', 'All'], ['underfunded', 'Underfunded'], ['overspent', 'Overspent'], ['available', 'Available']].map(([key, label]) => {
+                  const n = key === 'all' ? null : envCounts[key];
+                  const active = envFilter === key;
+                  return (
+                    <button
+                      key={key}
+                      onClick={() => setEnvFilter(key)}
+                      aria-pressed={active}
+                      style={{ padding: '5px 12px', borderRadius: '999px', border: '1px solid ' + (active ? '#2f6fb3' : '#d5dae2'), backgroundColor: active ? '#2f6fb3' : 'white', color: active ? 'white' : '#4b5563', fontSize: '0.8rem', fontWeight: 600, cursor: 'pointer' }}
+                    >
+                      {label}{n ? ` ${n}` : ''}
+                    </button>
+                  );
+                })}
+              </div>
+              <div style={{ position: 'relative' }}>
+                <button
+                  onClick={() => setAutoMenuOpen(o => !o)}
+                  aria-haspopup="menu"
+                  aria-expanded={autoMenuOpen}
+                  style={{ padding: '5px 12px', borderRadius: '6px', border: '1px solid #c9dcf0', backgroundColor: 'white', color: '#2f6fb3', fontSize: '0.8rem', fontWeight: 700, cursor: 'pointer' }}
+                >
+                  Auto-Assign ▾
+                </button>
+                {autoMenuOpen && (
+                  <>
+                    <div onClick={() => setAutoMenuOpen(false)} style={{ position: 'fixed', inset: 0, zIndex: 9 }} />
+                    <div role="menu" data-testid="auto-menu" style={{ position: 'absolute', right: 0, top: '34px', width: '270px', backgroundColor: 'white', border: '1px solid #e3e6eb', borderRadius: '8px', boxShadow: '0 8px 24px rgba(0,0,0,0.15)', zIndex: 10, padding: '4px' }}>
+                      {AUTO_OPTIONS.map(([key, label, hint]) => (
+                        <button
+                          key={key}
+                          role="menuitem"
+                          onClick={() => runAutoAssign(key)}
+                          style={{ display: 'block', width: '100%', textAlign: 'left', background: 'none', border: 'none', padding: '8px 10px', borderRadius: '6px', cursor: 'pointer' }}
+                        >
+                          <div style={{ fontSize: '0.85rem', fontWeight: 600, color: '#1f2937' }}>{label}</div>
+                          <div style={{ fontSize: '0.72rem', color: '#6b7280' }}>{hint}</div>
+                        </button>
+                      ))}
+                      <div style={{ fontSize: '0.68rem', color: '#9ca3af', padding: '4px 10px 6px' }}>Uses Ready to Assign only and never lowers an amount (except Reset).</div>
+                    </div>
+                  </>
+                )}
+              </div>
+            </div>
+          )}
+
           {/* Column headings */}
           {!isMobile && groups.length > 0 && (
             <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0,1fr) 118px 104px 124px', columnGap: '10px', padding: '0 14px', fontSize: '0.68rem', fontWeight: 700, letterSpacing: '0.06em', color: '#6b7280', marginBottom: '-8px' }}>
@@ -3412,8 +3870,9 @@ export default function BudgetApp() {
 
           {/* Group Categories */}
           {groups.map(groupName => {
-            const groupEnvelopes = activeEnvelopes.filter(e => e.group === groupName && (showHiddenEnvelopes || !e.isHidden));
+            const groupEnvelopes = activeEnvelopes.filter(e => e.group === groupName && (showHiddenEnvelopes || !e.isHidden) && passesEnvFilter(e));
             const groupHasHidden = activeEnvelopes.some(e => e.group === groupName && e.isHidden);
+            if (envFilter !== 'all' && groupEnvelopes.length === 0) return null; // no matches in this group
             const isCollapsed = collapsedGroups[groupName] || dragState !== null; // everything folds while dragging
             const groupTotals = groupEnvelopes.reduce((t, e) => {
               const r = envRow(e);
@@ -3513,6 +3972,11 @@ export default function BudgetApp() {
                                       ? 'Target reached ✓'
                                       : `$${progress.left.toFixed(2)} left to reach target`}
                                   </div>
+                                </div>
+                              )}
+                              {env.goalType === 'target_by_date' && getNeeded(env, row) > 0.004 && (
+                                <div data-testid="needed-note" style={{ fontSize: '0.72rem', color: '#8a4b00', marginTop: '3px' }}>
+                                  Needs {formatMoney(getNeeded(env, row))} more this month to stay on track
                                 </div>
                               )}
                               {row.income > 0 && (
@@ -4330,6 +4794,21 @@ export default function BudgetApp() {
 
       {/* REPORTS TAB */}
       {activeTab === 'reports' && (() => {
+        const viewPills = (
+          <div style={{ backgroundColor: 'white', padding: '10px 14px', borderRadius: '10px', boxShadow: '0 1px 3px rgba(0,0,0,0.1)', display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
+            {[['spending', 'Spending'], ['networth', 'Net Worth'], ['age', 'Age of Money']].map(([key, label]) => (
+              <button
+                key={key}
+                onClick={() => setReportView(key)}
+                aria-pressed={reportView === key}
+                style={{ padding: '6px 12px', borderRadius: '16px', border: '1px solid ' + (reportView === key ? '#1e3a8a' : '#e5e7eb'), backgroundColor: reportView === key ? '#1e3a8a' : 'white', color: reportView === key ? 'white' : '#4b5563', fontWeight: 600, cursor: 'pointer', fontSize: '0.8rem' }}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+        );
+        if (reportView === 'networth' || reportView === 'age') return renderOtherReport(reportView, viewPills);
         const ADJ = 'Reconciliation Adjustment'; // bookkeeping entries, not real spending
         const reportTx = activeTransactions.filter(t => t.payee !== ADJ && !t.isTransfer && /^\d{4}-\d{2}-\d{2}$/.test(t.date || ''));
         const isMonth = reportMode === 'month';
@@ -4473,6 +4952,7 @@ export default function BudgetApp() {
 
         return (
           <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+            {viewPills}
             {/* Period controls */}
             <div style={{ ...cardStyle, display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
               <div style={{ display: 'flex', gap: '6px' }}>
@@ -4645,6 +5125,9 @@ export default function BudgetApp() {
         <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
           <div style={{ backgroundColor: 'white', padding: '14px', borderRadius: '10px', boxShadow: '0 1px 3px rgba(0,0,0,0.1)' }}>
             <h3 style={{ margin: '0 0 10px 0', fontSize: '1rem' }}>{editingTxId ? 'Edit Transaction' : '+ Add Transaction'}</h3>
+            <datalist id="payee-suggestions">
+              {payeeMemory.slice(0, 200).map(pm => <option key={pm.name} value={pm.name} />)}
+            </datalist>
             <form onSubmit={handleAddTransaction} style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(130px, 1fr))', gap: '10px' }}>
               {txType === 'transfer' ? (
                 <div style={{ gridColumn: 'span 2', fontSize: '0.8rem', color: '#6b7280', alignSelf: 'center' }}>
@@ -4654,6 +5137,8 @@ export default function BudgetApp() {
                 <input
                   type="text"
                   placeholder="Payee"
+                  list="payee-suggestions"
+                  autoComplete="off"
                   value={txPayee}
                   onChange={e => handlePayeeChange(e.target.value)}
                   style={{ padding: '8px', border: '1px solid #d1d5db', borderRadius: '6px', fontSize: '0.9rem', gridColumn: 'span 2' }}
@@ -5426,6 +5911,17 @@ export default function BudgetApp() {
       {/* IMPORT TAB */}
       {activeTab === 'import' && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+          <div data-testid="export-card" style={{ backgroundColor: 'white', padding: '14px', borderRadius: '10px', boxShadow: '0 1px 3px rgba(0,0,0,0.1)' }}>
+            <h3 style={{ margin: '0 0 6px 0', fontSize: '1rem' }}>Export your data</h3>
+            <p style={{ margin: '0 0 10px 0', fontSize: '0.85rem', color: '#6b7280' }}>
+              Download a copy any time. The files are made in your browser.
+            </p>
+            <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+              <button onClick={exportTransactionsCSV} style={{ backgroundColor: 'white', color: '#2f6fb3', border: '1px solid #c9dcf0', padding: '7px 12px', borderRadius: '6px', fontWeight: 'bold', cursor: 'pointer', fontSize: '0.85rem' }}>Transactions (CSV)</button>
+              <button onClick={exportBudgetCSV} style={{ backgroundColor: 'white', color: '#2f6fb3', border: '1px solid #c9dcf0', padding: '7px 12px', borderRadius: '6px', fontWeight: 'bold', cursor: 'pointer', fontSize: '0.85rem' }}>Budget by month (CSV)</button>
+              <button onClick={() => { downloadBudgetBackup(); showNotification('Full backup downloaded.'); }} style={{ backgroundColor: 'white', color: '#2f6fb3', border: '1px solid #c9dcf0', padding: '7px 12px', borderRadius: '6px', fontWeight: 'bold', cursor: 'pointer', fontSize: '0.85rem' }}>Full backup (JSON)</button>
+            </div>
+          </div>
           <div style={{ backgroundColor: 'white', padding: '14px', borderRadius: '10px', boxShadow: '0 1px 3px rgba(0,0,0,0.1)' }}>
             <h3 style={{ margin: '0 0 6px 0', fontSize: '1rem' }}>Import from Actual Budget</h3>
             <p style={{ margin: '0 0 10px 0', fontSize: '0.85rem', color: '#6b7280' }}>
