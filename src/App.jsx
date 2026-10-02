@@ -339,14 +339,14 @@ const AvailPill = ({ value, row, onClick, label }) => {
 };
 
 // Assigned box on an envelope row: type a number or a sum. Each valid value is applied as you type.
-const AssignedInput = ({ value, onCommit, ariaLabel }) => {
+const AssignedInput = ({ value, onCommit, ariaLabel, width = '92px', big = false }) => {
   const [draft, setDraft] = useState(null);
   return (
     <SplitAmountInput
       value={draft === null ? String(value) : draft}
       ariaLabel={ariaLabel}
-      width="92px"
-      inputStyle={{ textAlign: 'right' }}
+      width={width}
+      inputStyle={big ? { textAlign: 'center', fontSize: '1.6rem', fontWeight: 700, padding: '10px', boxSizing: 'border-box', width: '100%', minWidth: 0 } : { textAlign: 'right' }}
       placeholder="0.00"
       onFocus={() => setDraft(String(value))}
       onChange={v => {
@@ -4543,7 +4543,7 @@ export default function BudgetApp() {
                       key={key}
                       onClick={() => setEnvFilter(key)}
                       aria-pressed={active}
-                      style={{ padding: '5px 12px', borderRadius: '999px', border: '1px solid ' + (active ? '#2f6fb3' : '#d5dae2'), backgroundColor: active ? '#2f6fb3' : 'white', color: active ? 'white' : '#4b5563', fontSize: '0.8rem', fontWeight: 600, cursor: 'pointer' }}
+                      style={{ flexShrink: 0, whiteSpace: 'nowrap', padding: '5px 12px', borderRadius: '999px', border: '1px solid ' + (active ? '#2f6fb3' : '#d5dae2'), backgroundColor: active ? '#2f6fb3' : 'white', color: active ? 'white' : '#4b5563', fontSize: '0.8rem', fontWeight: 600, cursor: 'pointer' }}
                     >
                       {label}{n ? ` ${n}` : ''}
                     </button>
@@ -4747,25 +4747,56 @@ export default function BudgetApp() {
                               </div>
                             )}
                             {selected && (
-                              <div data-testid="env-actions" style={{ gridColumn: '1 / -1', display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap', paddingTop: '2px' }}>
-                                {isMobile && (
-                                  <>
-                                    <div style={{ fontSize: '0.85rem' }}>
-                                      <span style={{ color: '#6b7280' }}>Assigned: </span>
-                                      <AssignedInput
-                                        value={row.budgeted}
-                                        ariaLabel={`Assigned ${env.name}`}
-                                        onCommit={n => handleAssignMonth(env.id, n)}
-                                      />
+                              <div data-testid="env-actions" style={{ gridColumn: '1 / -1', display: 'flex', alignItems: 'center', gap: isMobile ? '14px' : '10px', flexWrap: 'wrap', paddingTop: '2px' }}>
+                                {(() => {
+                                  const needed = getNeeded(env, row);
+                                  const prevRow = (budgetView.rowsByEnv[env.id] && budgetView.rowsByEnv[env.id].get(addMonthKey(budgetMonth, -1))) || null;
+                                  const lastAssigned = prevRow ? Math.max(0, prevRow.budgeted) : 0;
+                                  const lastSpent = prevRow ? Math.max(0, prevRow.spent) : 0;
+                                  const cur = Number(row.budgeted) || 0;
+                                  const setTo = (n) => handleAssignMonth(env.id, Math.max(0, round2(n)));
+                                  const chips = [
+                                    needed > 0.004 && [`Fund goal ${formatMoney(needed)}`, cur + needed],
+                                    lastAssigned > 0.004 && Math.abs(lastAssigned - cur) > 0.004 && [`Last month ${formatMoney(lastAssigned)}`, lastAssigned],
+                                    lastSpent > 0.004 && Math.abs(lastSpent - cur) > 0.004 && [`Spent last month ${formatMoney(lastSpent)}`, lastSpent],
+                                    cur > 0.004 && ['Clear', 0]
+                                  ].filter(Boolean);
+                                  const stepBtn = isMobile ? { width: '52px', height: '52px', flexShrink: 0, borderRadius: '14px', border: '1px solid #d1d5db', backgroundColor: '#f9fafb', fontSize: '1.6rem', lineHeight: 1, color: '#1f2937', cursor: 'pointer' } : { height: '30px', padding: '0 12px', borderRadius: '8px', border: '1px solid #d1d5db', backgroundColor: '#f9fafb', fontSize: '0.85rem', fontWeight: 600, color: '#1f2937', cursor: 'pointer' };
+                                  return (
+                                    <div data-testid="assign-block" style={{ width: '100%', display: 'flex', flexDirection: isMobile ? 'column' : 'row', flexWrap: 'wrap', alignItems: isMobile ? 'stretch' : 'center', gap: isMobile ? '10px' : '8px' }}>
+                                      <div style={{ display: isMobile ? 'flex' : 'none', justifyContent: 'space-between', fontSize: '0.8rem', color: '#6b7280' }}>
+                                        <span>Assigned this month</span>
+                                        <span>Ready to Assign <strong style={{ color: rtaShown < -0.004 ? '#b42318' : '#17603a' }}>{formatMoney(rtaShown)}</strong></span>
+                                      </div>
+                                      <div style={{ display: 'flex', gap: isMobile ? '10px' : '6px', alignItems: 'center' }}>
+                                        <button type="button" aria-label={`Assign $10 less to ${env.name}`} onClick={() => setTo(cur - 10)} style={stepBtn}>{isMobile ? '−' : '− $10'}</button>
+                                        {isMobile && (
+                                          <div style={{ flex: 1, minWidth: 0 }}>
+                                            <AssignedInput value={row.budgeted} ariaLabel={`Assigned ${env.name}`} onCommit={n => handleAssignMonth(env.id, n)} width="100%" big />
+                                          </div>
+                                        )}
+                                        <button type="button" aria-label={`Assign $10 more to ${env.name}`} onClick={() => setTo(cur + 10)} style={stepBtn}>{isMobile ? '+' : '+ $10'}</button>
+                                      </div>
+                                      {chips.length > 0 && (
+                                        <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+                                          {chips.map(([label, val]) => (
+                                            <button key={label} type="button" onClick={() => setTo(val)} style={{ padding: isMobile ? '9px 14px' : '5px 11px', borderRadius: '999px', border: '1px solid ' + (label === 'Clear' ? '#e5e7eb' : '#bfdbfe'), backgroundColor: label === 'Clear' ? 'white' : '#eff6ff', color: label === 'Clear' ? '#6b7280' : '#1d4ed8', fontWeight: 600, fontSize: '0.85rem', cursor: 'pointer' }}>{label}</button>
+                                          ))}
+                                        </div>
+                                      )}
+                                      <div style={{ display: isMobile ? 'flex' : 'none', justifyContent: 'space-between', fontSize: '0.85rem', color: '#374151', padding: '8px 0', borderTop: '1px solid #f3f4f6' }}>
+                                        <span>Activity <strong>{formatMoney(spent)}</strong></span>
+                                        <span>Available <strong style={{ color: remaining < -0.004 ? '#b42318' : '#17603a' }}>{formatMoney(remaining)}</strong></span>
+                                      </div>
                                     </div>
-                                    <div style={{ fontSize: '0.85rem' }}>Activity: <strong>{formatMoney(spent)}</strong></div>
-                                  </>
-                                )}
+                                  );
+                                })()}
+                                <div style={isMobile ? { width: '100%', display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px' } : { display: 'contents' }}>
                               {remaining < -0.004 && (
                                 <button
                                   onClick={() => (moveUi && moveUi.envId === env.id ? closeMove() : openMove(env, 'cover'))}
                                   aria-label={`Cover overspending on ${env.name}`}
-                                  style={{ backgroundColor: '#fee2e2', color: '#b91c1c', border: 'none', borderRadius: '6px', padding: isMobile ? '12px 16px' : '4px 8px', cursor: 'pointer', fontSize: isMobile ? '0.95rem' : '0.75rem', fontWeight: 'bold' }}
+                                  style={{ backgroundColor: '#fee2e2', color: '#b91c1c', border: 'none', borderRadius: '6px', padding: isMobile ? '13px 10px' : '4px 8px', width: isMobile ? '100%' : undefined, cursor: 'pointer', fontSize: isMobile ? '0.95rem' : '0.75rem', fontWeight: 'bold' }}
                                 >
                                   Cover
                                 </button>
@@ -4774,7 +4805,7 @@ export default function BudgetApp() {
                                 <button
                                   onClick={() => (moveUi && moveUi.envId === env.id ? closeMove() : openMove(env, 'move'))}
                                   aria-label={`Move money from ${env.name}`}
-                                  style={{ backgroundColor: 'white', color: '#2563eb', border: '1px solid #bfdbfe', borderRadius: '6px', padding: isMobile ? '12px 16px' : '3px 8px', cursor: 'pointer', fontSize: isMobile ? '0.95rem' : '0.75rem', fontWeight: 'bold' }}
+                                  style={{ backgroundColor: 'white', color: '#2563eb', border: '1px solid #bfdbfe', borderRadius: '6px', padding: isMobile ? '13px 10px' : '3px 8px', width: isMobile ? '100%' : undefined, cursor: 'pointer', fontSize: isMobile ? '0.95rem' : '0.75rem', fontWeight: 'bold' }}
                                 >
                                   Move
                                 </button>
@@ -4783,7 +4814,7 @@ export default function BudgetApp() {
                                 <button
                                   onClick={() => handleUnhideEnvelope(env)}
                                   aria-label={`Unhide envelope ${env.name}`}
-                                  style={{ background: 'white', color: '#2563eb', border: '1px solid #bfdbfe', borderRadius: '6px', padding: isMobile ? '12px 16px' : '3px 8px', cursor: 'pointer', fontSize: isMobile ? '0.95rem' : '0.75rem', fontWeight: 'bold' }}
+                                  style={{ background: 'white', color: '#2563eb', border: '1px solid #bfdbfe', borderRadius: '6px', padding: isMobile ? '13px 10px' : '3px 8px', width: isMobile ? '100%' : undefined, cursor: 'pointer', fontSize: isMobile ? '0.95rem' : '0.75rem', fontWeight: 'bold' }}
                                 >
                                   Unhide
                                 </button>
@@ -4792,7 +4823,7 @@ export default function BudgetApp() {
                                   onClick={() => (hideEnvUi === env.id ? setHideEnvUi(null) : requestHideEnvelope(env))}
                                   title="Hide this envelope. Its history stays."
                                   aria-label={`Hide envelope ${env.name}`}
-                                  style={{ background: 'none', color: '#6b7280', border: 'none', cursor: 'pointer', fontSize: isMobile ? '0.95rem' : '0.75rem', padding: isMobile ? '12px' : '4px' }}
+                                  style={{ background: isMobile ? '#f3f4f6' : 'none', borderRadius: isMobile ? '10px' : undefined, color: '#6b7280', border: 'none', cursor: 'pointer', fontSize: isMobile ? '0.95rem' : '0.75rem', padding: isMobile ? '12px' : '4px' }}
                                 >
                                   Hide
                                 </button>
@@ -4801,16 +4832,17 @@ export default function BudgetApp() {
                                 onClick={() => startEditEnv(env)}
                                 title="Edit envelope"
                                 aria-label="Edit envelope"
-                                style={{ background: 'none', border: 'none', color: '#2563eb', cursor: 'pointer', fontSize: isMobile ? '0.95rem' : '0.95rem', padding: isMobile ? '12px' : '4px' }}
+                                style={{ background: isMobile ? '#f3f4f6' : 'none', borderRadius: isMobile ? '10px' : undefined, border: 'none', color: '#2563eb', cursor: 'pointer', fontSize: isMobile ? '0.95rem' : '0.95rem', padding: isMobile ? '12px' : '4px' }}
                               >
                                 {isMobile ? 'Edit' : '✎'}
                               </button>
                               <button
                                 onClick={() => handleSoftDeleteEnvelope(env.id)}
-                                style={{ background: 'none', border: 'none', color: '#dc2626', cursor: 'pointer', fontSize: '0.9rem', padding: isMobile ? '12px' : '4px' }}
+                                style={{ background: isMobile ? '#fef2f2' : 'none', borderRadius: isMobile ? '10px' : undefined, border: 'none', color: '#dc2626', cursor: 'pointer', fontSize: '0.9rem', padding: isMobile ? '12px' : '4px' }}
                               >
                                 {isMobile ? 'Delete' : '✕'}
                               </button>
+                              </div>
                               </div>
                             )}
                             {moveUi && moveUi.envId === env.id && (
