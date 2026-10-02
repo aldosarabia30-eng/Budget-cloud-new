@@ -1663,11 +1663,27 @@ export default function BudgetApp() {
   const [barMenu, setBarMenu] = useState(null); // 'flag' | 'more' | null
   const [collapsedSplits, setCollapsedSplits] = useState([]);
   const [moveHover, setMoveHover] = useState(false);
+  const [planEdit, setPlanEdit] = useState(false);
+  const [planFilterOpen, setPlanFilterOpen] = useState(false);
+  const [envMenuId, setEnvMenuId] = useState(null);
+  const [assignOpen, setAssignOpen] = useState(false);
+  const [mTxId, setMTxId] = useState(null);
+  const [mTxMenu, setMTxMenu] = useState(null); // 'type' | 'cat' | 'flag' | null
+  const [mTxMore, setMTxMore] = useState(false);
+  const [mSearchOpen, setMSearchOpen] = useState(false);
+  const [txClearedNew, setTxClearedNew] = useState(false);
+  const [txFlagNew, setTxFlagNew] = useState(null);
+  const [addCard, setAddCard] = useState(false); // phone add screen: transfer to a credit card
+  const [addPick, setAddPick] = useState(null); // 'type' | 'payee' | 'cat' | null
+  const [addPayeeQ, setAddPayeeQ] = useState('');
+  const [addLight, setAddLight] = useState(false); // phone: use the full form (splits, envelope amounts)
+  const [closedOpen, setClosedOpen] = useState(false);
   const [payPop, setPayPop] = useState(null); // { fromId, amount, date }
   const [showCsv, setShowCsv] = useState(false); // phone: CSV import collapsed by default
   const [manageAccounts, setManageAccounts] = useState(false); // phone: Accounts tab shows overview unless true
   const [showRtaInfo, setShowRtaInfo] = useState(false); // phone: Ready to Assign breakdown
   useEffect(() => { setTxSheetOpen(false); }, [transactions]);
+  useEffect(() => { if (txSheetOpen && !txAccountId) { const f = accounts.find(a => !a.isDeleted && !a.isHidden); if (f) setTxAccountId(f.id); } }, [txSheetOpen]);
   useEffect(() => { setSelectedEnvId(null); setSelectMode(false); setSwipe(null); }, [activeTab]);
   useEffect(() => { setAdjustAmt(''); }, [selectedEnvId]);
   useEffect(() => { if (!editingTxId && addCardRef.current) addCardH.current = addCardRef.current.offsetHeight; });
@@ -3157,6 +3173,11 @@ export default function BudgetApp() {
 
   const cancelEditTx = () => {
     setEditingTxId(null);
+    setTxClearedNew(false);
+    setTxFlagNew(null);
+    setAddCard(false);
+    setAddPick(null);
+    setAddLight(false);
     setTxPayee('');
     setTxAmount('');
     setTxNotes('');
@@ -3401,7 +3422,7 @@ export default function BudgetApp() {
         return;
       }
       const transferId = 'xfer-' + Date.now();
-      const base = { date, amount: amt, envelopeId: '', notes: txNotes, isDeleted: false, cleared: false, reconciled: false, isTransfer: true, transferId };
+      const base = { date, amount: amt, envelopeId: '', notes: txNotes, isDeleted: false, cleared: !!txClearedNew, reconciled: false, isTransfer: true, transferId };
       const outLeg = { ...base, id: 'tx-' + Date.now() + '-o', type: 'expense', accountId: from.id, transferAccountId: to.id, payee: 'Transfer: ' + to.name };
       const inLeg = { ...base, id: 'tx-' + Date.now() + '-i', type: 'income', accountId: to.id, transferAccountId: from.id, payee: 'Transfer: ' + from.name };
       // Turning an ordinary transaction into a transfer replaces it with the new pair
@@ -3506,9 +3527,10 @@ export default function BudgetApp() {
       envelopeId: splits ? '' : singleEnv,
       notes: txNotes,
       isDeleted: false,
-      cleared: false,
+      cleared: !!txClearedNew,
       reconciled: false
     };
+    if (txFlagNew) newTx.flag = txFlagNew;
     if (splits) newTx.splits = splits;
     if (allocations) newTx.allocations = allocations;
 
@@ -3519,6 +3541,8 @@ export default function BudgetApp() {
     setTxNotes('');
     setTxSplitLines(null);
     setTxDate(getTodayISO());
+    setTxClearedNew(false);
+    setTxFlagNew(null);
     showNotification(splits ? `Transaction recorded, split across ${splits.length} envelopes.`
       : allocations ? `Income recorded. ${formatMoney(allocations.reduce((s, a) => s + a.amount, 0))} went into ${allocations.length} envelope${allocations.length === 1 ? '' : 's'}.`
       : 'Transaction recorded.');
@@ -5485,7 +5509,612 @@ export default function BudgetApp() {
           </div>
   );
   const ageNow = useMemo(() => computeAgeCurrent(), [transactions, accounts]);
-  const MOBILE_TABS = [['budget', 'Plan', '◔'], ['accounts', 'Accounts', '▦'], ['add', 'Transaction', '+'], ['reports', 'Reports', '◭']];
+
+  // ----- Phone: dark YNAB-style Plan, envelope popup menu and Details screen -----
+  const MD = { bg: '#0a0a14', head: '#04040a', card: '#15152b', row: '#12122a', line: '#26263f', text: '#f4f4fb', muted: '#a4a4bf', accent: '#8f8fff', btn: '#5b5bff' };
+  const darkPill = (env, row, big) => {
+    const v = row.end;
+    let bg = '#4a4a5e', fg = '#aaaabf';
+    if (v < -0.004) { if (row.cashOver <= 0.004 && row.creditOver > 0.004) { bg = '#f59e0b'; fg = '#1a1200'; } else { bg = '#e5484d'; fg = '#fff'; } }
+    else if (env && getNeeded(env, row) > 0.004) { bg = '#f5c518'; fg = '#1a1500'; }
+    else if (v > 0.004) { bg = '#7cc427'; fg = '#0d1a00'; }
+    return <span style={{ display: 'inline-block', minWidth: big ? '64px' : '70px', textAlign: 'center', padding: big ? '3px 12px' : '3px 10px', borderRadius: '999px', fontWeight: 700, fontSize: big ? '0.95rem' : '0.88rem', backgroundColor: bg, color: fg }}>{formatMoney(v)}</span>;
+  };
+  const startEnvTx = (env) => {
+    cancelEditTx();
+    setTxType('expense');
+    setTxEnvelopeId(env.id);
+    setTxSheetOpen(true);
+    setEnvMenuId(null);
+  };
+  const renderMobilePlan = () => {
+    const filterLabels = { all: 'All', underfunded: 'Underfunded', overspent: 'Overspent', available: 'Money Available' };
+    const menuEnv = envMenuId ? envelopes.find(e => e.id === envMenuId && !e.isDeleted) : null;
+    const menuRow = menuEnv ? envRow(menuEnv) : null;
+    const cards = SHOW_CC_GROUP ? activeAccounts.filter(a => isCreditCard(a) && !a.isHidden) : [];
+    const colHead = (l, v, neg) => (<div style={{ textAlign: 'right', minWidth: '84px' }}><div style={{ fontSize: '0.78rem', fontWeight: 600, color: MD.text }}>{l}</div><div style={{ fontSize: '1.02rem', fontWeight: 800, color: neg ? '#ff7b7f' : '#fff' }}>{formatMoney(v)}</div></div>);
+    const circleBtn = { background: 'none', border: '2px solid ' + MD.text, borderRadius: '50%', width: '30px', height: '30px', color: MD.text, cursor: 'pointer', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', padding: 0, fontSize: '0.9rem' };
+    return (
+      <div data-testid="mobile-plan" style={{ backgroundColor: MD.bg, color: MD.text, minHeight: '100vh', paddingBottom: '150px' }}>
+        <div style={{ position: 'sticky', top: 0, zIndex: 25, backgroundColor: MD.bg, padding: '14px 16px 10px', display: 'flex', alignItems: 'center', gap: '12px' }}>
+          <button onClick={() => setMonthPickerOpen(o => !o)} aria-label="Choose month" data-testid="month-title" style={{ background: 'none', border: 'none', color: MD.text, fontWeight: 700, fontSize: '1.45rem', cursor: 'pointer', padding: 0, display: 'flex', alignItems: 'center', gap: '10px' }}>{monthLabel(budgetMonth)}<span style={{ backgroundColor: MD.text, color: MD.bg, borderRadius: '50%', width: '22px', height: '22px', fontSize: '0.75rem', display: 'inline-flex', alignItems: 'center', justifyContent: 'center' }}>⌄</span></button>
+          <div style={{ flex: 1 }} />
+          <button onClick={() => setPlanEdit(v => !v)} aria-pressed={planEdit} style={{ background: 'none', border: 'none', color: MD.text, fontWeight: 700, fontSize: '0.95rem', cursor: 'pointer' }}>{planEdit ? 'Done' : 'Edit'}</button>
+          <button onClick={() => setPlanFilterOpen(o => !o)} aria-label="Filter" aria-expanded={planFilterOpen} style={{ ...circleBtn, backgroundColor: envFilter !== 'all' ? MD.btn : 'transparent' }}>≡</button>
+          <button onClick={() => setSidebarOpen(true)} aria-label="Menu" data-testid="more-menu" style={{ background: 'none', border: 'none', color: MD.text, fontSize: '1.5rem', cursor: 'pointer', padding: '0 4px', lineHeight: 1 }}>⋮</button>
+        </div>
+        {planFilterOpen && (
+          <>
+            <div onClick={() => setPlanFilterOpen(false)} style={{ position: 'fixed', inset: 0, zIndex: 26 }} />
+            <div data-testid="plan-filter" style={{ position: 'absolute', right: '12px', top: '56px', zIndex: 27, backgroundColor: MD.card, border: '1px solid ' + MD.line, borderRadius: '12px', boxShadow: '0 10px 30px rgba(0,0,0,0.6)', minWidth: '210px', padding: '6px 0' }}>
+              {Object.entries(filterLabels).map(([k, l]) => (<button key={k} onClick={() => { setEnvFilter(k); setPlanFilterOpen(false); }} style={{ display: 'flex', justifyContent: 'space-between', width: '100%', background: 'none', border: 'none', color: MD.text, padding: '11px 16px', fontSize: '0.95rem', cursor: 'pointer', textAlign: 'left' }}><span>{l}</span>{envFilter === k && <span style={{ color: MD.accent }}>✓</span>}</button>))}
+              {hiddenEnvelopeCount > 0 && <button onClick={() => { setShowHiddenEnvelopes(v => !v); setPlanFilterOpen(false); }} style={{ display: 'flex', justifyContent: 'space-between', width: '100%', background: 'none', border: 'none', borderTop: '1px solid ' + MD.line, color: MD.text, padding: '11px 16px', fontSize: '0.95rem', cursor: 'pointer', textAlign: 'left' }}><span>Show hidden ({hiddenEnvelopeCount})</span>{showHiddenEnvelopes && <span style={{ color: MD.accent }}>✓</span>}</button>}
+            </div>
+          </>
+        )}
+        {monthPickerOpen && (
+          <div data-testid="month-picker" style={{ display: 'flex', justifyContent: 'center', padding: '0 16px 10px' }}>
+            <div style={{ backgroundColor: 'white', borderRadius: '999px', padding: '2px 8px' }}>{monthNav}</div>
+          </div>
+        )}
+        <div style={{ position: 'relative', padding: '0 16px 12px' }}>
+          <div data-testid="rta-pill" style={{ backgroundColor: rtaShown < -0.004 ? '#5c1a1a' : '#173a24', color: rtaShown < -0.004 ? '#ffb4b0' : '#9be7b4', borderRadius: '14px', padding: '10px 14px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '10px' }}>
+            <div><div style={{ fontSize: '1.3rem', fontWeight: 800, lineHeight: 1.1 }}>{formatMoney(rtaShown)}</div><div style={{ fontSize: '0.78rem', fontWeight: 600 }}>{rtaShown < -0.004 ? 'Over-assigned' : 'Ready to Assign'}{budgetMonth !== todayMonth ? ` · ${monthLabel(budgetMonth, true)}` : ''}</div></div>
+            <button onClick={() => setAutoMenuOpen(o => !o)} aria-haspopup="menu" aria-expanded={autoMenuOpen} aria-label="Assign Money" style={{ backgroundColor: MD.btn, color: 'white', border: 'none', borderRadius: '999px', padding: '9px 16px', fontWeight: 700, fontSize: '0.88rem', cursor: 'pointer' }}>⚡ Assign Money</button>
+          </div>
+          {renderAutoMenu()}
+        </div>
+        {envFilter !== 'all' && (
+          <div style={{ padding: '0 16px 10px' }}><button onClick={() => setEnvFilter('all')} style={{ backgroundColor: MD.card, color: MD.text, border: '1px solid ' + MD.line, borderRadius: '999px', padding: '5px 12px', fontSize: '0.82rem', cursor: 'pointer' }}>{filterLabels[envFilter]} ✕</button></div>
+        )}
+        {groups.length === 0 && (
+          <div style={{ padding: '30px 16px', textAlign: 'center', color: MD.muted }}>No groups or envelopes yet. <button onClick={() => setGroupPop('')} style={{ background: 'none', border: 'none', color: MD.accent, fontWeight: 700, cursor: 'pointer', fontSize: 'inherit' }}>Add a group</button></div>
+        )}
+        {groups.map(groupName => {
+          const list = activeEnvelopes.filter(e => e.group === groupName && (showHiddenEnvelopes || !e.isHidden) && passesEnvFilter(e));
+          if (envFilter !== 'all' && list.length === 0) return null;
+          const isCollapsed = !!collapsedGroups[groupName];
+          const tot = list.reduce((t, e) => { const r = envRow(e); return { a: t.a + r.budgeted + r.income, v: t.v + r.end }; }, { a: 0, v: 0 });
+          return (
+            <div key={groupName} data-testid="m-group">
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px', backgroundColor: MD.head, padding: '12px 16px', borderTop: '1px solid ' + MD.line }}>
+                <button onClick={() => toggleGroupCollapse(groupName)} aria-label={`${isCollapsed ? 'Expand' : 'Collapse'} ${groupName}`} style={{ background: 'none', border: 'none', color: MD.text, fontWeight: 800, fontSize: '1.08rem', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '10px', padding: 0, minWidth: 0, textAlign: 'left' }}><span style={{ fontSize: '0.8rem' }}>{isCollapsed ? '›' : '⌄'}</span><span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{groupName}</span></button>
+                <div style={{ flex: 1 }} />
+                {planEdit ? (<>
+                  <button onClick={() => setEnvPop({ group: groupName, name: '', x: 0, y: 0 })} aria-label={`Add envelope to ${groupName}`} style={{ background: MD.card, border: 'none', color: MD.accent, borderRadius: '8px', padding: '6px 10px', fontWeight: 700, cursor: 'pointer' }}>+ Envelope</button>
+                  <button onClick={() => { if (window.confirm(`Delete group '${groupName}' and its envelopes?`)) handleRemoveGroup(groupName); }} style={{ background: MD.card, border: 'none', color: '#ff7b7f', borderRadius: '8px', padding: '6px 10px', fontWeight: 700, cursor: 'pointer' }}>Delete</button>
+                </>) : (<>{colHead('Assigned', tot.a, false)}{colHead('Available', tot.v, tot.v < -0.004)}</>)}
+              </div>
+              {!isCollapsed && list.map(env => {
+                const row = envRow(env);
+                return (
+                  <button key={env.id} data-testid="env-row" onClick={() => setEnvMenuId(env.id)} style={{ display: 'grid', gridTemplateColumns: 'minmax(0,1fr) 96px 96px', alignItems: 'center', columnGap: '8px', width: '100%', textAlign: 'left', backgroundColor: MD.row, color: MD.text, border: 'none', borderTop: '1px solid ' + MD.line, padding: '15px 16px', cursor: 'pointer', fontSize: '1rem' }}>
+                    <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{env.name}{env.isHidden && <span style={{ marginLeft: '8px', fontSize: '0.7rem', color: MD.muted }}>hidden</span>}</span>
+                    <span style={{ textAlign: 'right' }}>{formatMoney((Number(row.budgeted) || 0) + (Number(row.income) || 0))}</span>
+                    <span style={{ textAlign: 'right' }}>{darkPill(env, row)}</span>
+                  </button>
+                );
+              })}
+              {!isCollapsed && list.length === 0 && <div style={{ backgroundColor: MD.row, color: MD.muted, padding: '12px 16px', borderTop: '1px solid ' + MD.line, fontSize: '0.88rem' }}>No envelopes in this group.</div>}
+            </div>
+          );
+        })}
+        {cards.length > 0 && envFilter === 'all' && (
+          <div data-testid="cc-payments">
+            <div style={{ backgroundColor: MD.head, padding: '12px 16px', borderTop: '1px solid ' + MD.line, fontWeight: 800, fontSize: '1.08rem' }}>Credit Card Payments</div>
+            {cards.map(acc => {
+              const c = budgetView.cc[acc.id] || { assignedMonth: 0, available: 0 };
+              const owed = Math.max(0, round2(-getAccountBalance(acc.id)));
+              const short = owed > 0.004 && c.available < owed - 0.004;
+              const bg = c.available <= 0.004 ? '#4a4a5e' : short ? '#f59e0b' : '#7cc427';
+              return (
+                <button key={acc.id} data-testid="cc-row" onClick={() => { const v = window.prompt(`Assign to ${acc.name} payment`, String(c.assignedMonth)); if (v !== null && !isNaN(evalAmount(v))) handleAssignPayment(acc.id, evalAmount(v)); }} style={{ display: 'grid', gridTemplateColumns: 'minmax(0,1fr) 96px 96px', alignItems: 'center', columnGap: '8px', width: '100%', textAlign: 'left', backgroundColor: MD.row, color: MD.text, border: 'none', borderTop: '1px solid ' + MD.line, padding: '15px 16px', cursor: 'pointer', fontSize: '1rem' }}>
+                  <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{acc.name}</span>
+                  <span style={{ textAlign: 'right' }}>{formatMoney(c.assignedMonth)}</span>
+                  <span style={{ textAlign: 'right' }}><span style={{ display: 'inline-block', minWidth: '70px', textAlign: 'center', padding: '3px 10px', borderRadius: '999px', fontWeight: 700, fontSize: '0.88rem', backgroundColor: bg, color: c.available <= 0.004 ? '#aaaabf' : '#10200a' }}>{formatMoney(c.available)}</span></span>
+                </button>
+              );
+            })}
+          </div>
+        )}
+        {planEdit && (
+          <div style={{ padding: '16px' }}><button onClick={() => setGroupPop('')} style={{ width: '100%', backgroundColor: MD.card, color: MD.accent, border: 'none', borderRadius: '12px', padding: '14px', fontWeight: 700, fontSize: '0.95rem', cursor: 'pointer' }}>+ Category Group</button></div>
+        )}
+        {/* new group / new envelope input sheets */}
+        {(groupPop !== null || envPop) && (
+          <>
+            <div onClick={() => { setGroupPop(null); setEnvPop(null); }} style={{ position: 'fixed', inset: 0, backgroundColor: 'rgba(0,0,0,0.6)', zIndex: 70 }} />
+            <form role="dialog" aria-label={envPop ? 'New Category' : 'New Category Group'} data-testid={envPop ? 'env-pop' : 'group-pop'} onSubmit={e => { e.preventDefault(); if (envPop) submitEnvPop(); else submitGroupPop(); }} style={{ position: 'fixed', left: 0, right: 0, bottom: 0, zIndex: 71, backgroundColor: MD.card, borderRadius: '18px 18px 0 0', padding: '18px 16px calc(20px + env(safe-area-inset-bottom))' }}>
+              <div style={{ fontWeight: 800, marginBottom: '10px' }}>{envPop ? `New envelope in ${envPop.group}` : 'New Category Group'}</div>
+              <input autoFocus value={envPop ? envPop.name : groupPop} onChange={e => (envPop ? setEnvPop({ ...envPop, name: e.target.value }) : setGroupPop(e.target.value))} placeholder={envPop ? 'New Category' : 'New Category Group'} aria-label={envPop ? 'New Category' : 'New Category Group'} style={{ width: '100%', boxSizing: 'border-box', padding: '12px', border: '2px solid ' + MD.btn, borderRadius: '10px', backgroundColor: MD.bg, color: MD.text }} />
+              <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '10px', marginTop: '14px' }}>
+                <button type="button" onClick={() => { setGroupPop(null); setEnvPop(null); }} style={{ backgroundColor: MD.line, color: MD.text, border: 'none', borderRadius: '10px', padding: '10px 18px', fontWeight: 600, cursor: 'pointer' }}>Cancel</button>
+                <button type="submit" style={{ backgroundColor: MD.btn, color: 'white', border: 'none', borderRadius: '10px', padding: '10px 24px', fontWeight: 700, cursor: 'pointer' }}>OK</button>
+              </div>
+            </form>
+          </>
+        )}
+        {/* popup menu for a tapped envelope */}
+        {menuEnv && (
+          <>
+            <div onClick={() => setEnvMenuId(null)} style={{ position: 'fixed', inset: 0, backgroundColor: 'rgba(0,0,0,0.55)', zIndex: 70 }} />
+            <div data-testid="env-menu" role="dialog" aria-label={menuEnv.name} style={{ position: 'fixed', left: 0, right: 0, bottom: 0, zIndex: 71, backgroundColor: MD.card, borderRadius: '18px 18px 0 0', padding: '14px 16px calc(18px + env(safe-area-inset-bottom))' }}>
+              <div style={{ width: '40px', height: '4px', borderRadius: '2px', backgroundColor: MD.line, margin: '0 auto 12px' }} />
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '12px' }}>
+                <div style={{ fontWeight: 800, fontSize: '1.15rem' }}>{menuEnv.name}</div>
+                {darkPill(menuEnv, menuRow, true)}
+              </div>
+              <button onClick={() => startEnvTx(menuEnv)} data-testid="menu-add-tx" style={{ display: 'flex', alignItems: 'center', gap: '12px', width: '100%', background: MD.bg, color: MD.text, border: 'none', borderRadius: '12px', padding: '15px 16px', fontSize: '1rem', fontWeight: 600, cursor: 'pointer', marginBottom: '8px' }}><span style={{ color: MD.accent, fontSize: '1.2rem' }}>⊕</span>Add Transaction</button>
+              <button onClick={() => { setSelectedEnvId(menuEnv.id); setEnvMenuId(null); setAssignOpen(false); }} data-testid="menu-details" style={{ display: 'flex', alignItems: 'center', gap: '12px', width: '100%', background: MD.bg, color: MD.text, border: 'none', borderRadius: '12px', padding: '15px 16px', fontSize: '1rem', fontWeight: 600, cursor: 'pointer' }}><span style={{ color: MD.accent, fontSize: '1.2rem' }}>ⓘ</span>Details</button>
+            </div>
+          </>
+        )}
+      </div>
+    );
+  };
+  const renderMobileEnvDetails = () => {
+    const env = selectedEnvId ? envelopes.find(e => e.id === selectedEnvId && !e.isDeleted) : null;
+    if (!env) return null;
+    const row = envRow(env);
+    const progress = getTargetProgress(env, row);
+    const needed = getNeeded(env, row);
+    const spent = row.spent;
+    const remaining = row.end;
+    const cur = Number(row.budgeted) || 0;
+    const setTo = (n) => handleAssignMonth(env.id, Math.max(0, round2(n)));
+    const prevRow = (budgetView.rowsByEnv[env.id] && budgetView.rowsByEnv[env.id].get(addMonthKey(budgetMonth, -1))) || null;
+    const lastAssigned = prevRow ? Math.max(0, prevRow.budgeted) : 0;
+    const mon = monthLabel(budgetMonth, true);
+    const prevMon = monthLabel(addMonthKey(budgetMonth, -1), true);
+    const close = () => { setSelectedEnvId(null); closeMove(); setHideEnvUi(null); setAssignOpen(false); };
+    const secTitle = (t) => <div style={{ fontWeight: 700, fontSize: '0.98rem', margin: '22px 4px 10px' }}>{t}</div>;
+    const lineRow = (l, right, onClick, testId) => (
+      <div role={onClick ? 'button' : undefined} data-testid={testId} onClick={onClick} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '16px 0', borderBottom: '1px solid ' + MD.line, fontSize: '1.02rem', cursor: onClick ? 'pointer' : 'default' }}>
+        <span>{l}</span><span style={{ display: 'flex', alignItems: 'center', gap: '12px', fontWeight: 700 }}>{right}{onClick && <span style={{ color: MD.muted, fontWeight: 400 }}>›</span>}</span>
+      </div>
+    );
+    const actBtn = { display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '10px', width: '100%', backgroundColor: '#1d1d38', color: MD.accent, border: 'none', borderRadius: '999px', padding: '14px', fontWeight: 700, fontSize: '1rem', cursor: 'pointer', marginBottom: '10px' };
+    const ringR = 38, ringC = 2 * Math.PI * ringR;
+    return (
+      <div data-testid="env-sheet" style={{ position: 'fixed', inset: 0, zIndex: 55, backgroundColor: MD.bg, color: MD.text, overflowY: 'auto', padding: '8px 16px calc(120px + env(safe-area-inset-bottom))', boxSizing: 'border-box' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '14px', padding: '10px 0' }}>
+          <button onClick={close} aria-label="Close" style={{ background: 'none', border: 'none', color: MD.text, fontSize: '1.6rem', cursor: 'pointer', padding: '0 4px', lineHeight: 1 }}>←</button>
+          <div style={{ fontWeight: 700, fontSize: '1.3rem', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 }}>{env.name}</div>
+        </div>
+        {secTitle('Balance')}
+        <div data-testid="env-summary" style={{ backgroundColor: MD.card, borderRadius: '22px', padding: '2px 18px' }}>
+          {lineRow(`From ${prevMon}`, formatMoney(row.start))}
+          {lineRow(`Assigned for ${mon}`, '+' + formatMoney((Number(row.budgeted) || 0) + (Number(row.income) || 0)), () => setAssignOpen(o => !o), 'assigned-line')}
+          {assignOpen && (
+            <div data-testid="assign-block" style={{ padding: '12px 0 16px', borderBottom: '1px solid ' + MD.line }}>
+              <div style={{ fontSize: '0.8rem', color: MD.muted, marginBottom: '8px', display: 'flex', justifyContent: 'space-between' }}><span>Assigned this month</span><span>Ready to Assign <strong style={{ color: rtaShown < -0.004 ? '#ff7b7f' : '#9be7b4' }}>{formatMoney(rtaShown)}</strong></span></div>
+              <AssignedInput value={row.budgeted} ariaLabel={`Assigned ${env.name}`} onCommit={n => handleAssignMonth(env.id, n)} width="100%" big />
+              <div style={{ display: 'flex', gap: '8px', marginTop: '10px' }}>
+                <button type="button" aria-label={`Subtract from ${env.name}`} onClick={() => { const v = evalAmount(adjustAmt); if (!(v > 0)) return; setTo(cur - v); setAdjustAmt(''); }} style={{ width: '52px', flexShrink: 0, borderRadius: '12px', border: 'none', backgroundColor: '#3a1c24', color: '#ff7b7f', fontSize: '1.5rem', cursor: 'pointer' }}>−</button>
+                <div style={{ flex: 1, minWidth: 0 }}><SplitAmountInput value={adjustAmt} onChange={setAdjustAmt} ariaLabel="Amount to add or subtract" placeholder="Amount to add or subtract" width="100%" wrapStyle={{ alignItems: 'stretch' }} inputStyle={{ textAlign: 'center', fontSize: '1.05rem', padding: '12px', boxSizing: 'border-box', width: '100%', minWidth: 0 }} /></div>
+                <button type="button" aria-label={`Add to ${env.name}`} onClick={() => { const v = evalAmount(adjustAmt); if (!(v > 0)) return; setTo(cur + v); setAdjustAmt(''); }} style={{ width: '52px', flexShrink: 0, borderRadius: '12px', border: 'none', backgroundColor: '#183a24', color: '#7cd68f', fontSize: '1.5rem', cursor: 'pointer' }}>+</button>
+              </div>
+              <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', marginTop: '10px' }}>
+                {[needed > 0.004 && [`Fund goal ${formatMoney(needed)}`, cur + needed], lastAssigned > 0.004 && Math.abs(lastAssigned - cur) > 0.004 && [`Last month ${formatMoney(lastAssigned)}`, lastAssigned], cur > 0.004 && ['Clear', 0]].filter(Boolean).map(([l, v]) => (
+                  <button key={l} type="button" onClick={() => setTo(v)} style={{ padding: '8px 14px', borderRadius: '999px', border: 'none', backgroundColor: '#1d1d38', color: MD.accent, fontWeight: 600, fontSize: '0.85rem', cursor: 'pointer' }}>{l}</button>
+                ))}
+              </div>
+            </div>
+          )}
+          {lineRow(`Activity in ${mon}`, (spent > 0 ? '-' : '+') + formatMoney(Math.abs(spent)), () => { setTxFilterEnvelope(env.id); setTxSearch(''); setSelectedEnvId(null); setTxFilterAccount(''); setTxFiltersOpen(true); openTab('transactions'); }, 'activity-line')}
+          <div role="button" onClick={() => { if (moveUi && moveUi.envId === env.id) closeMove(); else if (remaining < -0.004) openMove(env, 'cover'); else if (remaining > 0.004) openMove(env, 'move'); }} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '16px 0', fontSize: '1.02rem', cursor: 'pointer' }}>
+            <span>Available</span><span style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>{darkPill(env, row, true)}<span style={{ color: MD.muted }}>›</span></span>
+          </div>
+        </div>
+        {moveUi && moveUi.envId === env.id && (
+          <div data-testid="move-panel" style={{ marginTop: '12px', backgroundColor: MD.card, borderRadius: '18px', padding: '14px' }}>
+            <div style={{ fontWeight: 700, marginBottom: '10px' }}>{moveUi.mode === 'cover' ? `Cover ${env.name}'s overspending` : `Move money out of ${env.name}`}</div>
+            <div style={{ fontSize: '0.8rem', color: MD.muted, marginBottom: '4px' }}>{moveUi.mode === 'cover' ? 'From' : 'To'}</div>
+            <select value={moveUi.otherId} onChange={e => setMoveUi({ ...moveUi, otherId: e.target.value })} aria-label={moveUi.mode === 'cover' ? 'Take money from' : 'Move money to'} style={{ width: '100%', padding: '11px', borderRadius: '10px', border: 'none', marginBottom: '10px' }}>
+              <option value="">Choose…</option>
+              {(moveUi.mode === 'cover' ? rtaShown > 0.004 : true) && <option value="rta">Ready to Assign{moveUi.mode === 'cover' ? ` (${formatMoney(rtaShown)})` : ''}</option>}
+              {(moveUi.mode === 'cover' ? moveSources(env.id) : visibleEnvelopes.filter(e => e.id !== env.id)).map(e => (<option key={e.id} value={e.id}>{e.name}{moveUi.mode === 'cover' ? ` (${formatMoney(envRow(e).end)} available)` : ''}</option>))}
+            </select>
+            <SplitAmountInput value={moveUi.amount} onChange={v => setMoveUi({ ...moveUi, amount: v })} ariaLabel="Amount to move" width="100%" />
+            <div style={{ display: 'flex', gap: '10px', marginTop: '12px' }}>
+              <button onClick={confirmMove} style={{ flex: 1, backgroundColor: MD.btn, color: 'white', border: 'none', borderRadius: '999px', padding: '12px', fontWeight: 700, cursor: 'pointer' }}>{moveUi.mode === 'cover' ? 'Cover' : 'Move'}</button>
+              <button onClick={closeMove} style={{ flex: 1, backgroundColor: MD.line, color: MD.text, border: 'none', borderRadius: '999px', padding: '12px', cursor: 'pointer' }}>Cancel</button>
+            </div>
+          </div>
+        )}
+        {progress && (<>
+          {secTitle('Target')}
+          <div data-testid="target-card" style={{ backgroundColor: MD.card, borderRadius: '22px', padding: '18px' }}>
+            <div style={{ display: 'flex', justifyContent: 'center', marginBottom: '14px' }}>
+              <div style={{ position: 'relative', width: '96px', height: '96px' }}>
+                <svg width="96" height="96" viewBox="0 0 96 96" style={{ transform: 'rotate(-90deg)' }}><circle cx="48" cy="48" r={ringR} fill="none" stroke="#2c2c4a" strokeWidth="9" /><circle cx="48" cy="48" r={ringR} fill="none" stroke={progress.left <= 0.004 ? '#7cc427' : '#f5c518'} strokeWidth="9" strokeLinecap="round" strokeDasharray={ringC} strokeDashoffset={ringC * (1 - progress.pct / 100)} /></svg>
+                <div style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 800, fontSize: '1.25rem' }}>{Math.round(progress.pct)}%</div>
+              </div>
+            </div>
+            {needed > 0.004 ? (
+              <div style={{ backgroundColor: '#3d3410', borderRadius: '16px', padding: '14px', textAlign: 'center', marginBottom: '14px' }}>
+                <div style={{ fontSize: '0.92rem', marginBottom: '10px' }}>Assign <span style={{ backgroundColor: '#8a6d00', borderRadius: '999px', padding: '2px 10px', fontWeight: 700 }}>{formatMoney(needed)}</span> to meet your target</div>
+                <button onClick={() => setTo(cur + needed)} data-testid="assign-to-target" style={{ width: '100%', backgroundColor: '#f5c518', color: '#1a1500', border: 'none', borderRadius: '999px', padding: '12px', fontWeight: 700, fontSize: '1rem', cursor: 'pointer' }}>Assign</button>
+              </div>
+            ) : (
+              <div style={{ backgroundColor: '#17321f', color: '#9be7b4', borderRadius: '16px', padding: '12px', textAlign: 'center', marginBottom: '14px', fontSize: '0.92rem' }}>{progress.left <= 0.004 ? "You're on track. Target reached ✓" : 'Nothing more needed this month'}</div>
+            )}
+            <div style={{ fontWeight: 700, fontSize: '0.95rem' }}>{getScheduleText(env)}</div>
+            {env.targetDate && <div style={{ color: MD.muted, fontSize: '0.88rem', marginTop: '2px' }}>By {formatDate(env.targetDate, 'us')}</div>}
+            <div style={{ borderTop: '1px solid ' + MD.line, marginTop: '14px', paddingTop: '12px', fontSize: '0.92rem' }}>
+              {[['Total Needed', progress.target], ['Funded', Math.min(progress.target, Math.max(0, progress.funded))], ['To Go', progress.left]].map(([l, v]) => (<div key={l} style={{ display: 'flex', justifyContent: 'space-between', padding: '3px 0' }}><span>{l}</span><span>{formatMoney(v)}</span></div>))}
+            </div>
+            <button onClick={() => startEditEnv(env)} style={{ ...actBtn, marginTop: '14px', marginBottom: 0, backgroundColor: '#25254a' }}>Edit Target</button>
+          </div>
+        </>)}
+        {!progress && (<>
+          {secTitle('Target')}
+          <div style={{ backgroundColor: MD.card, borderRadius: '22px', padding: '16px' }}>
+            <div style={{ color: MD.muted, fontSize: '0.92rem', marginBottom: '12px' }}>No target set for this category.</div>
+            <button onClick={() => startEditEnv(env)} style={{ ...actBtn, marginBottom: 0, backgroundColor: '#25254a' }}>Create Target</button>
+          </div>
+        </>)}
+        {secTitle('Notes')}
+        <textarea key={env.id} defaultValue={env.note || ''} onBlur={e => { const v = e.target.value; if (v !== (env.note || '')) setEnvelopes(envelopes.map(x => (x.id === env.id ? { ...x, note: v } : x))); }} placeholder="Enter a note…" aria-label="Envelope note" rows={2} style={{ width: '100%', boxSizing: 'border-box', backgroundColor: MD.card, color: MD.text, border: 'none', borderRadius: '22px', padding: '16px 18px', resize: 'none', fontFamily: 'inherit' }} />
+        <div style={{ borderTop: '1px solid ' + MD.line, margin: '26px 0 16px' }} />
+        <button onClick={() => { const v = window.prompt('Rename category', env.name); if (v && v.trim() && v.trim() !== env.name) setEnvelopes(envelopes.map(x => (x.id === env.id ? { ...x, name: v.trim() } : x))); }} style={actBtn}>Rename Category</button>
+        {env.isHidden
+          ? <button onClick={() => handleUnhideEnvelope(env)} style={actBtn}>Unhide Category</button>
+          : <button onClick={() => (hideEnvUi === env.id ? setHideEnvUi(null) : requestHideEnvelope(env))} aria-label={`Hide envelope ${env.name}`} style={actBtn}>Hide Category</button>}
+        {hideEnvUi === env.id && (
+          <div data-testid="hide-panel" style={{ backgroundColor: MD.card, borderRadius: '16px', padding: '14px', fontSize: '0.88rem', marginBottom: '10px' }}>
+            {remaining > 0.004 ? (<>
+              <div style={{ marginBottom: '10px' }}><strong>{env.name}</strong> still has {formatMoney(remaining)} in {monthLabel(budgetMonth)}. A hidden envelope keeps its money reserved, so you may want to send it back to Ready to Assign.</div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                <button onClick={() => doHideEnvelope(env, true)} style={{ backgroundColor: MD.btn, color: 'white', border: 'none', borderRadius: '10px', padding: '10px', fontWeight: 700, cursor: 'pointer' }}>Move {formatMoney(remaining)} to Ready to Assign and hide</button>
+                <button onClick={() => doHideEnvelope(env, false)} style={{ backgroundColor: MD.line, color: MD.text, border: 'none', borderRadius: '10px', padding: '10px', cursor: 'pointer' }}>Hide, keep the money in it</button>
+                <button onClick={() => setHideEnvUi(null)} style={{ background: 'none', border: 'none', color: MD.muted, cursor: 'pointer' }}>Cancel</button>
+              </div>
+            </>) : (<>
+              <div style={{ marginBottom: '10px' }}><strong>{env.name}</strong> is overspent by {formatMoney(-remaining)}. Cover it first if you can. If you hide it as is, the shortfall still comes out of Ready to Assign next month.</div>
+              <div style={{ display: 'flex', gap: '8px' }}>
+                <button onClick={() => doHideEnvelope(env, false)} style={{ flex: 1, backgroundColor: '#d97706', color: 'white', border: 'none', borderRadius: '10px', padding: '10px', fontWeight: 700, cursor: 'pointer' }}>Hide anyway</button>
+                <button onClick={() => setHideEnvUi(null)} style={{ flex: 1, backgroundColor: MD.line, color: MD.text, border: 'none', borderRadius: '10px', padding: '10px', cursor: 'pointer' }}>Cancel</button>
+              </div>
+            </>)}
+          </div>
+        )}
+        <button onClick={() => { handleSoftDeleteEnvelope(env.id); close(); }} style={{ ...actBtn, color: '#ff7b7f' }}>Delete Category</button>
+        <button onClick={() => startEnvTx(env)} aria-label="Add transaction" style={{ position: 'fixed', right: '16px', bottom: 'calc(20px + env(safe-area-inset-bottom))', zIndex: 56, backgroundColor: MD.btn, color: 'white', border: 'none', borderRadius: '16px', padding: '16px 24px', fontWeight: 700, fontSize: '1.05rem', boxShadow: '0 8px 22px rgba(0,0,0,0.5)', cursor: 'pointer' }}>＋ Transaction</button>
+      </div>
+    );
+  };
+
+
+  // ----- Phone: dark Spending list and transaction details -----
+  const patchTx = (id, patch) => setTransactions(prev => prev.map(t => (t.id === id ? { ...t, ...patch } : t)));
+  const txRowParts = (tx) => {
+    const acc = accounts.find(a => a.id === tx.accountId);
+    const env = envelopes.find(e => e.id === tx.envelopeId);
+    const other = tx.isTransfer ? accounts.find(a => a.id === tx.transferAccountId) : null;
+    return { acc, env, other };
+  };
+  const renderMobileSpending = () => {
+    const acct = txFilterAccount ? accounts.find(a => a.id === txFilterAccount && !a.isDeleted) : null;
+    const flat = sortedTransactionDates.map(d => [d, groupedTransactions[d]]);
+    const chip = (children, tone) => {
+      const tones = { cat: ['#25253f', '#f1f1fa'], xfer: ['#26265e', '#c9c9ff'], rta: ['#1c3a1c', '#b6f08a'], warn: ['#4a3410', '#ffcf70'], split: ['#25253f', '#f1f1fa'] };
+      const [bg, fg] = tones[tone] || tones.cat;
+      return <span style={{ display: 'inline-flex', alignItems: 'center', gap: '6px', backgroundColor: bg, color: fg, borderRadius: '8px', padding: '5px 10px', fontSize: '0.88rem', maxWidth: '100%', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{children}</span>;
+    };
+    const sel = { width: '100%', padding: '10px', borderRadius: '10px', border: 'none', backgroundColor: MD.bg, color: MD.text };
+    return (
+      <div data-testid="mobile-spending" style={{ backgroundColor: MD.bg, color: MD.text, minHeight: '100vh', paddingBottom: '160px' }}>
+        <div style={{ position: 'sticky', top: 0, zIndex: 25, backgroundColor: MD.bg, padding: '16px 16px 10px', display: 'flex', alignItems: 'center', gap: '14px' }}>
+          <div style={{ fontWeight: 700, fontSize: '1.4rem', flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{acct ? acct.name : 'Spending'}</div>
+          <button onClick={() => setMSearchOpen(o => !o)} aria-label="Search and filter" aria-expanded={mSearchOpen} style={{ background: 'none', border: 'none', color: txFiltersActive ? MD.accent : MD.text, fontSize: '1.35rem', cursor: 'pointer', padding: 0 }}>⌕</button>
+          <button onClick={() => setSidebarOpen(true)} aria-label="Menu" style={{ background: 'none', border: 'none', color: MD.text, fontSize: '1.5rem', cursor: 'pointer', padding: '0 4px', lineHeight: 1 }}>⋮</button>
+        </div>
+        {mSearchOpen && (
+          <div data-testid="tx-filters" style={{ padding: '0 16px 12px', display: 'flex', flexDirection: 'column', gap: '8px' }}>
+            <input type="search" autoFocus placeholder="Search payee, memo, amount…" value={txSearch} onChange={e => setTxSearch(e.target.value)} aria-label="Search transactions" style={{ ...sel, padding: '12px' }} />
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px' }}>
+              <select value={txFilterAccount} onChange={e => setTxFilterAccount(e.target.value)} aria-label="Filter by account" style={sel}>
+                <option value="">All accounts</option>
+                {activeAccounts.map(a => (<option key={a.id} value={a.id}>{a.name}{a.isHidden ? ' (hidden)' : ''}</option>))}
+              </select>
+              <select value={txFilterEnvelope} onChange={e => setTxFilterEnvelope(e.target.value)} aria-label="Filter by envelope" style={sel}>
+                <option value="">All envelopes</option><option value="__has__">Has an envelope</option><option value="__none__">Uncategorized</option>
+                {envelopeChoicesAll.map(c => (<optgroup key={c.label} label={c.label}>{c.list.map(e => (<option key={e.id} value={e.id}>{e.name}</option>))}</optgroup>))}
+              </select>
+              <select value={txFilterType} onChange={e => setTxFilterType(e.target.value)} aria-label="Filter by type" style={sel}>
+                <option value="">All types</option><option value="expense">Spending</option><option value="income">Inflow</option><option value="transfer">Transfers</option>
+              </select>
+              <select value={txFilterStatus} onChange={e => setTxFilterStatus(e.target.value)} aria-label="Filter by cleared status" style={sel}>
+                <option value="">Cleared or not</option><option value="cleared">Cleared</option><option value="uncleared">Not cleared</option>
+              </select>
+            </div>
+            {txFiltersActive && <button onClick={clearTxFilters} style={{ alignSelf: 'flex-start', background: 'none', border: 'none', color: MD.accent, fontWeight: 700, cursor: 'pointer', padding: 0 }}>Clear filters ({visibleTransactions.length} shown)</button>}
+          </div>
+        )}
+        {acct && (
+          <div data-testid="account-header" style={{ margin: '0 16px 12px', backgroundColor: MD.card, borderRadius: '18px', padding: '14px 16px' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', gap: '12px' }}>
+              <div><div style={{ fontSize: '0.78rem', color: MD.muted }}>Cleared</div><div style={{ fontWeight: 800, fontSize: '1.1rem' }}>{formatMoney(getClearedBalance(acct.id))}</div></div>
+              <div style={{ textAlign: 'right' }}><div style={{ fontSize: '0.78rem', color: MD.muted }}>Working Balance</div><div style={{ fontWeight: 800, fontSize: '1.1rem', color: getAccountBalance(acct.id) < -0.004 ? '#ff7b7f' : '#fff' }}>{formatMoney(getAccountBalance(acct.id))}</div></div>
+            </div>
+            {acct.lastReconciledDate && <div style={{ color: MD.muted, fontSize: '0.78rem', marginTop: '6px' }}>🔒 Reconciled {reconciledAgo(acct.lastReconciledDate)}</div>}
+            <div style={{ display: 'flex', gap: '8px', marginTop: '12px' }}>
+              <button onClick={() => (reconcilingAccId === acct.id ? setReconcilingAccId(null) : startReconcile(acct.id))} style={{ flex: 1, backgroundColor: MD.btn, color: 'white', border: 'none', borderRadius: '999px', padding: '10px', fontWeight: 700, cursor: 'pointer' }}>Reconcile</button>
+              <button onClick={() => (acct.isHidden ? handleUnhideAccount(acct) : handleHideAccount(acct))} aria-label={`${acct.isHidden ? 'Unhide' : 'Hide'} account ${acct.name.trim()}`} style={{ backgroundColor: '#25254a', color: MD.accent, border: 'none', borderRadius: '999px', padding: '10px 16px', fontWeight: 700, cursor: 'pointer' }}>{acct.isHidden ? 'Unhide' : 'Hide'}</button>
+              <button onClick={() => handleSoftDeleteAccount(acct.id)} style={{ backgroundColor: '#3a1c24', color: '#ff7b7f', border: 'none', borderRadius: '999px', padding: '10px 16px', fontWeight: 700, cursor: 'pointer' }}>Delete</button>
+            </div>
+            {reconcilingAccId === acct.id && (
+              <div style={{ marginTop: '12px' }}>
+                <div style={{ fontSize: '0.8rem', color: MD.muted, marginBottom: '8px' }}>Mark the transactions on your statement as cleared (C), then enter the statement ending balance.</div>
+                <div style={{ display: 'flex', gap: '8px' }}>
+                  <input type="number" step="0.01" value={targetBankBalance} onChange={e => setTargetBankBalance(e.target.value)} placeholder="Statement balance ($)" style={{ ...sel, flex: 1 }} />
+                  <button onClick={() => handleFinishReconciliation(acct.id)} style={{ backgroundColor: '#2e9e4f', color: 'white', border: 'none', borderRadius: '10px', padding: '0 16px', fontWeight: 700, cursor: 'pointer' }}>Finish</button>
+                  <button onClick={() => setReconcilingAccId(null)} style={{ backgroundColor: MD.line, color: MD.text, border: 'none', borderRadius: '10px', padding: '0 14px', cursor: 'pointer' }}>Cancel</button>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+        {transferMatches.length > 0 && (
+          <div data-testid="transfer-matches" style={{ margin: '0 16px 12px', backgroundColor: '#1d1d45', borderRadius: '14px', padding: '10px 14px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '8px', fontSize: '0.88rem' }}>
+            <span>{transferMatches.length} possible transfer{transferMatches.length === 1 ? '' : 's'}</span>
+            <button onClick={handleLinkAllMatches} style={{ backgroundColor: MD.btn, color: 'white', border: 'none', borderRadius: '999px', padding: '7px 14px', fontWeight: 700, cursor: 'pointer' }}>Link all</button>
+          </div>
+        )}
+        {flat.length === 0 && <div style={{ padding: '30px 16px', textAlign: 'center', color: MD.muted }}>{txFiltersActive ? 'No transactions match your search or filters.' : 'No transactions recorded yet.'}</div>}
+        {flat.map(([d, list]) => (
+          <div key={d}>
+            <div style={{ padding: '14px 16px', fontWeight: 800, fontSize: '1.02rem', backgroundColor: MD.bg }}>{formatDate(d, 'us')}</div>
+            {list.map(tx => {
+              const { acc, env, other } = txRowParts(tx);
+              const locked = isTxLocked(tx);
+              const hasLock = locked || tx.reconciled;
+              const cleared = !!(tx.cleared || tx.reconciled);
+              const income = tx.type === 'income';
+              return (
+                <div key={tx.id} data-testid="m-tx-row" role="button" onClick={() => { setMTxId(tx.id); setMTxMenu(null); setMTxMore(false); }} style={{ backgroundColor: MD.row, borderTop: '1px solid ' + MD.line, padding: '14px 16px', cursor: 'pointer' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: '10px' }}>
+                    <div style={{ minWidth: 0, fontWeight: 600, fontSize: '1rem', lineHeight: 1.35 }}>
+                      {tx.isTransfer ? (<>
+                        <div>{income ? 'Transfer from' : 'Transfer to'} <strong>{other ? other.name : (tx.payee || '').replace(/^Transfer: /, '')}</strong></div>
+                        <div style={{ fontWeight: 500 }}>{income ? 'To' : 'From'} <strong>{acc ? acc.name : ''}</strong></div>
+                      </>) : tx.payee}
+                    </div>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexShrink: 0 }}>
+                      <span style={{ fontWeight: 700, fontSize: '1rem', color: income && !tx.isTransfer ? '#a8e65a' : MD.text }}>{(income ? '' : '−') + formatMoney(Math.abs(Number(tx.amount) || 0))}</span>
+                      {hasLock ? <span title="Locked" style={{ color: MD.muted, fontSize: '0.9rem' }}>🔒</span>
+                        : <button onClick={(e) => { e.stopPropagation(); handleToggleCleared(tx.id); }} aria-label={`${cleared ? 'Cleared' : 'Uncleared'}: ${tx.payee}`} style={{ width: '20px', height: '20px', borderRadius: '50%', border: '2px solid ' + (cleared ? '#7cc427' : '#55556f'), backgroundColor: cleared ? '#7cc427' : 'transparent', color: cleared ? '#0d1a00' : '#8a8aa5', fontSize: '0.6rem', fontWeight: 800, cursor: 'pointer', padding: 0, lineHeight: 1 }}>C</button>}
+                    </div>
+                  </div>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '10px', marginTop: '8px' }}>
+                    <div style={{ minWidth: 0 }}>
+                      {tx.isTransfer ? chip(<><span>⇄</span>Transfer</>, 'xfer')
+                        : isSplitTx(tx) ? chip(`Split (${tx.splits.length})`, 'split')
+                        : income ? chip('Ready to Assign', 'rta')
+                        : env ? chip(env.name + (env.isDeleted ? ' (deleted)' : ''), 'cat')
+                        : chip('Uncategorized', 'warn')}
+                    </div>
+                    {!tx.isTransfer && <span style={{ color: MD.muted, fontSize: '0.95rem', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: '45%' }}>{acc ? acc.name : ''}</span>}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        ))}
+        {visibleTransactions.length > pagedTransactions.length && (
+          <div style={{ textAlign: 'center', padding: '16px' }}><button onClick={() => setTxLimit(n => n + 200)} style={{ backgroundColor: MD.card, color: MD.accent, border: 'none', borderRadius: '999px', padding: '10px 20px', fontWeight: 700, cursor: 'pointer' }}>Show 200 more</button></div>
+        )}
+      </div>
+    );
+  };
+  const renderMobileTxDetail = () => {
+    const tx = mTxId ? transactions.find(t => t.id === mTxId && !t.isDeleted) : null;
+    if (!tx) return null;
+    const { acc, env, other } = txRowParts(tx);
+    const locked = isTxLocked(tx);
+    const income = tx.type === 'income';
+    const split = isSplitTx(tx);
+    const simple = !tx.isTransfer && !split && incomeAllocs(tx).length === 0;
+    const cleared = !!(tx.cleared || tx.reconciled);
+    const close = () => { setMTxId(null); setMTxMenu(null); setMTxMore(false); };
+    const field = { width: '100%', boxSizing: 'border-box', background: 'none', border: 'none', color: MD.text, fontSize: '1.05rem', fontWeight: 600, padding: 0, fontFamily: 'inherit' };
+    const rowBox = (icon, label, body, onClick, last, testId) => (
+      <div role={onClick ? 'button' : undefined} onClick={onClick} data-testid={testId} style={{ display: 'flex', gap: '16px', alignItems: 'center', padding: '14px 18px', borderBottom: last ? 'none' : '1px solid ' + MD.line, cursor: onClick ? 'pointer' : 'default' }}>
+        <span style={{ width: '24px', textAlign: 'center', color: MD.muted, fontSize: '1.15rem' }}>{icon}</span>
+        <div style={{ flex: 1, minWidth: 0 }}><div style={{ fontSize: '0.82rem', color: MD.muted, marginBottom: '2px' }}>{label}</div>{body}</div>
+      </div>
+    );
+    const card = { backgroundColor: MD.card, borderRadius: '22px', overflow: 'hidden', marginBottom: '14px' };
+    const typeLabel = tx.isTransfer ? 'Transfer' : income ? 'Inflow' : 'Spending';
+    const lockedNote = locked && <div style={{ margin: '0 4px 12px', color: '#ffcf70', fontSize: '0.85rem' }}>🔒 Reconciled and locked. <button onClick={() => unlockTx(tx)} style={{ background: 'none', border: 'none', color: MD.accent, fontWeight: 700, cursor: 'pointer', padding: 0 }}>Unlock to edit</button></div>;
+    const menuItem = (key, label, icon) => (
+      <button key={key} role="menuitem" onClick={() => {
+        setMTxMenu(null);
+        if (key === typeLabel.toLowerCase() || tx.isTransfer) return;
+        if (!simple) { showNotification('Split or allocated transactions: use Edit to change the type.'); return; }
+        patchTx(tx.id, key === 'inflow' ? { type: 'income', envelopeId: '' } : { type: 'expense', envelopeId: '' });
+      }} style={{ display: 'flex', alignItems: 'center', gap: '12px', width: '100%', background: typeLabel.toLowerCase() === key ? '#23235a' : 'none', border: 'none', color: MD.text, padding: '14px 16px', fontSize: '1rem', cursor: 'pointer', textAlign: 'left' }}><span>{icon}</span><span style={{ flex: 1 }}>{label}</span>{typeLabel.toLowerCase() === key && <span>✓</span>}</button>
+    );
+    return (
+      <div data-testid="m-tx-detail" style={{ position: 'fixed', inset: 0, zIndex: 55, backgroundColor: MD.bg, color: MD.text, overflowY: 'auto', padding: '0 16px calc(40px + env(safe-area-inset-bottom))', boxSizing: 'border-box' }}>
+        <div style={{ margin: '0 -16px 16px', padding: '16px 16px 34px', background: 'linear-gradient(180deg,#4a4a62 0%,#15152b 100%)', borderRadius: '0 0 50% 50% / 0 0 26px 26px', textAlign: 'center' }}>
+          <div style={{ textAlign: 'left' }}><button onClick={close} aria-label="Close" style={{ background: 'none', border: 'none', color: MD.text, fontSize: '1.6rem', cursor: 'pointer', padding: '0 4px' }}>✕</button></div>
+          {simple && !locked ? (
+            <input key={tx.id + ':' + tx.amount} aria-label="Amount" inputMode="decimal" defaultValue={'$' + Number(tx.amount).toFixed(2)} onBlur={e => { const n = evalAmount(e.target.value.replace(/\$/g, '')); if (!isNaN(n) && n > 0 && round2(n) !== Number(tx.amount)) patchTx(tx.id, { amount: round2(n) }); }} style={{ background: 'none', border: 'none', color: MD.text, fontSize: '2.2rem !important', fontWeight: 800, textAlign: 'center', width: '70%', margin: '4px 0 0' }} />
+          ) : <div style={{ fontSize: '2.2rem', fontWeight: 800, margin: '4px 0 0' }}>{formatMoney(Number(tx.amount))}</div>}
+        </div>
+        <div style={{ textAlign: 'center', marginTop: '-18px', marginBottom: '16px', position: 'relative' }}>
+          <button onClick={() => setMTxMenu(m => (m === 'type' ? null : 'type'))} aria-haspopup="menu" aria-expanded={mTxMenu === 'type'} data-testid="tx-type-btn" style={{ backgroundColor: '#1d1d38', color: MD.text, border: 'none', borderRadius: '16px', padding: '14px 22px', fontWeight: 700, fontSize: '1rem', cursor: 'pointer' }}>{income ? '⊞' : '⊟'} {typeLabel} ▾</button>
+          {mTxMenu === 'type' && (
+            <>
+              <div onClick={() => setMTxMenu(null)} style={{ position: 'fixed', inset: 0, zIndex: 56 }} />
+              <div role="menu" style={{ position: 'absolute', left: '50%', transform: 'translateX(-50%)', top: '100%', marginTop: '8px', zIndex: 57, backgroundColor: '#1d1d38', borderRadius: '16px', boxShadow: '0 10px 30px rgba(0,0,0,0.6)', width: '240px', overflow: 'hidden', textAlign: 'left' }}>
+                {menuItem('spending', 'Spending', '⊟')}
+                {menuItem('inflow', 'Inflow', '⊞')}
+                {tx.isTransfer && menuItem('transfer', 'Transfer', '⇄')}
+              </div>
+            </>
+          )}
+        </div>
+        {lockedNote}
+        <div style={card}>
+          {rowBox('⇄', 'Payee', tx.isTransfer ? <div style={{ fontWeight: 600, fontSize: '1.05rem' }}>{tx.payee}</div> : <input aria-label="Payee" list="payee-suggestions" key={tx.id + ':p'} defaultValue={tx.payee} disabled={locked} onBlur={e => { const v = e.target.value.trim(); if (v && v !== tx.payee) patchTx(tx.id, { payee: v }); }} style={field} />)}
+          {rowBox('▣', 'Category',
+            tx.isTransfer ? <span style={{ color: MD.muted }}>Category not needed</span>
+            : split ? <div>{tx.splits.map((sp, i) => { const se = envelopes.find(e => e.id === sp.envelopeId); return <div key={i} data-testid="split-part" style={{ fontSize: '0.95rem', display: 'flex', justifyContent: 'space-between', padding: '2px 0' }}><span>{se ? se.name : 'No envelope'}</span><span>{plainMoney(sp.amount)}</span></div>; })}</div>
+            : income ? <span style={{ backgroundColor: '#1c3a1c', color: '#b6f08a', borderRadius: '8px', padding: '5px 10px', fontSize: '0.95rem' }}>Ready to Assign</span>
+            : <span style={{ backgroundColor: env ? '#25253f' : '#4a3410', color: env ? MD.text : '#ffcf70', borderRadius: '8px', padding: '5px 10px', fontSize: '0.95rem' }}>{env ? env.name : 'Uncategorized'}</span>,
+            (!tx.isTransfer && !split && !income && !locked) ? () => setMTxMenu('cat') : null, false, 'tx-cat-row')}
+          {rowBox('▤', 'Account', tx.isTransfer ? <div style={{ fontWeight: 600, fontSize: '1.05rem' }}>{acc ? acc.name : ''}{other ? ` ⇄ ${other.name}` : ''}</div> : (
+            <select aria-label="Account" value={tx.accountId} disabled={locked} onChange={e => patchTx(tx.id, { accountId: e.target.value })} style={{ ...field, appearance: 'none', WebkitAppearance: 'none' }}>
+              {accountChoices(tx.accountId).map(a => (<option key={a.id} value={a.id} style={{ color: '#111' }}>{a.name}</option>))}
+            </select>))}
+          {rowBox('▦', 'Date', <input type="date" aria-label="Date" value={tx.date || ''} disabled={locked} onChange={e => { if (e.target.value) patchTx(tx.id, { date: e.target.value }); }} style={{ ...field, colorScheme: 'dark' }} />, null, true)}
+        </div>
+        {(split || tx.isTransfer || incomeAllocs(tx).length > 0 || (!tx.isTransfer && !locked)) && (
+          <button onClick={() => { startEditTx(tx); }} disabled={locked} style={{ width: '100%', backgroundColor: '#1d1d38', color: MD.accent, border: 'none', borderRadius: '999px', padding: '14px', fontWeight: 700, fontSize: '1rem', cursor: 'pointer', marginBottom: '14px', opacity: locked ? 0.4 : 1 }}>{tx.isTransfer ? 'Edit transfer' : split ? 'Edit split' : income ? (incomeAllocs(tx).length ? 'Edit envelopes' : 'Send to envelopes…') : 'Split across categories…'}</button>
+        )}
+        {!tx.isTransfer && !split && !income && !locked && (
+          <button onClick={() => openSplit(tx) || setMTxId(null)} style={{ display: 'none' }} />
+        )}
+        <div style={card}>
+          {rowBox('▤', 'Memo', <input aria-label="Memo" key={tx.id + ':m'} defaultValue={tx.notes || ''} placeholder="Add a memo" disabled={locked} onBlur={e => { if (e.target.value !== (tx.notes || '')) patchTx(tx.id, { notes: e.target.value }); }} style={{ ...field, fontWeight: 500 }} />, null, true)}
+        </div>
+        {!mTxMore ? (
+          <button onClick={() => setMTxMore(true)} style={{ display: 'flex', alignItems: 'center', gap: '14px', width: '100%', background: 'none', border: 'none', color: MD.text, fontWeight: 700, cursor: 'pointer', margin: '10px 0' }}><span style={{ flex: 1, borderTop: '1px solid ' + MD.line }} />Show more<span style={{ flex: 1, borderTop: '1px solid ' + MD.line }} /></button>
+        ) : (<>
+          <div style={card}>
+            {rowBox('⚑', 'Flag', <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginTop: '4px', flexWrap: 'wrap' }}>
+              <button onClick={() => setFlag([tx.id], null)} aria-label="No flag" style={{ background: !tx.flag ? '#23235a' : 'none', color: MD.text, border: '1px solid ' + MD.line, borderRadius: '999px', padding: '4px 12px', cursor: 'pointer', fontSize: '0.9rem' }}>None</button>
+              {FLAG_COLORS.map(c => (<button key={c} aria-label={`Flag ${c}`} onClick={() => setFlag([tx.id], c)} style={{ width: '26px', height: '26px', borderRadius: '50%', backgroundColor: c, border: tx.flag === c ? '3px solid #fff' : 'none', cursor: 'pointer' }} />))}
+            </div>)}
+            <div style={{ display: 'flex', alignItems: 'center', gap: '16px', padding: '14px 18px' }}>
+              <span style={{ width: '24px', height: '24px', borderRadius: '50%', backgroundColor: cleared ? '#7cc427' : 'transparent', border: '2px solid ' + (cleared ? '#7cc427' : '#55556f'), color: cleared ? '#0d1a00' : '#8a8aa5', fontSize: '0.7rem', fontWeight: 800, display: 'inline-flex', alignItems: 'center', justifyContent: 'center' }}>C</span>
+              <span style={{ flex: 1, fontSize: '1.05rem' }}>Cleared</span>
+              <button role="switch" aria-checked={cleared} aria-label="Cleared" onClick={() => handleToggleCleared(tx.id)} disabled={locked} style={{ width: '54px', height: '32px', borderRadius: '999px', border: 'none', backgroundColor: cleared ? MD.btn : '#33334d', position: 'relative', cursor: 'pointer' }}><span style={{ position: 'absolute', top: '4px', left: cleared ? '26px' : '4px', width: '24px', height: '24px', borderRadius: '50%', backgroundColor: '#fff', transition: 'left 0.15s' }} /></button>
+            </div>
+          </div>
+          <button onClick={() => { handleSoftDeleteTransaction(tx.id); close(); }} disabled={locked} style={{ width: '100%', backgroundColor: '#6b1522', color: '#fff', border: 'none', borderRadius: '999px', padding: '16px', fontWeight: 700, fontSize: '1rem', cursor: 'pointer', marginBottom: '14px', opacity: locked ? 0.4 : 1 }}>Delete Transaction</button>
+          <button onClick={() => setMTxMore(false)} style={{ display: 'flex', alignItems: 'center', gap: '14px', width: '100%', background: 'none', border: 'none', color: MD.text, fontWeight: 700, cursor: 'pointer', margin: '6px 0' }}><span style={{ flex: 1, borderTop: '1px solid ' + MD.line }} />Show less<span style={{ flex: 1, borderTop: '1px solid ' + MD.line }} /></button>
+        </>)}
+        {mTxMenu === 'cat' && (
+          <>
+            <div onClick={() => setMTxMenu(null)} style={{ position: 'fixed', inset: 0, backgroundColor: 'rgba(0,0,0,0.6)', zIndex: 70 }} />
+            <div data-testid="tx-cat-sheet" role="dialog" aria-label="Choose category" style={{ position: 'fixed', left: 0, right: 0, bottom: 0, maxHeight: '75vh', overflowY: 'auto', zIndex: 71, backgroundColor: MD.card, borderRadius: '18px 18px 0 0', padding: '14px 0 calc(16px + env(safe-area-inset-bottom))' }}>
+              <div style={{ fontWeight: 800, padding: '4px 18px 10px', fontSize: '1.05rem' }}>Category</div>
+              {tx.envelopeId && <button onClick={() => { handleAssignTxEnvelope(tx.id, ''); setMTxMenu(null); }} style={{ display: 'block', width: '100%', textAlign: 'left', background: 'none', border: 'none', color: '#ffcf70', padding: '12px 18px', fontSize: '1rem', cursor: 'pointer' }}>Uncategorized</button>}
+              {envelopeChoices.map(c => (
+                <div key={c.label}>
+                  <div style={{ padding: '10px 18px 4px', fontSize: '0.78rem', fontWeight: 700, color: MD.muted, textTransform: 'uppercase', letterSpacing: '0.04em' }}>{c.label}</div>
+                  {c.list.map(e => (<button key={e.id} onClick={() => { handleAssignTxEnvelope(tx.id, e.id); setMTxMenu(null); }} style={{ display: 'flex', justifyContent: 'space-between', width: '100%', textAlign: 'left', background: tx.envelopeId === e.id ? '#23235a' : 'none', border: 'none', color: MD.text, padding: '12px 18px', fontSize: '1rem', cursor: 'pointer' }}><span>{e.name}</span>{tx.envelopeId === e.id && <span>✓</span>}</button>))}
+                </div>
+              ))}
+            </div>
+          </>
+        )}
+      </div>
+    );
+  };
+
+
+  const renderMobileAddTx = () => {
+    const isX = txType === 'transfer';
+    const income = txType === 'income';
+    const kind = isX ? (addCard ? 'Credit Card Payment' : 'Transfer') : income ? 'Inflow' : 'Spending';
+    const env = envelopes.find(e => e.id === txEnvelopeId);
+    const field = { width: '100%', boxSizing: 'border-box', background: 'none', border: 'none', color: MD.text, fontSize: '1.05rem', fontWeight: 600, padding: 0, fontFamily: 'inherit' };
+    const card = { backgroundColor: MD.card, borderRadius: '22px', overflow: 'hidden', marginBottom: '14px' };
+    const rowBox = (icon, label, body, onClick, last, testId) => (
+      <div role={onClick ? 'button' : undefined} onClick={onClick} data-testid={testId} style={{ display: 'flex', gap: '16px', alignItems: 'center', padding: '14px 18px', minHeight: '28px', borderBottom: last ? 'none' : '1px solid ' + MD.line, cursor: onClick ? 'pointer' : 'default' }}>
+        <span style={{ width: '24px', textAlign: 'center', color: MD.muted, fontSize: '1.15rem' }}>{icon}</span>
+        <div style={{ flex: 1, minWidth: 0 }}>{label && <div style={{ fontSize: '0.82rem', color: MD.muted, marginBottom: '2px' }}>{label}</div>}{body}</div>
+      </div>
+    );
+    const setKind = (k) => {
+      setAddPick(null);
+      setTxSplitLines(null);
+      setAddCard(k === 'card');
+      setTxType(k === 'card' || k === 'xfer' ? 'transfer' : k);
+      setTxEnvelopeId('');
+      if (k === 'card') { const c = activeAccounts.find(a => isCreditCard(a) && !a.isHidden); setTxToAccountId(c ? c.id : ''); }
+      else setTxToAccountId('');
+    };
+    const close = () => { setTxSheetOpen(false); cancelEditTx(); };
+    const typeItem = (k, label, icon, on) => (
+      <button key={k} role="menuitem" onClick={() => setKind(k)} style={{ display: 'flex', alignItems: 'center', gap: '12px', width: '100%', background: on ? '#23235a' : 'none', border: 'none', color: MD.text, padding: '14px 16px', fontSize: '1rem', cursor: 'pointer', textAlign: 'left' }}><span>{icon}</span><span style={{ flex: 1 }}>{label}</span>{on && <span>✓</span>}</button>
+    );
+    const acctOpts = (cardsOnly, notCards) => accounts.filter(a => !a.isDeleted && (!a.isHidden || a.id === txAccountId || a.id === txToAccountId) && (!cardsOnly || isCreditCard(a)) && (!notCards || !isCreditCard(a)));
+    const q = addPayeeQ.trim().toLowerCase();
+    const names = payeeMemory.filter(pm => !q || pm.name.toLowerCase().includes(q)).slice(0, 40);
+    return (
+      <div data-testid="m-add-tx" style={{ position: 'fixed', inset: 0, zIndex: 60, backgroundColor: MD.bg, color: MD.text, overflowY: 'auto', padding: '0 16px calc(120px + env(safe-area-inset-bottom))', boxSizing: 'border-box' }}>
+        <div style={{ margin: '0 -16px 16px', padding: '16px 16px 34px', background: 'linear-gradient(180deg,#4a4a62 0%,#15152b 100%)', borderRadius: '0 0 50% 50% / 0 0 26px 26px', textAlign: 'center' }}>
+          <div style={{ textAlign: 'left' }}><button onClick={close} aria-label="Close" style={{ background: 'none', border: 'none', color: MD.text, fontSize: '1.6rem', cursor: 'pointer', padding: '0 4px' }}>✕</button></div>
+          <input aria-label="Amount" inputMode="decimal" placeholder="$0.00" value={txAmount} onChange={e => setTxAmount(e.target.value)} style={{ background: 'none', border: 'none', color: MD.text, fontWeight: 800, textAlign: 'center', width: '70%', margin: '4px 0 0' }} />
+        </div>
+        <div style={{ textAlign: 'center', marginTop: '-18px', marginBottom: '16px', position: 'relative' }}>
+          <button onClick={() => setAddPick(m => (m === 'type' ? null : 'type'))} aria-haspopup="menu" aria-expanded={addPick === 'type'} data-testid="tx-type-btn" style={{ backgroundColor: '#1d1d38', color: MD.text, border: 'none', borderRadius: '16px', padding: '14px 22px', fontWeight: 700, fontSize: '1rem', cursor: 'pointer' }}>{isX ? (addCard ? '▭' : '⇄') : income ? '⊞' : '⊟'} {kind} ▾</button>
+          {addPick === 'type' && (<>
+            <div onClick={() => setAddPick(null)} style={{ position: 'fixed', inset: 0, zIndex: 61 }} />
+            <div role="menu" style={{ position: 'absolute', left: '50%', transform: 'translateX(-50%)', top: '100%', marginTop: '8px', zIndex: 62, backgroundColor: '#1d1d38', borderRadius: '16px', boxShadow: '0 10px 30px rgba(0,0,0,0.6)', width: '260px', overflow: 'hidden', textAlign: 'left' }}>
+              {typeItem('expense', 'Spending', '⊟', kind === 'Spending')}
+              {typeItem('income', 'Inflow', '⊞', kind === 'Inflow')}
+              {typeItem('card', 'Credit Card Payment', '▭', kind === 'Credit Card Payment')}
+              {typeItem('xfer', 'Transfer', '⇄', kind === 'Transfer')}
+            </div>
+          </>)}
+        </div>
+        <div style={card}>
+          {!isX && rowBox('⇄', txPayee ? 'Payee' : null, <span style={{ fontSize: '1.05rem', fontWeight: 600, color: txPayee ? MD.text : MD.muted }}>{txPayee || 'Choose Payee'}</span>, () => { setAddPayeeQ(''); setAddPick('payee'); }, false, 'add-payee-row')}
+          {!isX && !income && rowBox('▣', env ? 'Category' : null, <span style={{ fontSize: '1.05rem', fontWeight: 600, color: env ? MD.text : MD.muted }}>{env ? env.name : 'Choose Category'}</span>, () => setAddPick('cat'), false, 'add-cat-row')}
+          {!isX && income && rowBox('▣', 'Category', <span style={{ backgroundColor: '#1c3a1c', color: '#b6f08a', borderRadius: '8px', padding: '5px 10px', fontSize: '0.95rem' }}>Ready to Assign</span>, null, false)}
+          {rowBox('▤', isX ? 'From account' : 'Account', <select aria-label="Account" value={txAccountId} onChange={e => setTxAccountId(e.target.value)} style={{ ...field, appearance: 'none', WebkitAppearance: 'none' }}>{acctOpts(false, isX && addCard).map(a => (<option key={a.id} value={a.id} style={{ color: '#111' }}>{a.name}</option>))}</select>)}
+          {isX && rowBox('▤', 'To account', <select aria-label="To account" value={txToAccountId} onChange={e => setTxToAccountId(e.target.value)} style={{ ...field, appearance: 'none', WebkitAppearance: 'none' }}><option value="" style={{ color: '#111' }}>Choose…</option>{acctOpts(addCard, false).filter(a => a.id !== txAccountId).map(a => (<option key={a.id} value={a.id} style={{ color: '#111' }}>{a.name}</option>))}</select>)}
+          {rowBox('▦', 'Date', <input type="date" aria-label="Date" value={txDate} onChange={e => setTxDate(e.target.value)} style={{ ...field, colorScheme: 'dark' }} />, null, true)}
+        </div>
+        <div style={card}>
+          {rowBox('▤', null, <input aria-label="Memo" value={txNotes} onChange={e => setTxNotes(e.target.value)} placeholder="Memo" style={{ ...field, fontWeight: 500 }} />, null, true)}
+        </div>
+        <div style={card}>
+          {rowBox('⚑', 'Flag', <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginTop: '4px', flexWrap: 'wrap' }}>
+            <button onClick={() => setTxFlagNew(null)} style={{ background: !txFlagNew ? '#23235a' : 'none', color: MD.text, border: '1px solid ' + MD.line, borderRadius: '999px', padding: '4px 12px', cursor: 'pointer', fontSize: '0.9rem' }}>None</button>
+            {FLAG_COLORS.map(c => (<button key={c} aria-label={`Flag ${c}`} onClick={() => setTxFlagNew(c)} style={{ width: '26px', height: '26px', borderRadius: '50%', backgroundColor: c, border: txFlagNew === c ? '3px solid #fff' : 'none', cursor: 'pointer' }} />))}
+          </div>)}
+          <div style={{ display: 'flex', alignItems: 'center', gap: '16px', padding: '14px 18px' }}>
+            <span style={{ width: '24px', height: '24px', borderRadius: '50%', border: '2px solid ' + (txClearedNew ? '#7cc427' : '#55556f'), backgroundColor: txClearedNew ? '#7cc427' : 'transparent', color: txClearedNew ? '#0d1a00' : '#8a8aa5', fontSize: '0.7rem', fontWeight: 800, display: 'inline-flex', alignItems: 'center', justifyContent: 'center' }}>C</span>
+            <span style={{ flex: 1, fontSize: '1.05rem' }}>Cleared</span>
+            <button role="switch" aria-checked={txClearedNew} aria-label="Cleared" onClick={() => setTxClearedNew(v => !v)} style={{ width: '54px', height: '32px', borderRadius: '999px', border: 'none', backgroundColor: txClearedNew ? MD.btn : '#33334d', position: 'relative', cursor: 'pointer' }}><span style={{ position: 'absolute', top: '4px', left: txClearedNew ? '26px' : '4px', width: '24px', height: '24px', borderRadius: '50%', backgroundColor: '#fff', transition: 'left 0.15s' }} /></button>
+          </div>
+        </div>
+        {!isX && <button onClick={() => setAddLight(true)} data-testid="add-split" style={{ width: '100%', backgroundColor: '#1d1d38', color: MD.accent, border: 'none', borderRadius: '999px', padding: '14px', fontWeight: 700, fontSize: '1rem', cursor: 'pointer', marginBottom: '14px' }}>{income ? 'Send to envelopes…' : 'Split across categories…'}</button>}
+        <button onClick={() => handleAddTransaction({ preventDefault() {} })} data-testid="add-save" style={{ position: 'fixed', right: '16px', bottom: 'calc(20px + env(safe-area-inset-bottom))', zIndex: 63, backgroundColor: MD.btn, color: 'white', border: 'none', borderRadius: '16px', padding: '16px 26px', fontWeight: 700, fontSize: '1.05rem', boxShadow: '0 8px 22px rgba(0,0,0,0.5)', cursor: 'pointer' }}>✔ Save</button>
+        {addPick === 'payee' && (<>
+          <div onClick={() => setAddPick(null)} style={{ position: 'fixed', inset: 0, backgroundColor: 'rgba(0,0,0,0.6)', zIndex: 70 }} />
+          <div data-testid="add-payee-sheet" role="dialog" aria-label="Choose payee" style={{ position: 'fixed', left: 0, right: 0, bottom: 0, maxHeight: '80vh', overflowY: 'auto', zIndex: 71, backgroundColor: MD.card, borderRadius: '18px 18px 0 0', padding: '14px 0 calc(16px + env(safe-area-inset-bottom))' }}>
+            <div style={{ padding: '0 18px 10px' }}><input autoFocus aria-label="Payee" value={addPayeeQ} onChange={e => setAddPayeeQ(e.target.value)} placeholder="Search or enter a payee" style={{ width: '100%', boxSizing: 'border-box', padding: '12px', borderRadius: '10px', border: '2px solid ' + MD.btn, backgroundColor: MD.bg, color: MD.text }} /></div>
+            {addPayeeQ.trim() && !payeeMemory.some(pm => pm.name.toLowerCase() === q) && <button onClick={() => { handlePayeeChange(addPayeeQ.trim()); setAddPick(null); }} style={{ display: 'block', width: '100%', textAlign: 'left', background: 'none', border: 'none', color: MD.accent, fontWeight: 700, padding: '12px 18px', fontSize: '1rem', cursor: 'pointer' }}>Use “{addPayeeQ.trim()}”</button>}
+            {names.map(pm => (<button key={pm.name} onClick={() => { handlePayeeChange(pm.name); setAddPick(null); }} style={{ display: 'block', width: '100%', textAlign: 'left', background: 'none', border: 'none', color: MD.text, padding: '12px 18px', fontSize: '1rem', cursor: 'pointer' }}>{pm.name}</button>))}
+          </div>
+        </>)}
+        {addPick === 'cat' && (<>
+          <div onClick={() => setAddPick(null)} style={{ position: 'fixed', inset: 0, backgroundColor: 'rgba(0,0,0,0.6)', zIndex: 70 }} />
+          <div data-testid="add-cat-sheet" role="dialog" aria-label="Choose category" style={{ position: 'fixed', left: 0, right: 0, bottom: 0, maxHeight: '75vh', overflowY: 'auto', zIndex: 71, backgroundColor: MD.card, borderRadius: '18px 18px 0 0', padding: '14px 0 calc(16px + env(safe-area-inset-bottom))' }}>
+            <div style={{ fontWeight: 800, padding: '4px 18px 10px', fontSize: '1.05rem' }}>Category</div>
+            {txEnvelopeId && <button onClick={() => { setTxEnvelopeId(''); setAddPick(null); }} style={{ display: 'block', width: '100%', textAlign: 'left', background: 'none', border: 'none', color: '#ffcf70', padding: '12px 18px', fontSize: '1rem', cursor: 'pointer' }}>Uncategorized</button>}
+            {envelopeChoices.map(c => (
+              <div key={c.label}>
+                <div style={{ padding: '10px 18px 4px', fontSize: '0.78rem', fontWeight: 700, color: MD.muted, textTransform: 'uppercase', letterSpacing: '0.04em' }}>{c.label}</div>
+                {c.list.map(e => (<button key={e.id} onClick={() => { setTxEnvelopeId(e.id); setAddPick(null); }} style={{ display: 'flex', justifyContent: 'space-between', width: '100%', textAlign: 'left', background: txEnvelopeId === e.id ? '#23235a' : 'none', border: 'none', color: MD.text, padding: '12px 18px', fontSize: '1rem', cursor: 'pointer' }}><span>{e.name}</span>{txEnvelopeId === e.id && <span>✓</span>}</button>))}
+              </div>
+            ))}
+          </div>
+        </>)}
+      </div>
+    );
+  };
+
+  const MOBILE_TABS = [['budget', 'Plan', '◔'], ['transactions', 'Spending', '$'], ['accounts', 'Accounts', '▦'], ['reports', 'Reflect', '◭']];
 
   if (session === undefined) {
     return <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', fontFamily: 'system-ui, sans-serif', color: '#6b7280', backgroundColor: '#f4f5f7' }}>Loading…</div>;
@@ -5493,7 +6122,7 @@ export default function BudgetApp() {
   if (!session) return <AuthScreen />;
 
   return (
-    <div style={{ display: 'flex', minHeight: '100vh', fontFamily: 'system-ui, -apple-system, sans-serif', color: '#1f2937', backgroundColor: isMobile ? '#f4f5f7' : (activeTab === 'budget' || activeTab === 'transactions' || activeTab === 'reports' ? '#ffffff' : '#f4f5f7') }}>
+    <div style={{ display: 'flex', minHeight: '100vh', fontFamily: 'system-ui, -apple-system, sans-serif', color: '#1f2937', backgroundColor: isMobile ? ((activeTab === 'budget' || activeTab === 'transactions' || (activeTab === 'accounts' && !manageAccounts)) ? '#0a0a14' : '#f4f5f7') : (activeTab === 'budget' || activeTab === 'transactions' || activeTab === 'reports' ? '#ffffff' : '#f4f5f7') }}>
 
       {/* Mobile overlay behind the drawer */}
       {isMobile && sidebarOpen && (
@@ -5582,10 +6211,10 @@ export default function BudgetApp() {
 
       {/* Main content */}
       <div style={{ flex: 1, minWidth: 0 }}>
-        <div style={{ width: '100%', maxWidth: (!isMobile && ((isWide && activeTab === 'budget') || activeTab === 'reports' || activeTab === 'transactions')) ? 'none' : '1040px', margin: (!isMobile && ((isWide && activeTab === 'budget') || activeTab === 'reports' || activeTab === 'transactions')) ? '0' : '0 auto', padding: isMobile ? '10px 10px 96px' : ((isWide && activeTab === 'budget') ? '16px 356px 16px 24px' : (activeTab === 'reports' || activeTab === 'transactions') ? '0 24px 24px' : '16px 20px'), boxSizing: 'border-box' }}>
+        <div style={{ width: '100%', maxWidth: (!isMobile && ((isWide && activeTab === 'budget') || activeTab === 'reports' || activeTab === 'transactions')) ? 'none' : '1040px', margin: (!isMobile && ((isWide && activeTab === 'budget') || activeTab === 'reports' || activeTab === 'transactions')) ? '0' : '0 auto', padding: isMobile ? ((activeTab === 'budget' || activeTab === 'transactions' || (activeTab === 'accounts' && !manageAccounts)) ? '0 0 0' : '10px 10px 96px') : ((isWide && activeTab === 'budget') ? '16px 356px 16px 24px' : (activeTab === 'reports' || activeTab === 'transactions') ? '0 24px 24px' : '16px 20px'), boxSizing: 'border-box' }}>
 
       {/* Top bar */}
-      <header style={{ position: 'relative', display: 'flex', justifyContent: isMobile ? 'center' : 'space-between', alignItems: 'center', gap: '10px', marginBottom: '14px', flexWrap: 'wrap' }}>
+      <header style={{ position: 'relative', display: (isMobile && (activeTab === 'budget' || activeTab === 'transactions' || (activeTab === 'accounts' && !manageAccounts))) ? 'none' : 'flex', justifyContent: isMobile ? 'center' : 'space-between', alignItems: 'center', gap: '10px', marginBottom: '14px', flexWrap: 'wrap' }}>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: isMobile ? (activeTab === 'budget' ? 'flex-start' : 'center') : 'flex-start', gap: '10px', minWidth: 0, width: isMobile ? '100%' : 'auto' }}>
           {!isMobile && (
             <button
@@ -5616,12 +6245,12 @@ export default function BudgetApp() {
         ) : isMobile && activeTab === 'budget' ? null : !isMobile && rtaPill}
         {isMobile && activeTab !== 'budget' && <button onClick={() => setSidebarOpen(true)} aria-label="Menu" style={{ position: 'absolute', right: '10px', top: '12px', background: 'none', border: 'none', fontSize: '1.5rem', color: '#374151', cursor: 'pointer', lineHeight: 1 }}>⋮</button>}
       </header>
-      {isMobile && activeTab === 'budget' && monthPickerOpen && (
+      {false && isMobile && activeTab === 'budget' && monthPickerOpen && (
         <div data-testid="month-picker" style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '6px', marginTop: '-6px', marginBottom: '10px' }}>
           {monthNav}
         </div>
       )}
-      {isMobile && activeTab === 'budget' && (
+      {false && isMobile && activeTab === 'budget' && (
         <div style={{ position: 'relative', marginBottom: '12px' }}>
           <div data-testid="rta-pill" style={{ backgroundColor: rtaTone.bg, color: rtaTone.fg, borderRadius: '14px', padding: '14px 12px', textAlign: 'center' }}>
             <div style={{ fontSize: '1.7rem', fontWeight: 800, lineHeight: 1.1 }}>{formatMoney(rtaShown)}</div>
@@ -5756,7 +6385,9 @@ export default function BudgetApp() {
       )}
 
       {/* BUDGET TAB */}
-      {activeTab === 'budget' && (
+      {isMobile && activeTab === 'budget' && renderMobilePlan()}
+      {isMobile && activeTab === 'budget' && renderMobileEnvDetails()}
+      {activeTab === 'budget' && !isMobile && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
           {/* Month summary */}
           {isMobile && showRtaInfo && <div style={{ backgroundColor: 'white', padding: '10px 14px', borderRadius: '8px', border: '1px solid #e3e6eb' }}>
@@ -6614,37 +7245,46 @@ export default function BudgetApp() {
       )}
 
       {/* ACCOUNTS TAB */}
-      {activeTab === 'accounts' && isMobile && !manageAccounts && (
-        <div data-testid="accounts-overview" style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
-          {[['Cash', sideCash], ['Credit', sideCredit]].filter(([, l]) => l.length > 0).map(([label, list]) => (
-            <div key={label} style={{ backgroundColor: 'white', borderRadius: '12px', border: '1px solid #e3e6eb', overflow: 'hidden' }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', padding: '10px 14px', backgroundColor: '#f7f8fa', fontSize: '0.75rem', fontWeight: 700, letterSpacing: '0.06em', color: '#6b7280', textTransform: 'uppercase' }}>
-                <span>{label}</span><span>{formatMoney(sumBal(list))}</span>
-              </div>
-              {list.map(x => (
-                <div key={x.acc.id} style={{ display: 'flex', alignItems: 'center', borderTop: '1px solid #f0f2f5', backgroundColor: 'white' }}>
-                  <button onClick={() => openAccountRegister(x.acc.id)} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flex: 1, minWidth: 0, padding: '15px 14px', background: 'white', border: 'none', textAlign: 'left', fontSize: '1rem', cursor: 'pointer', color: '#111827' }}>
-                    <span>{x.acc.name}</span>
-                    <span style={{ fontWeight: 600, fontVariantNumeric: 'tabular-nums', color: x.bal < -0.004 ? '#b42318' : '#111827' }}>{formatMoney(x.bal)}</span>
-                  </button>
-                  <button onClick={() => { openAccountRegister(x.acc.id); startReconcile(x.acc.id); }} aria-label={`Reconcile ${x.acc.name}`} style={{ margin: '0 10px', padding: '8px 10px', borderRadius: '8px', border: '1px solid #bbf7d0', backgroundColor: '#f0fdf4', color: '#166534', fontWeight: 700, fontSize: '0.78rem', cursor: 'pointer' }}>Reconcile</button>
-                </div>
-              ))}
+      {activeTab === 'accounts' && isMobile && !manageAccounts && (() => {
+        const sec = (label, total, children, key) => (
+          <div key={key || label} style={{ marginBottom: '14px' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', padding: '18px 20px 8px', fontWeight: 700, fontSize: '0.95rem' }}><span>{label}</span>{total !== null && <span style={{ color: MD.muted, fontWeight: 600 }}>{formatMoney(total)}</span>}</div>
+            <div style={{ margin: '0 16px', backgroundColor: MD.card, borderRadius: '24px', overflow: 'hidden' }}>{children}</div>
+          </div>
+        );
+        const icon = (kind) => (
+          <span style={{ width: '34px', height: '34px', borderRadius: '50%', flexShrink: 0, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', fontSize: '0.8rem', backgroundColor: kind === 'card' ? '#23235a' : kind === 'loan' ? '#23233a' : '#1d3318', color: kind === 'card' ? '#8f8fff' : kind === 'loan' ? '#a4a4bf' : '#7cc427', border: '1px solid ' + (kind === 'card' ? '#35358a' : kind === 'loan' ? '#33334d' : '#2f4d22') }}>{kind === 'card' ? '▭' : kind === 'loan' ? '↘' : '$'}</span>
+        );
+        const balColor = (v) => (v > 0.004 ? '#a8e65a' : v < -0.004 ? '#fff' : MD.muted);
+        const rowOf = (key, kind, name, bal, onClick, last) => (
+          <button key={key} data-testid="acc-row" onClick={onClick} style={{ display: 'flex', alignItems: 'center', gap: '14px', width: '100%', background: 'none', border: 'none', borderBottom: last ? 'none' : '1px solid ' + MD.line, color: MD.text, padding: '15px 16px', cursor: 'pointer', textAlign: 'left', fontSize: '1rem' }}>
+            {icon(kind)}<span style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{name}</span>
+            <span style={{ fontWeight: 700, fontVariantNumeric: 'tabular-nums', color: balColor(bal) }}>{formatMoney(bal)}</span>
+          </button>
+        );
+        const loanTotal = -activeDebts.reduce((t, d) => t + (Number(d.balance) || 0), 0);
+        return (
+          <div data-testid="accounts-overview" style={{ backgroundColor: MD.bg, color: MD.text, minHeight: '100vh', paddingBottom: '170px' }}>
+            <div style={{ position: 'sticky', top: 0, zIndex: 25, backgroundColor: MD.bg, padding: '16px 16px 10px', display: 'flex', alignItems: 'center', gap: '16px' }}>
+              <div style={{ fontWeight: 700, fontSize: '1.4rem', flex: 1 }}>Accounts</div>
+              <button onClick={() => setManageAccounts(true)} aria-label="Add account" style={{ background: 'none', border: '2px solid ' + MD.text, borderRadius: '50%', width: '28px', height: '28px', color: MD.text, fontSize: '1.1rem', lineHeight: 1, cursor: 'pointer', padding: 0 }}>+</button>
+              <button onClick={() => setSidebarOpen(true)} aria-label="Menu" style={{ background: 'none', border: 'none', color: MD.text, fontSize: '1.5rem', cursor: 'pointer', padding: '0 4px', lineHeight: 1 }}>⋮</button>
             </div>
-          ))}
-          {activeInvestments.length > 0 && (
-            <div style={{ backgroundColor: 'white', borderRadius: '12px', border: '1px solid #e3e6eb', overflow: 'hidden' }}>
-              <div style={{ padding: '10px 14px', backgroundColor: '#f7f8fa', fontSize: '0.75rem', fontWeight: 700, letterSpacing: '0.06em', color: '#6b7280' }}>TRACKING</div>
-              <button onClick={() => openTab('investments')} style={{ display: 'flex', justifyContent: 'space-between', width: '100%', padding: '15px 14px', background: 'white', border: 'none', fontSize: '1rem', cursor: 'pointer', textAlign: 'left' }}>
-                <span>Investments</span><span style={{ fontWeight: 600 }}>{formatMoney(invTotals.value)}</span>
-              </button>
+            {sideCash.length > 0 && sec('Cash', sumBal(sideCash), sideCash.map((x, i) => rowOf(x.acc.id, 'cash', x.acc.name, x.bal, () => openAccountRegister(x.acc.id), i === sideCash.length - 1)))}
+            {sideCredit.length > 0 && sec('Credit', sumBal(sideCredit), sideCredit.map((x, i) => rowOf(x.acc.id, 'card', x.acc.name, x.bal, () => openAccountRegister(x.acc.id), i === sideCredit.length - 1)))}
+            {activeDebts.length > 0 && sec('Loan', loanTotal, activeDebts.map((d, i) => rowOf(d.id, 'loan', d.name, -(Number(d.balance) || 0), () => openTab('debts'), i === activeDebts.length - 1)))}
+            {activeInvestments.length > 0 && sec('Tracking', invTotals.value, rowOf('inv', 'cash', 'Investments', invTotals.value, () => openTab('investments'), true))}
+            {sideClosed.length > 0 && sec('Closed', null, (<>
+              <button onClick={() => setClosedOpen(o => !o)} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', width: '100%', background: 'none', border: 'none', color: MD.text, padding: '16px', cursor: 'pointer', fontSize: '1rem', textAlign: 'left' }}><span>{sideClosed.length} closed account{sideClosed.length === 1 ? '' : 's'}</span><span style={{ color: MD.muted }}>{closedOpen ? '⌄' : '›'}</span></button>
+              {closedOpen && sideClosed.map((a, i) => rowOf(a.id, isCreditCard(a) ? 'card' : 'cash', a.name, getAccountBalance(a.id), () => openAccountRegister(a.id), i === sideClosed.length - 1))}
+            </>))}
+            {sideAccounts.length === 0 && <div style={{ textAlign: 'center', color: MD.muted, padding: '24px' }}>No accounts yet.</div>}
+            <div style={{ padding: '4px 16px' }}>
+              <button onClick={() => setManageAccounts(true)} style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '10px', width: '100%', backgroundColor: '#1d1d2c', color: MD.accent, border: 'none', borderRadius: '999px', padding: '16px', fontWeight: 700, fontSize: '1rem', cursor: 'pointer' }}>⊕ Add Account</button>
             </div>
-          )}
-          <button data-testid="all-transactions" onClick={() => { setTxFilterAccount(''); openTab('transactions'); }} style={{ display: 'flex', justifyContent: 'space-between', padding: '15px 14px', borderRadius: '12px', border: '1px solid #e3e6eb', backgroundColor: 'white', fontSize: '1rem', cursor: 'pointer', textAlign: 'left' }}><span>All transactions</span><span style={{ color: '#9ca3af' }}>›</span></button>
-          {sideAccounts.length === 0 && <div style={{ textAlign: 'center', color: '#6b7280', padding: '20px' }}>No accounts yet.</div>}
-          <button onClick={() => setManageAccounts(true)} style={{ padding: '14px', borderRadius: '12px', border: '1px solid #c9dcf0', backgroundColor: 'white', color: '#2f6fb3', fontWeight: 700, fontSize: '1rem', cursor: 'pointer' }}>+ Add / manage accounts</button>
-        </div>
-      )}
+          </div>
+        );
+      })()}
       {activeTab === 'accounts' && (!isMobile || manageAccounts) && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
           {isMobile && <button onClick={() => setManageAccounts(false)} style={{ alignSelf: 'flex-start', background: 'none', border: 'none', color: '#2f6fb3', fontWeight: 700, fontSize: '1rem', cursor: 'pointer', padding: '4px 0' }}>‹ Accounts</button>}
@@ -7389,7 +8029,9 @@ export default function BudgetApp() {
       })()}
 
       {/* TRANSACTIONS TAB */}
-      {activeTab === 'transactions' && (
+      {isMobile && activeTab === 'transactions' && renderMobileSpending()}
+      {isMobile && activeTab === 'transactions' && renderMobileTxDetail()}
+      {activeTab === 'transactions' && !isMobile && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
           {isMobile && txFilterAccount && (() => { const hdrAcc = accounts.find(a => a.id === txFilterAccount && !a.isDeleted); return hdrAcc ? renderAccountHeader(hdrAcc) : null; })()}
 
@@ -8331,31 +8973,34 @@ export default function BudgetApp() {
       )}
       {/* Phone layout: global touch tweaks, transaction sheet, floating add button and bottom tab bar */}
       <style>{`body{margin:0}`}</style>
-      {isMobile && <style>{`input,select,textarea{font-size:16px !important} input[aria-label="Amount"]{font-size:1.5rem !important;font-weight:700 !important;padding:10px !important} [role=dialog] input,[role=dialog] select{min-width:0 !important;max-width:100% !important;box-sizing:border-box !important} button{touch-action:manipulation}`}</style>}
-      {isMobile && txSheetOpen && (
+      {isMobile && <style>{`input,select,textarea{font-size:16px !important} input[aria-label="Amount"]{font-size:1.5rem !important;font-weight:700 !important;padding:10px !important} [data-testid=m-add-tx] input[aria-label="Amount"],[data-testid=m-tx-detail] input[aria-label="Amount"]{font-size:2.4rem !important;font-weight:800 !important} [role=dialog] input,[role=dialog] select{min-width:0 !important;max-width:100% !important;box-sizing:border-box !important} button{touch-action:manipulation}`}</style>}
+      {isMobile && txSheetOpen && !editingTxId && !addLight && renderMobileAddTx()}
+      {isMobile && txSheetOpen && (!!editingTxId || addLight) && (
         <BottomSheet inset={kbInset} title={editingTxId ? 'Edit transaction' : 'Add transaction'} testId="tx-sheet" onClose={() => { setTxSheetOpen(false); cancelEditTx(); }}>
           {txFormCard}
         </BottomSheet>
       )}
       {isMobile && (
-        <nav data-testid="mobile-tabs" style={{ position: 'fixed', left: 0, right: 0, bottom: 0, height: 'calc(58px + env(safe-area-inset-bottom))', paddingBottom: 'env(safe-area-inset-bottom)', display: 'flex', backgroundColor: 'white', borderTop: '1px solid #e3e6eb', zIndex: 30 }}>
+        <>
+        {!txSheetOpen && !selectedEnvId && !mTxId && !envMenuId && (activeTab === 'budget' || activeTab === 'transactions') && (
+          <button data-testid="fab-add" onClick={() => { cancelEditTx(); if (txFilterAccount) setTxAccountId(txFilterAccount); setTxSheetOpen(true); }} aria-label="Add transaction" style={{ position: 'fixed', right: '16px', bottom: 'calc(76px + env(safe-area-inset-bottom))', zIndex: 31, backgroundColor: '#5b5bff', color: 'white', border: 'none', borderRadius: '16px', padding: '16px 24px', fontWeight: 700, fontSize: '1.05rem', boxShadow: '0 8px 22px rgba(0,0,0,0.5)', cursor: 'pointer' }}>＋ Transaction</button>
+        )}
+        <nav data-testid="mobile-tabs" style={{ position: 'fixed', left: 0, right: 0, bottom: 0, height: 'calc(64px + env(safe-area-inset-bottom))', paddingBottom: 'env(safe-area-inset-bottom)', display: 'flex', backgroundColor: '#0a0a14', borderTop: '1px solid #26263f', zIndex: 30 }}>
           {MOBILE_TABS.map(([tab, label, glyph]) => {
             const active = activeTab === tab;
             return (
               <button
                 key={tab}
-                onClick={() => { if (tab === 'add') { cancelEditTx(); if (txFilterAccount) setTxAccountId(txFilterAccount); setTxSheetOpen(true); return; } if (tab === 'transactions') setTxFilterAccount(''); if (tab === 'accounts') setManageAccounts(false); setSelectedEnvId(null); openTab(tab); }}
-                aria-label={tab === 'add' ? 'Add transaction' : undefined}
-                style={tab === 'add' ? { flex: 1, background: 'none', border: 'none', cursor: 'pointer', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'flex-start', gap: '2px', color: '#2f6fb3', fontWeight: 600, fontSize: '0.68rem', paddingTop: 0 } : { flex: 1, background: 'none', border: 'none', cursor: 'pointer', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: '2px', color: active ? '#2f6fb3' : '#6b7280', fontWeight: active ? 700 : 500, fontSize: '0.68rem', borderTop: active ? '2px solid #2f6fb3' : '2px solid transparent' }}
+                onClick={() => { if (tab === 'transactions') setTxFilterAccount(''); if (tab === 'accounts') setManageAccounts(false); setSelectedEnvId(null); setMTxId(null); openTab(tab); }}
+                style={{ flex: 1, background: 'none', border: 'none', cursor: 'pointer', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: '3px', color: active ? '#fff' : '#a4a4bf', fontWeight: active ? 700 : 500, fontSize: '0.72rem' }}
               >
-                {tab === 'add'
-                  ? <span style={{ width: '46px', height: '46px', marginTop: '-14px', borderRadius: '50%', backgroundColor: '#2f6fb3', color: 'white', fontSize: '1.9rem', lineHeight: '44px', boxShadow: '0 3px 10px rgba(0,0,0,0.25)' }}>+</span>
-                  : <span style={{ fontSize: '1.1rem', lineHeight: 1 }}>{glyph}</span>}
+                <span style={{ fontSize: '1.15rem', lineHeight: 1, padding: '4px 20px', borderRadius: '999px', backgroundColor: active ? '#2a2a66' : 'transparent' }}>{glyph}</span>
                 {label}
               </button>
             );
           })}
         </nav>
+        </>
       )}
     </div>
   );
