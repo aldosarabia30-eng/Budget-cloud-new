@@ -1902,7 +1902,7 @@ export default function BudgetApp() {
       const theirs = normData(d);
       if (mergeWith) d = mergeBudgetData(baseRef.current || theirs, mergeWith, theirs); // keep my unsaved edits on top of theirs
       baseRef.current = theirs;
-      setAccounts(d.accounts ?? []);
+      setAccounts((d.accounts ?? []).map(x => (x && !x.isDeleted && x.type !== 'Credit Card' && x.type !== 'Loan' && /loan|mortgage/i.test(x.name || '') ? { ...x, type: 'Loan' } : x)));
       setGroups(d.groups ?? []);
       setCollapsedGroups(d.collapsedGroups ?? {});
       setCollapsedAccountTx(d.collapsedAccountTx ?? {});
@@ -5055,6 +5055,12 @@ export default function BudgetApp() {
                         <button onClick={() => (isReconciling ? setReconcilingAccId(null) : startReconcile(acc.id))} style={{ backgroundColor: '#5b3fd6', color: 'white', border: 'none', padding: '0 22px', height: '38px', borderRadius: '999px', fontWeight: 700, cursor: 'pointer', fontSize: '0.92rem' }}>Reconcile</button>
                       {acctMenuOpen && (
                         <div style={{ position: 'absolute', right: 0, top: '100%', marginTop: '4px', backgroundColor: 'white', border: '1px solid #e3e6eb', borderRadius: '8px', boxShadow: '0 8px 20px rgba(0,0,0,0.15)', zIndex: 40, minWidth: '160px', overflow: 'hidden' }}>
+                          <div style={{ padding: '8px 14px', borderBottom: '1px solid #eee', fontSize: '0.78rem', color: '#6b7280' }}>
+                            Account type
+                            <select aria-label="Account type" value={acc.type} onChange={e => { const t = e.target.value; setAccounts(prev => prev.map(a => (a.id === acc.id ? { ...a, type: t } : a))); setAcctMenuOpen(false); showNotification(`'${acc.name.trim()}' is now a ${t} account.`); }} style={{ display: 'block', width: '100%', marginTop: '4px', padding: '6px', borderRadius: '6px', border: '1px solid #d1d5db' }}>
+                              {['Checking', 'Savings', 'Cash', 'Credit Card', 'Loan'].map(t => <option key={t} value={t}>{t}</option>)}
+                            </select>
+                          </div>
                           <button onClick={() => { setAcctMenuOpen(false); (acc.isHidden ? handleUnhideAccount(acc) : handleHideAccount(acc)); }} aria-label={`${acc.isHidden ? 'Unhide' : 'Hide'} account ${acc.name.trim()}`} style={{ display: 'block', width: '100%', textAlign: 'left', padding: '10px 14px', background: 'white', border: 'none', cursor: 'pointer', fontSize: '0.9rem' }}>{acc.isHidden ? 'Unhide account' : 'Hide account'}</button>
                           <button onClick={() => { setAcctMenuOpen(false); handleSoftDeleteAccount(acc.id); }} style={{ display: 'block', width: '100%', textAlign: 'left', padding: '10px 14px', background: 'white', border: 'none', cursor: 'pointer', fontSize: '0.9rem', color: '#dc2626' }}>Delete account</button>
                         </div>
