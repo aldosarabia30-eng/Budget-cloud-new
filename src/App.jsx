@@ -2223,6 +2223,35 @@ export default function BudgetApp() {
     if (dragRef.current && dragRef.current.cleanup) dragRef.current.cleanup();
   }, []);
 
+  // Android/browser Back walks out of sheets and screens instead of leaving the app.
+  // One sentinel history entry is kept on top; each Back closes the top-most open thing, then returns to the Plan tab.
+  const backRef = useRef(null);
+  backRef.current = () => {
+    const steps = [
+      [envMenuId, () => { setEnvMenuId(null); setKpDraft(null); }], [mTxId, () => setMTxId(null)], [planEdit, () => setPlanEdit(false)],
+      [tgtSub, () => setTgtSub(null)], [tgt, () => setTgt(null)], [ctxMenu, () => setCtxMenu(null)],
+      [splitTxId, () => setSplitTxId(null)], [txSheetOpen, () => setTxSheetOpen(false)], [moveUi, () => setMoveUi(null)],
+      [hideEnvUi, () => setHideEnvUi(null)], [selectedEnvId, () => setSelectedEnvId(null)], [showRtaInfo, () => setShowRtaInfo(false)],
+      [assignOpen, () => setAssignOpen(false)], [monthPickerOpen, () => setMonthPickerOpen(false)], [budgetMenuOpen, () => setBudgetMenuOpen(false)],
+      [acctMenuOpen, () => setAcctMenuOpen(false)], [autoMenuOpen, () => setAutoMenuOpen(false)], [movesOpen, () => setMovesOpen(false)],
+      [planFilterOpen, () => setPlanFilterOpen(false)], [txFiltersOpen, () => setTxFiltersOpen(false)], [mSearchOpen, () => setMSearchOpen(false)],
+      [ax, () => setAx(null)], [schedForm, () => setSchedForm(null)], [invFormOpen, () => setInvFormOpen(false)],
+      [showCsv, () => setShowCsv(false)], [selectMode, () => setSelectMode(false)], [editingTxId, () => setEditingTxId(null)],
+      [isMobile && sidebarOpen, () => setSidebarOpen(false)], [manageAccounts, () => setManageAccounts(false)],
+      [activeTab !== 'budget', () => setActiveTab('budget')]
+    ];
+    const hit = steps.find(([open]) => !!open);
+    if (hit) hit[1]();
+  };
+  useEffect(() => {
+    if (typeof window === 'undefined' || !window.history) return undefined;
+    const arm = () => { try { window.history.pushState({ budgetBack: true }, ''); } catch (e) { /* ignore */ } };
+    arm();
+    const onPop = () => { backRef.current && backRef.current(); arm(); };
+    window.addEventListener('popstate', onPop);
+    return () => window.removeEventListener('popstate', onPop);
+  }, []);
+
   const openTab = (tab) => {
     setTrashConfirm(null);
     if (tab === 'new' && editingEnvId) resetEnvForm(); // "+ New" always starts a fresh form
