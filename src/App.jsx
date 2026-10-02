@@ -988,6 +988,8 @@ const buildActualImport = (tables, choices, stamp) => {
 const ynabHeaderIndex = (header) => {
   const m = {};
   header.forEach((h, i) => { m[String(h).replace(/^﻿/, '').trim().toLowerCase()] = i; });
+  // YNAB renamed the Plan column "Budgeted" to "Assigned"; accept both
+  if (!('budgeted' in m) && 'assigned' in m) m.budgeted = m.assigned;
   return m;
 };
 const ynabKind = (rows) => {
@@ -1143,9 +1145,12 @@ const buildYnabImport = (reg, plan, choices, stamp) => {
   const planRows = [];
   if (plan) {
     const ph = ynabHeaderIndex(plan[0]);
+    // YNAB's credit card payment categories (named after each card) are handled by this app's own card payment logic
+    const cardNames = new Set(rows.map(r => r.acct.toLowerCase()));
     plan.slice(1).forEach(r => {
       const { group, cat } = ynabCategory(r, ph);
       if (!cat || ynabIsIncome(group, cat) || ynabIsInternal(group)) return;
+      if (/^credit card payments?$/i.test(group) || (/hidden/i.test(group) && cardNames.has(cat.toLowerCase()))) return;
       const month = ynabMonthKey(r[ph.month]);
       const amt = ynabMoney(r[ph.budgeted]);
       planRows.push({ group, cat, month, amt });
@@ -1191,6 +1196,7 @@ const buildYnabImport = (reg, plan, choices, stamp) => {
     outAccounts.push(acc);
     accOut.set(n, acc);
   });
+
 
   // --- transactions
   const out = [];
@@ -2330,7 +2336,9 @@ export default function BudgetApp() {
       const budget = env.budget || {};
       const rows = buildEnvTimeline(budget, spend[env.id], key, incomeIn[env.id], cardSpend[env.id]);
       rowsByEnv[env.id] = rows;
-      rows.forEach((r, k) => { if (k < key) penalties += r.cashOver; });
+      // Overspending put on a credit card is not tracked in a card payment category here, so it comes out of
+      // Ready to Assign the next month too. (Otherwise Ready to Assign shows cash that is really owed to the card.)
+      rows.forEach((r, k) => { if (k < key) penalties += r.cashOver + (SHOW_CC_GROUP ? 0 : (r.creditOver || 0)); });
       Object.keys(budget).forEach(k => {
         if (MONTH_RE.test(k) && k <= key) budgetedThrough += Number(budget[k]) || 0;
       });
