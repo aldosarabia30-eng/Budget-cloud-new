@@ -279,7 +279,9 @@ const incomeAllocs = (t) => {
     .map(a => ({ envelopeId: a.envelopeId, amount: Number(a.amount) }));
 };
 // New (imported) transactions wait for approval. Anything spent without a category also needs a look.
-const isUncategorizedSpend = (t) => !!t && t.type === 'expense' && !t.isTransfer && (isSplitTx(t) ? t.splits.some(sp => !sp.envelopeId) : !t.envelopeId);
+// Loan accounts never need categories (interest and adjustments are not envelope spending); the app keeps this set current.
+let LOAN_ACC_IDS = new Set();
+const isUncategorizedSpend = (t) => !!t && t.type === 'expense' && !t.isTransfer && !LOAN_ACC_IDS.has(t.accountId) && (isSplitTx(t) ? t.splits.some(sp => !sp.envelopeId) : !t.envelopeId);
 const needsAttention = (t) => !!t && !t.isDeleted && (!!t.unapproved || isUncategorizedSpend(t));
 const importSig = (rows) => (rows[0] || []).map(c => String(c).trim().toLowerCase()).join('|');
 // Split amounts can be typed as a sum, e.g. "13.97+4.50+2" (a trailing "+" is ignored while typing).
@@ -2284,6 +2286,7 @@ export default function BudgetApp() {
   const isCreditCard = (acc) => acc?.type === 'Credit Card';
   // Loans (like YNAB's Loans group) hold debt: they are not cash, so they never feed opening balances or age of money.
   const isLoanAcc = (acc) => acc?.type === 'Loan';
+  LOAN_ACC_IDS = new Set(accounts.filter(x => x.type === 'Loan' || (x.type !== 'Credit Card' && /loan|mortgage/i.test(x.name || ''))).map(x => x.id));
 
   // Does this transaction add to Ready to Assign? Only income into a live, non-credit-card account.
   const countsTowardRTA = (tx) => {
@@ -5409,7 +5412,7 @@ export default function BudgetApp() {
                     )}
                   </div>
                   <div style={cell({ fontSize: '0.9rem', gap: '8px' })}>
-                    {tx.isTransfer ? <span style={{ color: '#6b7280' }}>Category not needed</span>
+                    {(tx.isTransfer || LOAN_ACC_IDS.has(tx.accountId)) ? <span style={{ color: '#6b7280' }}>Category not needed</span>
                       : split ? (<>
                         <button type="button" onClick={() => setCollapsedSplits(c => (c.includes(tx.id) ? c.filter(x => x !== tx.id) : [...c, tx.id]))} aria-label={splitOpen ? 'Collapse split' : 'Expand split'} style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 0, color: '#4b5563', fontSize: '0.8rem' }}>{splitOpen ? '⌄' : '›'}</button>
                         <span>Split (Multiple Categories)…</span>
@@ -6459,7 +6462,7 @@ export default function BudgetApp() {
         <div style={card}>
           {rowBox('⇄', 'Payee', tx.isTransfer ? <div style={{ fontWeight: 600, fontSize: '1.05rem' }}>{tx.payee}</div> : <input aria-label="Payee" list="payee-suggestions" key={tx.id + ':p'} defaultValue={tx.payee} disabled={locked} onBlur={e => { const v = e.target.value.trim(); if (v && v !== tx.payee) patchTx(tx.id, { payee: v }); }} style={field} />)}
           {rowBox('▣', 'Category',
-            tx.isTransfer ? <span style={{ color: MD.muted }}>Category not needed</span>
+            (tx.isTransfer || LOAN_ACC_IDS.has(tx.accountId)) ? <span style={{ color: MD.muted }}>Category not needed</span>
             : split ? <div>{tx.splits.map((sp, i) => { const se = envelopes.find(e => e.id === sp.envelopeId); return <div key={i} data-testid="split-part" style={{ fontSize: '0.95rem', display: 'flex', justifyContent: 'space-between', padding: '2px 0' }}><span>{se ? se.name : 'No envelope'}</span><span>{plainMoney(sp.amount)}</span></div>; })}</div>
             : income ? <span style={{ backgroundColor: '#1c3a1c', color: '#b6f08a', borderRadius: '8px', padding: '5px 10px', fontSize: '0.95rem' }}>Ready to Assign</span>
             : <span style={{ backgroundColor: env ? '#25253f' : '#4a3410', color: env ? MD.text : '#ffcf70', borderRadius: '8px', padding: '5px 10px', fontSize: '0.95rem' }}>{env ? env.name : 'Uncategorized'}</span>,
