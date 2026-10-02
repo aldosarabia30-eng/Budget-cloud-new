@@ -1322,10 +1322,11 @@ const compactMoney = (n) => {
   return '$' + Math.round(v);
 };
 
+const chartDims = (w0, h0) => { const vw = typeof window !== 'undefined' ? window.innerWidth : 0; return vw > 900 ? [Math.min(1600, vw - 340), 300] : [w0, h0]; };
 // Grouped bar chart: money out (blue) and money in (green) for each month. Click a month to open it.
 // Simple line chart for one series: points = [{ label, value }]. Handles negative values.
 const LineChart = ({ points, color = '#2f6fb3', ariaLabel, format = (v) => formatMoney(v) }) => {
-  const W = 640, H = 210, padL = 62, padR = 10, padT = 12, padB = 30;
+  const [W, H] = chartDims(640, 210); const padL = 62, padR = 10, padT = 12, padB = 30;
   if (!points.length) return null;
   const vals = points.map(p => p.value);
   let lo = Math.min(0, ...vals), hi = Math.max(0, ...vals);
@@ -1357,8 +1358,7 @@ const LineChart = ({ points, color = '#2f6fb3', ariaLabel, format = (v) => forma
 };
 
 const ReportChart = ({ data, selectedKey, onSelect }) => {
-  const W = 640;
-  const H = 210;
+  const [W, H] = chartDims(640, 210);
   const padL = 46;
   const padR = 8;
   const padT = 10;
@@ -1720,6 +1720,8 @@ export default function BudgetApp() {
   const [scheduled, setScheduled] = useState([]);
   const [moves, setMoves] = useState([]); // log of assigning/moving money, kept for 34 days
   const [movesOpen, setMovesOpen] = useState(false);
+  const [envPop, setEnvPop] = useState(null); // { group, name, x, y }: the quick 'new envelope' popover on a group row
+  const [groupPop, setGroupPop] = useState(null); // null = closed, otherwise the name being typed
   const [movesIntroSeen, setMovesIntroSeen] = useState(() => { try { return localStorage.getItem('recentMovesIntro') === '1'; } catch (e) { return false; } });
   const addCardRef = useRef(null); // wrapper of the Add Transaction card, so the page doesn't jump while the edit panel is open
   const addCardH = useRef(0);
@@ -2588,6 +2590,24 @@ export default function BudgetApp() {
     setGroups([...groups, newGroup.trim()]);
     setNewGroup('');
     showNotification(`Group '${newGroup}' added.`);
+  };
+
+  const submitEnvPop = () => {
+    if (!envPop) return;
+    const name = envPop.name.trim();
+    if (!name) return;
+    if (envelopes.some(e => !e.isDeleted && e.group === envPop.group && e.name.trim().toLowerCase() === name.toLowerCase())) { showNotification(`'${envPop.group}' already has an envelope named '${name}'.`); return; }
+    setEnvelopes([...envelopes, { id: 'env-' + Date.now(), name, group: envPop.group, budget: {}, isDeleted: false, goalType: 'none', targetAmount: 0, targetDate: '' }]);
+    setEnvPop(null);
+    showNotification(`Envelope '${name}' created.`);
+  };
+  const submitGroupPop = () => {
+    const name = (groupPop || '').trim();
+    if (!name) return;
+    if (groups.some(g => g.toLowerCase() === name.toLowerCase())) { showNotification(`A group named '${name}' already exists.`); return; }
+    setGroups([...groups, name]);
+    setGroupPop(null);
+    showNotification(`Group '${name}' added.`);
   };
 
   const handleRemoveGroup = (groupName) => {
@@ -4391,7 +4411,7 @@ export default function BudgetApp() {
       const net = round2(totInc - totExp);
       const rate = totInc > 0 ? Math.round((net / totInc) * 100) : null;
       const maxV = Math.max(1, ...months.flatMap(m => [m.inc, m.exp]));
-      const W = 640, H = 220, padL = 8, padB = 28, bw = Math.max(6, Math.min(22, (W - padL) / Math.max(1, months.length) / 2.6));
+      const [W, H] = chartDims(640, 220); const padL = 8, padB = 28, bw = Math.max(6, Math.min(22, (W - padL) / Math.max(1, months.length) / 2.6));
       const slot = (W - padL) / Math.max(1, months.length);
       const y = (v) => H - padB - (v / maxV) * (H - padB - 14);
       return (
@@ -4806,7 +4826,7 @@ export default function BudgetApp() {
     const workingBal = getAccountBalance(acc.id);
     const isReconciling = reconcilingAccId === acc.id;
     return (
-      <div data-testid="account-header" style={{ backgroundColor: acc.isHidden ? '#f9fafb' : 'white', borderRadius: '10px', padding: '14px', boxShadow: '0 1px 3px rgba(0,0,0,0.1)', position: 'relative', zIndex: 5 }}>
+      <div data-testid="account-header" style={{ backgroundColor: acc.isHidden ? '#f9fafb' : 'white', borderRadius: isMobile ? '10px' : 0, padding: isMobile ? '14px' : '14px 4px', boxShadow: isMobile ? '0 1px 3px rgba(0,0,0,0.1)' : 'none', borderBottom: isMobile ? 'none' : '1px solid #e8e5de', position: 'relative', zIndex: 5 }}>
                 {!isMobile ? (
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '10px' }}>
                     <div style={{ display: 'flex', alignItems: 'center', gap: '22px', flexWrap: 'wrap' }}>
@@ -4921,14 +4941,15 @@ export default function BudgetApp() {
     const totCleared = round2(accList.reduce((t, a) => t + getClearedBalance(a.id), 0));
     const totWork = round2(accList.reduce((t, a) => t + getAccountBalance(a.id), 0));
     return (
-      <div data-testid="desktop-register" style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
-        {allMode && (
-          <div style={{ backgroundColor: 'white', borderRadius: '10px', padding: '14px', boxShadow: '0 1px 3px rgba(0,0,0,0.1)', display: 'flex', alignItems: 'center', gap: '28px', flexWrap: 'wrap' }}>
+      <div data-testid="desktop-register" style={{ display: 'flex', flexDirection: 'column', gap: 0 }}>
+        <div data-testid="register-sticky" style={{ position: 'sticky', top: 0, zIndex: 20, backgroundColor: '#ffffff', paddingTop: '8px', margin: '0 -24px', padding: '8px 24px 0', boxSizing: 'border-box' }}>
+        {allMode ? (
+          <div style={{ backgroundColor: 'white', borderBottom: '1px solid #e8e5de', padding: '14px 4px', display: 'flex', alignItems: 'center', gap: '28px', flexWrap: 'wrap' }}>
             <div style={{ fontWeight: 800, fontSize: '1.3rem', color: '#111827' }}>All Accounts</div>
             {balanceTriple(totCleared, totWork)}
           </div>
-        )}
-        <div style={{ backgroundColor: 'white', borderRadius: '10px', boxShadow: '0 1px 3px rgba(0,0,0,0.1)' }}>
+        ) : (() => { const hdrAcc = accounts.find(a => a.id === txFilterAccount && !a.isDeleted); return hdrAcc ? renderAccountHeader(hdrAcc) : null; })()}
+        <div style={{ backgroundColor: 'white', marginTop: 0 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: '14px', padding: '8px 14px', flexWrap: 'wrap', borderBottom: '1px solid #eef0f3' }}>
             <button onClick={() => setShowAddForm(v => !v)} aria-expanded={showAddForm} style={tbtn}>⊕ Add Transaction</button>
             <button onClick={() => setShowCsv(v => !v)} aria-expanded={showCsv} style={tbtn}>⬆ File Import</button>
@@ -4966,10 +4987,16 @@ export default function BudgetApp() {
             </div>
           )}
           {/* column headings */}
-          <div style={{ display: 'grid', gridTemplateColumns: cols, columnGap: '10px', alignItems: 'center', padding: '8px 14px', fontSize: '0.7rem', fontWeight: 700, letterSpacing: '0.05em', color: '#6b7280', borderBottom: '1px solid #e3e6eb', backgroundColor: '#fafbfc', position: 'sticky', top: 0, zIndex: 3 }}>
+          <div style={{ display: 'grid', gridTemplateColumns: cols, columnGap: '10px', alignItems: 'center', padding: '8px 14px', fontSize: '0.7rem', fontWeight: 700, letterSpacing: '0.05em', color: '#6b7280', borderBottom: '1px solid #e3e6eb', backgroundColor: '#fafbfc', borderRadius: '0' }}>
             <input type="checkbox" aria-label="Select all transactions" checked={selectedTxIds.length === visibleTransactions.length && visibleTransactions.length > 0} onChange={handleSelectAllTx} style={{ cursor: 'pointer' }} />
             {allMode && <div>ACCOUNT</div>}<div>DATE ▾</div><div>PAYEE</div><div>CATEGORY</div><div>MEMO</div><div style={{ textAlign: 'right' }}>OUTFLOW</div><div style={{ textAlign: 'right' }}>INFLOW</div><div style={{ textAlign: 'center' }}>©</div><div />
           </div>
+        </div>
+        </div>
+        <div ref={addCardRef} style={editingTxId ? { height: addCardH.current || undefined, flexShrink: 0 } : undefined}>
+          {!editingTxId && showAddForm && <div style={{ margin: '12px 0' }}>{txFormCard}</div>}
+        </div>
+        <div style={{ backgroundColor: 'white' }}>
           {flat.length === 0 && <p style={{ color: '#6b7280', fontSize: '0.9rem', padding: '16px 14px', margin: 0 }}>{txFiltersActive ? 'No transactions match your search or filters.' : 'No transactions recorded yet.'}</p>}
           {flat.map(tx => {
             const acc = accounts.find(a => a.id === tx.accountId);
@@ -5263,7 +5290,7 @@ export default function BudgetApp() {
   if (!session) return <AuthScreen />;
 
   return (
-    <div style={{ display: 'flex', minHeight: '100vh', fontFamily: 'system-ui, -apple-system, sans-serif', color: '#1f2937', backgroundColor: isMobile ? '#f4f5f7' : (activeTab === 'budget' ? '#ffffff' : '#f4f5f7') }}>
+    <div style={{ display: 'flex', minHeight: '100vh', fontFamily: 'system-ui, -apple-system, sans-serif', color: '#1f2937', backgroundColor: isMobile ? '#f4f5f7' : (activeTab === 'budget' || activeTab === 'transactions' || activeTab === 'reports' ? '#ffffff' : '#f4f5f7') }}>
 
       {/* Mobile overlay behind the drawer */}
       {isMobile && sidebarOpen && (
@@ -5352,7 +5379,7 @@ export default function BudgetApp() {
 
       {/* Main content */}
       <div style={{ flex: 1, minWidth: 0 }}>
-        <div style={{ width: '100%', maxWidth: (!isMobile && isWide && activeTab === 'budget') ? 'none' : '1040px', margin: (!isMobile && isWide && activeTab === 'budget') ? '0' : '0 auto', padding: isMobile ? '10px 10px 96px' : ((isWide && activeTab === 'budget') ? '16px 356px 16px 24px' : '16px 20px'), boxSizing: 'border-box' }}>
+        <div style={{ width: '100%', maxWidth: (!isMobile && ((isWide && activeTab === 'budget') || activeTab === 'reports' || activeTab === 'transactions')) ? 'none' : '1040px', margin: (!isMobile && ((isWide && activeTab === 'budget') || activeTab === 'reports' || activeTab === 'transactions')) ? '0' : '0 auto', padding: isMobile ? '10px 10px 96px' : ((isWide && activeTab === 'budget') ? '16px 356px 16px 24px' : (activeTab === 'reports' || activeTab === 'transactions') ? '0 24px 24px' : '16px 20px'), boxSizing: 'border-box' }}>
 
       {/* Top bar */}
       <header style={{ position: 'relative', display: 'flex', justifyContent: isMobile ? 'center' : 'space-between', alignItems: 'center', gap: '10px', marginBottom: '14px', flexWrap: 'wrap' }}>
@@ -5583,7 +5610,22 @@ export default function BudgetApp() {
             <div style={{ display: 'flex', flexDirection: isMobile ? 'row' : 'column', justifyContent: 'space-between', alignItems: isMobile ? 'center' : 'flex-start', gap: isMobile ? '8px' : '10px', flexWrap: 'wrap', position: 'relative' }}>
               {!isMobile && (
                 <div data-testid="budget-toolbar" style={{ display: 'flex', alignItems: 'center', gap: '18px', order: 2, paddingBottom: '2px' }}>
-                  <button onClick={() => openTab('new')} style={{ background: 'none', border: 'none', color: '#4b32c3', fontWeight: 600, fontSize: '0.88rem', cursor: 'pointer', padding: '4px 0' }}>⊕ Category Group</button>
+                  <span style={{ position: 'relative' }}>
+                    <button onClick={() => setGroupPop(g => (g === null ? '' : null))} aria-haspopup="dialog" aria-expanded={groupPop !== null} style={{ background: 'none', border: 'none', color: '#4b32c3', fontWeight: 600, fontSize: '0.88rem', cursor: 'pointer', padding: '4px 0' }}>⊕ Category Group</button>
+                    {groupPop !== null && (
+                      <>
+                        <div onClick={() => setGroupPop(null)} style={{ position: 'fixed', inset: 0, zIndex: 40 }} />
+                        <form role="dialog" aria-label="New Category Group" data-testid="group-pop" onSubmit={e => { e.preventDefault(); submitGroupPop(); }} onKeyDown={e => { if (e.key === 'Escape') setGroupPop(null); }} style={{ position: 'absolute', top: '100%', left: '-8px', marginTop: '14px', width: '250px', backgroundColor: 'white', borderRadius: '12px', boxShadow: '0 12px 36px rgba(0,0,0,0.28)', padding: '14px', zIndex: 41, boxSizing: 'border-box' }}>
+                          <span aria-hidden="true" style={{ position: 'absolute', top: '-6px', left: '34px', width: '12px', height: '12px', backgroundColor: 'white', transform: 'rotate(45deg)' }} />
+                          <input autoFocus value={groupPop} onChange={e => setGroupPop(e.target.value)} placeholder="New Category Group" aria-label="New Category Group" style={{ width: '100%', boxSizing: 'border-box', padding: '10px', border: '2px solid #5b2bf0', borderRadius: '8px', fontSize: '0.95rem', outline: 'none' }} />
+                          <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '10px', marginTop: '14px' }}>
+                            <button type="button" onClick={() => setGroupPop(null)} style={{ backgroundColor: '#ece8ff', color: '#4b32c3', border: 'none', borderRadius: '10px', padding: '9px 18px', fontWeight: 600, cursor: 'pointer' }}>Cancel</button>
+                            <button type="submit" style={{ backgroundColor: '#5b2bf0', color: 'white', border: 'none', borderRadius: '10px', padding: '9px 22px', fontWeight: 700, cursor: 'pointer' }}>OK</button>
+                          </div>
+                        </form>
+                      </>
+                    )}
+                  </span>
                   <button onClick={undo} disabled={!histRef.current.undo.length} aria-label="Undo" style={{ background: 'none', border: 'none', color: histRef.current.undo.length ? '#4b32c3' : '#b8b4d6', fontWeight: 600, fontSize: '0.88rem', cursor: histRef.current.undo.length ? 'pointer' : 'default', padding: '4px 0' }}>↶ Undo</button>
                   <button onClick={redo} disabled={!histRef.current.redo.length} aria-label="Redo" style={{ background: 'none', border: 'none', color: histRef.current.redo.length ? '#4b32c3' : '#b8b4d6', fontWeight: 600, fontSize: '0.88rem', cursor: histRef.current.redo.length ? 'pointer' : 'default', padding: '4px 0' }}>↷ Redo</button>
                   <span style={{ position: 'relative' }}>
@@ -5677,6 +5719,24 @@ export default function BudgetApp() {
                   >
                     <span style={{ fontSize: '0.7rem', color: '#6b7280' }}>{isCollapsed ? '▶' : '▼'}</span> {groupName}
                   </button>
+                  {!isMobile && (
+                    <>
+                      <button onClick={e => { const r = e.currentTarget.getBoundingClientRect(); setEnvPop(envPop && envPop.group === groupName ? null : { group: groupName, name: '', x: r.left, y: r.bottom }); }} aria-label={`Add envelope to ${groupName}`} aria-haspopup="dialog" aria-expanded={!!envPop && envPop.group === groupName} style={{ width: '22px', height: '22px', borderRadius: '6px', border: (envPop && envPop.group === groupName) ? '2px solid #5b2bf0' : '2px solid transparent', backgroundColor: 'transparent', color: '#5b2bf0', cursor: 'pointer', fontSize: '1.05rem', lineHeight: 1, padding: 0, marginLeft: '6px' }}>⊕</button>
+                      {envPop && envPop.group === groupName && (
+                        <>
+                          <div onClick={() => setEnvPop(null)} style={{ position: 'fixed', inset: 0, zIndex: 40 }} />
+                          <form role="dialog" aria-label="New Category" data-testid="env-pop" onSubmit={e => { e.preventDefault(); submitEnvPop(); }} onKeyDown={e => { if (e.key === 'Escape') setEnvPop(null); }} style={{ position: 'fixed', top: `${envPop.y + 12}px`, left: `${Math.max(8, envPop.x - 24)}px`, width: '250px', backgroundColor: 'white', borderRadius: '12px', boxShadow: '0 12px 36px rgba(0,0,0,0.28)', padding: '14px', zIndex: 41, boxSizing: 'border-box' }}>
+                            <span aria-hidden="true" style={{ position: 'absolute', top: '-6px', left: '30px', width: '12px', height: '12px', backgroundColor: 'white', transform: 'rotate(45deg)' }} />
+                            <input autoFocus value={envPop.name} onChange={e => setEnvPop({ ...envPop, name: e.target.value })} placeholder="New Category" aria-label="New Category" style={{ width: '100%', boxSizing: 'border-box', padding: '10px', border: '2px solid #5b2bf0', borderRadius: '8px', fontSize: '0.95rem', outline: 'none' }} />
+                            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '10px', marginTop: '14px' }}>
+                              <button type="button" onClick={() => setEnvPop(null)} style={{ backgroundColor: '#ece8ff', color: '#4b32c3', border: 'none', borderRadius: '10px', padding: '9px 18px', fontWeight: 600, cursor: 'pointer' }}>Cancel</button>
+                              <button type="submit" style={{ backgroundColor: '#5b2bf0', color: 'white', border: 'none', borderRadius: '10px', padding: '9px 22px', fontWeight: 700, cursor: 'pointer' }}>OK</button>
+                            </div>
+                          </form>
+                        </>
+                      )}
+                    </>
+                  )}
                   <button
                     onClick={() => handleRemoveGroup(groupName)}
                     style={{ background: 'none', border: 'none', color: '#9ca3af', cursor: 'pointer', fontSize: '0.72rem', marginLeft: '8px' }}
@@ -7128,12 +7188,7 @@ export default function BudgetApp() {
       {/* TRANSACTIONS TAB */}
       {activeTab === 'transactions' && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
-          {txFilterAccount && (() => { const hdrAcc = accounts.find(a => a.id === txFilterAccount && !a.isDeleted); return hdrAcc ? renderAccountHeader(hdrAcc) : null; })()}
-          {!isMobile && (
-            <div ref={addCardRef} style={editingTxId ? { height: addCardH.current || undefined, flexShrink: 0 } : undefined}>
-              {!editingTxId && showAddForm && txFormCard}
-            </div>
-          )}
+          {isMobile && txFilterAccount && (() => { const hdrAcc = accounts.find(a => a.id === txFilterAccount && !a.isDeleted); return hdrAcc ? renderAccountHeader(hdrAcc) : null; })()}
 
           {transferMatches.length > 0 && (
             <div data-testid="transfer-matches" style={{ backgroundColor: '#eef2ff', border: '1px solid #c7d2fe', padding: '12px 14px', borderRadius: '10px' }}>
