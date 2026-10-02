@@ -278,6 +278,10 @@ const incomeAllocs = (t) => {
     .filter(a => a && a.envelopeId && Number(a.amount) > 0)
     .map(a => ({ envelopeId: a.envelopeId, amount: Number(a.amount) }));
 };
+// New (imported) transactions wait for approval. Anything spent without a category also needs a look.
+const isUncategorizedSpend = (t) => !!t && t.type === 'expense' && !t.isTransfer && (isSplitTx(t) ? t.splits.some(sp => !sp.envelopeId) : !t.envelopeId);
+const needsAttention = (t) => !!t && !t.isDeleted && (!!t.unapproved || isUncategorizedSpend(t));
+const importSig = (rows) => (rows[0] || []).map(c => String(c).trim().toLowerCase()).join('|');
 // Split amounts can be typed as a sum, e.g. "13.97+4.50+2" (a trailing "+" is ignored while typing).
 // Returns the total in dollars, or NaN when the text isn't a valid amount/sum.
 const evalAmount = (raw) => {
@@ -1698,6 +1702,7 @@ export default function BudgetApp() {
   const [addLight, setAddLight] = useState(false); // phone: use the full form (splits, envelope amounts)
   const [closedOpen, setClosedOpen] = useState(false);
   const [payPop, setPayPop] = useState(null); // { fromId, amount, date }
+  const [importRemember, setImportRemember] = useState(true);
   const [showCsv, setShowCsv] = useState(false); // phone: CSV import collapsed by default
   const [manageAccounts, setManageAccounts] = useState(false); // phone: Accounts tab shows overview unless true
   const [showRtaInfo, setShowRtaInfo] = useState(false); // phone: Ready to Assign breakdown
@@ -2531,7 +2536,9 @@ export default function BudgetApp() {
       if (txFilterType) {
         if (txFilterType === 'transfer' ? !t.isTransfer : (t.isTransfer || t.type !== txFilterType)) return false;
       }
-      if (txFilterStatus) {
+      if (txFilterStatus === 'attention') {
+        if (!needsAttention(t)) return false;
+      } else if (txFilterStatus) {
         const isCleared = !!(t.cleared || t.reconciled);
         if (txFilterStatus === 'cleared' ? !isCleared : isCleared) return false;
       }
@@ -3471,6 +3478,7 @@ export default function BudgetApp() {
         envelopeId: txType === 'expense' ? txEnvelopeId : '',
         notes: txNotes
       };
+      delete updated.unapproved; // saving an edit approves a new transaction
       // A transfer edited as a normal transaction (its partner is gone) becomes an ordinary one
       if (old.isTransfer) {
         delete updated.isTransfer;
@@ -3680,15 +3688,30 @@ export default function BudgetApp() {
       setImportDateFormat('auto');
       setImportSign('negative-expense');
       setImportSkipDupes(true);
-      setImportAccountId(
-        accountChoices('').length === 1
+      const pickedAcc = txFilterAccount && activeAccounts.some(a => a.id === txFilterAccount)
+        ? txFilterAccount
+        : (accountChoices('').length === 1
           ? accountChoices('')[0].id
-          : (activeAccounts.some(a => a.id === txAccountId) ? txAccountId : '')
-      );
+          : (activeAccounts.some(a => a.id === txAccountId) ? txAccountId : ''));
+      setImportAccountId(pickedAcc);
+      applyImportMemory(pickedAcc, rows);
     } catch (err) {
       console.error('CSV read error:', err);
       showNotification("Couldn't read that file.");
     }
+  };
+
+  // Reuse the column setup remembered for an account when the file has the same columns
+  const applyImportMemory = (accId, rows) => {
+    const a = accounts.find(x => x.id === accId);
+    const m = a && a.importSetup;
+    if (!m || !rows || !rows.length) return;
+    const ok = m.hasHeader ? m.sig === importSig(rows) : m.sig === `cols:${rows[0].length}`;
+    if (!ok) return;
+    setImportHasHeader(!!m.hasHeader);
+    setImportMap(m.map);
+    setImportSign(m.sign || 'negative-expense');
+    setImportDateFormat(m.dateFormat || 'auto');
   };
 
   const handleImportHeaderToggle = (checked) => {
@@ -3729,12 +3752,25 @@ export default function BudgetApp() {
       notes: r.notes,
       isDeleted: false,
       cleared: true,
-      reconciled: false
+      reconciled: false,
+      unapproved: true
     }));
 
     setTransactions(prev => [...newTxs, ...prev]);
+    if (importRemember) {
+      const setup = { sig: importHasHeader ? importSig(importRows) : `cols:${(importRows[0] || []).length}`, hasHeader: importHasHeader, map: importMap, sign: importSign, dateFormat: importDateFormat };
+      setAccounts(prev => prev.map(a => (a.id === importAccountId ? { ...a, importSetup: setup } : a)));
+    }
+    const intoAcc = importAccountId;
     closeImport();
-    showNotification(`Imported ${newTxs.length} transaction${newTxs.length === 1 ? '' : 's'}.`);
+    setShowCsv(false);
+    // Show the new transactions waiting for approval in that account's register
+    setSelectedTxIds([]);
+    setTxFilterAccount(intoAcc);
+    setTxFilterStatus('attention');
+    setTxAccountId(intoAcc);
+    if (!isMobile) openTab('transactions');
+    showNotification(`Imported ${newTxs.length} transaction${newTxs.length === 1 ? '' : 's'}. Approve or categorize them below.`);
   };
 
   // Assign (or clear) an envelope right from the transaction list, without opening the edit form
@@ -4322,6 +4358,7 @@ export default function BudgetApp() {
         const debit = isNaN(d) ? 0 : Math.abs(d);
         const credit = isNaN(c) ? 0 : Math.abs(c);
         signed = (debit === 0 && credit === 0) ? NaN : credit - debit;
+        if (importSign === 'positive-expense' && !isNaN(signed)) signed = -signed;
       }
 
       const base = {
@@ -4378,6 +4415,96 @@ export default function BudgetApp() {
       <div style={{ fontSize: '1.15rem', fontWeight: 700, color: color || '#111827' }}>{value}</div>
     </div>
   );
+
+
+  // ----- Desktop: Import Transactions dialog -----
+  const renderImportModal = () => {
+    if (!showCsv) return null;
+    const closeAll = () => { closeImport(); setShowCsv(false); };
+    const hasRows = importRows.length > 0 && importPreview;
+    const outCol = importMap.amount !== '' ? importMap.amount : importMap.debit;
+    const inCol = importMap.amount !== '' ? importMap.amount : importMap.credit;
+    const setOutIn = (o, i) => setImportMap(m => (o !== '' && o === i ? { ...m, amount: o, debit: '', credit: '' } : { ...m, amount: '', debit: o, credit: i }));
+    const sel = { width: '100%', padding: '9px 8px', border: '1px solid #dcd7c4', borderRadius: '8px', fontSize: '0.88rem', backgroundColor: '#fbfaf6', color: '#1f2937', boxSizing: 'border-box' };
+    const lab = { fontSize: '0.88rem', color: '#374151', display: 'block', marginBottom: '6px' };
+    const colSel = (label, value, onChange, optional) => (
+      <label style={{ flex: 1, minWidth: 0 }}>
+        <span style={lab}>{label}</span>
+        <select aria-label={label} value={value} onChange={e => onChange(e.target.value)} style={sel}>
+          <option value="">Select…</option>
+          {importColumnOptions.map((h, i) => (<option key={i} value={String(i)}>{String(h).trim() || `Column ${i + 1}`}</option>))}
+        </select>
+      </label>
+    );
+    const chk = (checked, onChange, text, testId) => (
+      <label style={{ display: 'flex', alignItems: 'center', gap: '10px', fontSize: '0.92rem', color: '#1f2937', cursor: 'pointer', margin: '8px 0' }}>
+        <input type="checkbox" data-testid={testId} checked={checked} onChange={e => onChange(e.target.checked)} style={{ width: '16px', height: '16px', accentColor: '#5b2bea' }} />{text}
+      </label>
+    );
+    const can = hasRows && importToImportCount > 0 && importAccountId;
+    const money = (n) => '$' + Number(n).toFixed(2);
+    return (
+      <>
+        <div onClick={closeAll} style={{ position: 'fixed', inset: 0, backgroundColor: 'rgba(17,24,39,0.45)', zIndex: 80 }} />
+        <div role="dialog" aria-label="Import Transactions" data-testid="import-modal" style={{ position: 'fixed', top: '50%', left: '50%', transform: 'translate(-50%, -50%)', width: 'min(640px, 94vw)', maxHeight: '92vh', overflowY: 'auto', backgroundColor: 'white', borderRadius: '16px', boxShadow: '0 20px 60px rgba(0,0,0,0.35)', zIndex: 81 }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '16px 18px', borderBottom: '1px solid #e8e5de' }}>
+            <div style={{ fontSize: '1.15rem', fontWeight: 600 }}>Import Transactions</div>
+            <button onClick={closeAll} aria-label="Close" style={{ background: 'none', border: 'none', color: '#5b3fd6', fontSize: '1.3rem', cursor: 'pointer', lineHeight: 1 }}>✕</button>
+          </div>
+          <div style={{ padding: '14px 18px 18px' }}>
+            <input ref={importFileRef} type="file" accept=".csv,.txt,text/csv" onChange={handleImportFile} style={{ display: 'none' }} data-testid="import-file" />
+            {!hasRows ? (
+              <div style={{ textAlign: 'center', padding: '26px 0 12px' }}>
+                <div style={{ color: '#4b5563', marginBottom: '16px', fontSize: '0.95rem' }}>Upload your bank's CSV export to add its transactions to an account.</div>
+                <button onClick={() => importFileRef.current && importFileRef.current.click()} style={{ backgroundColor: '#5b2bea', color: 'white', border: 'none', borderRadius: '10px', padding: '11px 22px', fontWeight: 700, cursor: 'pointer', fontSize: '0.95rem' }}>Choose CSV file</button>
+              </div>
+            ) : (<>
+              <div style={{ fontSize: '0.92rem', marginBottom: '10px' }}>{importPreview.rows.length} Transactions from <strong>{importFileName}</strong> will be imported into</div>
+              <select aria-label="Import into account" value={importAccountId} onChange={e => { setImportAccountId(e.target.value); applyImportMemory(e.target.value, importRows); }} style={{ ...sel, padding: '11px 10px', fontSize: '0.95rem' }}>
+                <option value="">Select Account</option>
+                {accountChoices(importAccountId).map(acc => (<option key={acc.id} value={acc.id}>{acc.name}</option>))}
+              </select>
+              <div style={{ margin: '16px 0 12px', fontSize: '0.92rem', color: '#374151' }}>Choose the CSV column to match each field.</div>
+              <div style={{ display: 'flex', gap: '10px' }}>
+                {colSel('Date', importMap.date, v => setImportMap(m => ({ ...m, date: v })))}
+                {colSel('Payee', importMap.payee, v => setImportMap(m => ({ ...m, payee: v })))}
+                {colSel('Memo (optional)', importMap.notes, v => setImportMap(m => ({ ...m, notes: v })))}
+                {colSel('Outflow', outCol, v => setOutIn(v, inCol))}
+                {colSel('Inflow', inCol, v => setOutIn(outCol, v))}
+              </div>
+              <div data-testid="import-preview" style={{ marginTop: '14px', border: '1px solid #dcd7c4', borderRadius: '10px', maxHeight: '172px', overflowY: 'auto', backgroundColor: '#fbfaf6' }}>
+                {importPreview.rows.slice(0, 300).map(r => (
+                  <div key={r.index} style={{ display: 'grid', gridTemplateColumns: '92px minmax(0,1.4fr) minmax(0,1fr) 84px 84px', gap: '8px', padding: '9px 10px', borderBottom: '1px solid #e8e5de', fontSize: '0.86rem', opacity: r.status === 'invalid' ? 0.5 : 1 }}>
+                    <span>{r.date ? formatDate(r.date, 'us') : '—'}</span>
+                    <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{r.payee}{r.status === 'dup' && <em style={{ color: '#b45309', marginLeft: '6px', fontSize: '0.74rem' }}>{importSkipDupes ? 'duplicate (skipped)' : 'duplicate'}</em>}{r.status === 'invalid' && <em style={{ color: '#dc2626', marginLeft: '6px', fontSize: '0.74rem' }}>{r.reason}</em>}</span>
+                    <span style={{ color: '#6b7280', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{r.notes}</span>
+                    <span style={{ textAlign: 'right' }}>{r.status !== 'invalid' && r.type === 'expense' ? '-' + money(r.amount) : ''}</span>
+                    <span style={{ textAlign: 'right', color: '#166534' }}>{r.status !== 'invalid' && r.type === 'income' ? money(r.amount) : ''}</span>
+                  </div>
+                ))}
+              </div>
+              <div style={{ margin: '16px 0 2px', fontSize: '0.92rem', fontWeight: 600 }}>Options</div>
+              {chk(!importHasHeader, v => handleImportHeaderToggle(!v), 'No header row', 'opt-noheader')}
+              {chk(importSign === 'positive-expense', v => setImportSign(v ? 'positive-expense' : 'negative-expense'), 'Swap Inflow and Outflow', 'opt-swap')}
+              {chk(importSkipDupes, setImportSkipDupes, `Skip likely duplicates${importPreview.dup ? ` (${importPreview.dup} found)` : ''}`, 'opt-dupes')}
+              {chk(importRemember, setImportRemember, 'Remember setting for this account', 'opt-remember')}
+              <div style={{ display: 'flex', alignItems: 'center', gap: '10px', margin: '6px 0 0' }}>
+                <span style={{ fontSize: '0.92rem' }}>Date format</span>
+                <select aria-label="Date format" value={importDateFormat} onChange={e => setImportDateFormat(e.target.value)} style={{ ...sel, width: 'auto' }}>
+                  <option value="auto">Auto-detect</option><option value="mdy">MM/DD/YYYY</option><option value="dmy">DD/MM/YYYY</option><option value="ymd">YYYY-MM-DD</option>
+                </select>
+              </div>
+              <div style={{ display: 'flex', justifyContent: 'flex-end', alignItems: 'center', gap: '10px', marginTop: '16px' }}>
+                {importPreview.invalid > 0 && <span style={{ color: '#dc2626', fontSize: '0.82rem', marginRight: 'auto' }}>{importPreview.invalid} unreadable row{importPreview.invalid === 1 ? '' : 's'} will be skipped</span>}
+                <button onClick={closeAll} style={{ backgroundColor: '#ece9ff', color: '#4b32c3', border: 'none', borderRadius: '10px', padding: '11px 22px', fontWeight: 600, cursor: 'pointer' }}>Cancel</button>
+                <button data-testid="import-confirm" onClick={handleConfirmImport} disabled={!can} style={{ backgroundColor: '#5b2bea', color: 'white', border: 'none', borderRadius: '10px', padding: '11px 24px', fontWeight: 700, cursor: can ? 'pointer' : 'not-allowed', opacity: can ? 1 : 0.5 }}>Import{importToImportCount ? ` ${importToImportCount}` : ''}</button>
+              </div>
+            </>)}
+          </div>
+        </div>
+      </>
+    );
+  };
 
   const mapSelect = (label, key) => (
     <label key={key} style={{ display: 'flex', flexDirection: 'column', fontSize: '0.75rem', color: '#6b7280', gap: '2px' }}>
@@ -5098,9 +5225,31 @@ export default function BudgetApp() {
       </>
     );
   };
+  const approveTxs = (ids) => {
+    const set = new Set(ids);
+    setTransactions(prev => prev.map(t => (set.has(t.id) && t.unapproved ? { ...t, unapproved: false } : t)));
+  };
+  // Banner above a register: how many transactions still need approval or a category
+  const renderApproveBanner = (dark) => {
+    const scope = activeTransactions.filter(t => !txFilterAccount || t.accountId === txFilterAccount);
+    const nNew = scope.filter(t => t.unapproved).length;
+    const nCat = scope.filter(t => isUncategorizedSpend(t)).length;
+    const total = scope.filter(needsAttention).length;
+    const on = txFilterStatus === 'attention';
+    if (total === 0 && !on) return null;
+    const text = total === 0 ? 'Nothing left to approve or categorize.' : nNew && nCat ? `${total} new transaction${total === 1 ? '' : 's'} to approve or categorize.` : nNew ? `${nNew} new transaction${nNew === 1 ? '' : 's'} to approve.` : `${nCat} transaction${nCat === 1 ? ' needs' : 's need'} a category.`;
+    return (
+      <div data-testid="approve-banner" style={dark ? { margin: '6px 16px 8px', backgroundColor: '#2a2a5c', color: MD.text, borderRadius: '14px', padding: '10px 12px', display: 'flex', alignItems: 'center', gap: '10px', fontSize: '0.88rem' } : { margin: '0 -24px', backgroundColor: '#c9c6f5', color: '#1f1b4d', padding: '9px 16px', display: 'flex', alignItems: 'center', gap: '10px', fontSize: '0.95rem' }}>
+        <span style={{ width: '16px', height: '16px', borderRadius: '50%', backgroundColor: dark ? MD.accent : '#1f1b4d', color: dark ? '#0a0a14' : '#c9c6f5', fontSize: '0.65rem', fontWeight: 800, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>i</span>
+        <span style={{ flex: 1 }}>{text}</span>
+        <button data-testid="approve-view" onClick={() => { setSelectedTxIds([]); setTxFilterStatus(on ? '' : 'attention'); }} style={{ backgroundColor: dark ? MD.btn : '#3b22d6', color: 'white', border: 'none', borderRadius: '8px', padding: dark ? '7px 14px' : '8px 20px', fontWeight: 700, cursor: 'pointer' }}>{on ? 'Show all' : 'View'}</button>
+      </div>
+    );
+  };
+
   const renderDesktopRegister = () => {
     const allMode = !txFilterAccount;
-    const cols = `38px 34px ${allMode ? '150px ' : ''}110px minmax(0,1.1fr) minmax(0,2.2fr) minmax(0,1.2fr) 104px 104px 40px 58px`;
+    const cols = `38px 30px 34px ${allMode ? '150px ' : ''}110px minmax(0,1.1fr) minmax(0,2.2fr) minmax(0,1.2fr) 104px 104px 40px 58px`;
     const flat = sortedTransactionDates.flatMap(d => groupedTransactions[d]);
     const inp = { padding: '7px 9px', border: '1px solid #d1d5db', borderRadius: '8px', fontSize: '0.85rem', backgroundColor: 'white' };
     const tbtn = { background: 'none', border: 'none', color: '#3b22a7', fontWeight: 600, fontSize: '0.9rem', cursor: 'pointer', padding: '6px 4px', display: 'inline-flex', alignItems: 'center', gap: '6px' };
@@ -5117,6 +5266,7 @@ export default function BudgetApp() {
     );
     return (
       <div data-testid="desktop-register" style={{ display: 'flex', flexDirection: 'column', gap: 0 }}>
+        {renderApproveBanner(false)}
         <div data-testid="register-sticky" style={{ position: 'sticky', top: 0, zIndex: 20, backgroundColor: '#ffffff', paddingTop: '8px', margin: '0 -24px', padding: '8px 24px 0', boxSizing: 'border-box' }}>
         {allMode ? (
           <div style={{ backgroundColor: 'white', borderBottom: '1px solid #e8e5de', padding: '14px 4px', display: 'flex', alignItems: 'center', gap: '28px', flexWrap: 'wrap' }}>
@@ -5178,6 +5328,7 @@ export default function BudgetApp() {
                 <option value="">All types</option><option value="expense">Expenses</option><option value="income">Income</option><option value="transfer">Transfers</option>
               </select>
               <select value={txFilterStatus} onChange={e => setTxFilterStatus(e.target.value)} aria-label="Filter by cleared status" style={inp}>
+                <option value="attention">Needs approval or category</option>
                 <option value="">Cleared or not</option><option value="cleared">Cleared</option><option value="uncleared">Not cleared</option>
               </select>
               <input type="date" value={txFromDate} onChange={e => setTxFromDate(e.target.value)} aria-label="From date" style={inp} />
@@ -5191,6 +5342,7 @@ export default function BudgetApp() {
           {/* column headings */}
           <div style={{ display: 'grid', gridTemplateColumns: cols, columnGap: 0, alignItems: 'stretch', height: '34px', borderTop: DIV, borderBottom: '1px solid #d9d5ec', backgroundColor: 'white' }}>
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center' }}><input type="checkbox" aria-label="Select all transactions" checked={selectedTxIds.length === visibleTransactions.length && visibleTransactions.length > 0} onChange={handleSelectAllTx} style={{ cursor: 'pointer' }} /></div>
+            <div style={hcell({ justifyContent: 'center', padding: 0 })} title="New transactions waiting for approval">ⓘ</div>
             <div style={hcell({ justifyContent: 'center', padding: 0 })} title="Flag">⚑</div>
             {allMode && <div style={hcell()}>ACCOUNT</div>}
             <div style={hcell()}>DATE&nbsp;▾</div><div style={hcell()}>PAYEE</div><div style={hcell()}>CATEGORY</div><div style={hcell()}>MEMO</div>
@@ -5220,6 +5372,9 @@ export default function BudgetApp() {
                 <div data-testid="reg-row" style={{ display: 'grid', gridTemplateColumns: cols, columnGap: 0, alignItems: 'center', minHeight: '36px', borderBottom: '1px solid #ece9f6', backgroundColor: isSelected ? '#dedbff' : 'white' }}>
                   <div style={{ display: 'flex', justifyContent: 'center' }}><input type="checkbox" checked={isSelected} onChange={() => handleToggleSelectTx(tx.id)} aria-label={`Select ${tx.payee}`} style={{ cursor: 'pointer' }} /></div>
                   <div style={{ display: 'flex', justifyContent: 'center' }}>
+                    {tx.unapproved && <button type="button" data-testid="approve-dot" onClick={() => approveTxs([tx.id])} aria-label={`Approve ${tx.payee}`} title="New transaction. Click to approve." style={{ width: '16px', height: '16px', borderRadius: '50%', border: 'none', backgroundColor: '#3b22d6', color: 'white', fontSize: '0.65rem', fontWeight: 800, fontStyle: 'italic', fontFamily: 'Georgia, serif', cursor: 'pointer', padding: 0, lineHeight: '16px' }}>i</button>}
+                  </div>
+                  <div style={{ display: 'flex', justifyContent: 'center' }}>
                     <button type="button" onClick={() => setFlag([tx.id], tx.flag ? (FLAG_COLORS[FLAG_COLORS.indexOf(tx.flag) + 1] || null) : FLAG_COLORS[0])} aria-label={tx.flag ? 'Change flag' : 'Flag transaction'} title="Flag" style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 0, fontSize: '1rem', color: tx.flag || '#d4d0e6' }}>⚑</button>
                   </div>
                   {allMode && <div style={cell({ fontSize: '0.85rem', color: '#374151', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', display: 'block', lineHeight: '36px' })}>{acc?.name}</div>}
@@ -5242,7 +5397,7 @@ export default function BudgetApp() {
                         <button type="button" onClick={() => handleRemoveSplit(tx.id)} disabled={locked} style={linkBtn({ color: '#6b7280', opacity: locked ? 0.4 : 1 })}>Remove split</button>
                       </>)
                       : tx.type === 'expense' ? (<>
-                        {catBtn(tx, env ? envFullName(env) : 'Uncategorized', env ? '#1f2937' : '#b45309')}
+                        {catBtn(tx, env ? envFullName(env) : <span data-testid="needs-category" style={{ display: 'inline-block', backgroundColor: '#fbe38a', color: '#4a3b00', borderRadius: '999px', padding: '3px 12px', fontSize: '0.85rem' }}>This needs a category</span>, env ? '#1f2937' : '#4a3b00')}
                         <button type="button" onClick={() => (splitTxId === tx.id ? closeSplit() : openSplit(tx))} disabled={locked} style={linkBtn({ opacity: locked ? 0.4 : 1, marginLeft: 'auto' })}>{splitTxId === tx.id ? 'Close split' : 'Split'}</button>
                       </>) : (
                         <span style={{ color: '#1f2937' }}>Inflow: Ready to Assign{countsTowardRTA(tx) ? <>{' '}<button type="button" onClick={() => (splitTxId === tx.id ? closeSplit() : openSplit(tx))} disabled={locked} style={linkBtn({ opacity: locked ? 0.4 : 1 })}>{splitTxId === tx.id ? 'Close' : incomeAllocs(tx).length ? 'Edit envelopes' : 'Send to envelopes'}</button></> : null}</span>
@@ -5267,7 +5422,7 @@ export default function BudgetApp() {
                   const se = envelopes.find(e => e.id === sp.envelopeId);
                   return (
                     <div key={i} data-testid="split-part" style={{ display: 'grid', gridTemplateColumns: cols, columnGap: 0, alignItems: 'center', minHeight: '36px', borderBottom: '1px solid #ece9f6', backgroundColor: isSelected ? '#dedbff' : 'white' }}>
-                      <div /><div />
+                      <div /><div /><div />
                       {allMode && <div />}
                       <div /><div />
                       <div style={cell({ fontSize: '0.9rem', paddingLeft: '28px', color: sp.envelopeId ? '#1f2937' : '#b45309' })}>{se ? envFullName(se) : 'No envelope'}</div>
@@ -5312,6 +5467,7 @@ export default function BudgetApp() {
           <div data-testid="bulk-bar" style={{ position: 'fixed', left: '50%', bottom: '22px', transform: 'translateX(-50%)', zIndex: 57, backgroundColor: '#1c1646', color: 'white', borderRadius: '10px', padding: '4px 6px', display: 'flex', gap: '2px', alignItems: 'center', boxShadow: '0 8px 24px rgba(0,0,0,0.3)' }}>
             <button onClick={() => { setSelectedTxIds([]); setBarMenu(null); }} aria-label="Clear selection" style={{ background: 'none', border: 'none', color: '#cbd5e1', cursor: 'pointer', padding: '8px 8px' }}>×</button>
             <strong style={{ fontSize: '0.88rem', padding: '0 12px 0 2px', borderRight: '1px solid #4a4380' }}>{selectedTxIds.length} Transaction{selectedTxIds.length === 1 ? '' : 's'}</strong>
+            {selTxs().some(t => t.unapproved) && <button data-testid="bulk-approve" onClick={() => approveTxs(selectedTxIds)} aria-label="Approve" style={{ background: 'none', border: 'none', color: 'white', fontWeight: 700, cursor: 'pointer', padding: '10px 12px', fontSize: '0.88rem' }}>✓ Approve</button>}
             <button onClick={(ev) => { if (catMenu) setCatMenu(null); else openCatMenu(ev, null); }} aria-label="Categorize" style={{ background: 'none', border: 'none', color: 'white', fontWeight: 700, cursor: 'pointer', padding: '10px 12px', fontSize: '0.88rem' }}>Categorize</button>
             <div style={{ position: 'relative' }}>
               <button onClick={() => { setCatMenu(null); setBarMenu(m => (m === 'flag' ? null : 'flag')); }} aria-label="Flag" style={{ background: 'none', border: 'none', color: 'white', fontWeight: 700, cursor: 'pointer', padding: '10px 12px', fontSize: '0.88rem' }}>⚑ Flag</button>
@@ -6131,6 +6287,7 @@ export default function BudgetApp() {
           <button onClick={() => setMSearchOpen(o => !o)} aria-label="Search and filter" aria-expanded={mSearchOpen} style={{ background: 'none', border: 'none', color: txFiltersActive ? MD.accent : MD.text, fontSize: '1.35rem', cursor: 'pointer', padding: 0 }}>⌕</button>
           <button onClick={() => setSidebarOpen(true)} aria-label="Menu" style={{ background: 'none', border: 'none', color: MD.text, fontSize: '1.5rem', cursor: 'pointer', padding: '0 4px', lineHeight: 1 }}>⋮</button>
         </div>
+        {renderApproveBanner(true)}
         {mSearchOpen && (
           <div data-testid="tx-filters" style={{ padding: '0 16px 12px', display: 'flex', flexDirection: 'column', gap: '8px' }}>
             <input type="search" autoFocus placeholder="Search payee, memo, amount…" value={txSearch} onChange={e => setTxSearch(e.target.value)} aria-label="Search transactions" style={{ ...sel, padding: '12px' }} />
@@ -8456,7 +8613,7 @@ export default function BudgetApp() {
           )}
 
           {/* CSV import */}
-          {!showCsv && !isMobile ? null : isMobile && !showCsv ? (
+          {!isMobile ? renderImportModal() : !showCsv ? (
             <button onClick={() => setShowCsv(true)} style={{ background: 'white', border: '1px dashed #c9d2de', borderRadius: '10px', padding: '12px', color: '#2f6fb3', fontWeight: 600, fontSize: '0.9rem', cursor: 'pointer' }}>Import transactions from a CSV file…</button>
           ) : (
           <div style={{ backgroundColor: 'white', padding: '14px', borderRadius: '10px', boxShadow: '0 1px 3px rgba(0,0,0,0.1)' }}>
