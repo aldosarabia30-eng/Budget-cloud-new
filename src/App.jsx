@@ -5241,10 +5241,13 @@ export default function BudgetApp() {
                 <span>{label}</span><span>{formatMoney(sumBal(list))}</span>
               </div>
               {list.map(x => (
-                <button key={x.acc.id} onClick={() => openAccountRegister(x.acc.id)} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', width: '100%', padding: '15px 14px', background: 'white', border: 'none', borderTop: '1px solid #f0f2f5', textAlign: 'left', fontSize: '1rem', cursor: 'pointer', color: '#111827' }}>
-                  <span>{x.acc.name}</span>
-                  <span style={{ fontWeight: 600, fontVariantNumeric: 'tabular-nums', color: x.bal < -0.004 ? '#b42318' : '#111827' }}>{formatMoney(x.bal)}</span>
-                </button>
+                <div key={x.acc.id} style={{ display: 'flex', alignItems: 'center', borderTop: '1px solid #f0f2f5', backgroundColor: 'white' }}>
+                  <button onClick={() => openAccountRegister(x.acc.id)} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flex: 1, minWidth: 0, padding: '15px 14px', background: 'white', border: 'none', textAlign: 'left', fontSize: '1rem', cursor: 'pointer', color: '#111827' }}>
+                    <span>{x.acc.name}</span>
+                    <span style={{ fontWeight: 600, fontVariantNumeric: 'tabular-nums', color: x.bal < -0.004 ? '#b42318' : '#111827' }}>{formatMoney(x.bal)}</span>
+                  </button>
+                  <button onClick={() => { setManageAccounts(true); startReconcile(x.acc.id); }} aria-label={`Reconcile ${x.acc.name}`} style={{ margin: '0 10px', padding: '8px 10px', borderRadius: '8px', border: '1px solid #bbf7d0', backgroundColor: '#f0fdf4', color: '#166534', fontWeight: 700, fontSize: '0.78rem', cursor: 'pointer' }}>Reconcile</button>
+                </div>
               ))}
             </div>
           ))}
