@@ -1381,6 +1381,8 @@ export default function BudgetApp() {
   // Investments (tracked separately from the budget)
   const [investments, setInvestments] = useState([]);
   const [scheduled, setScheduled] = useState([]);
+  const [sideMoreOpen, setSideMoreOpen] = useState(false); // sidebar "More" section
+  const [sideCollapsed, setSideCollapsed] = useState({}); // sidebar account groups folded away
   const [selectMode, setSelectMode] = useState(false); // phone: checkboxes shown for bulk actions
   const [swipe, setSwipe] = useState(null); // { id, dx } while a row is being swiped
   const touchRef = useRef(null);
@@ -4117,6 +4119,12 @@ export default function BudgetApp() {
       <span>{label}</span><span>{formatMoney(total)}</span>
     </div>
   );
+  const sideToggleHeading = (key, label, total) => (
+    <button onClick={() => setSideCollapsed(c => ({ ...c, [key]: !c[key] }))} aria-expanded={!sideCollapsed[key]} style={{ display: 'flex', justifyContent: 'space-between', width: '100%', padding: '14px 10px 4px', background: 'none', border: 'none', cursor: 'pointer', fontSize: '0.68rem', fontWeight: 700, letterSpacing: '0.08em', color: '#8fa0c0' }}>
+      <span>{sideCollapsed[key] ? '▸' : '▾'} {label}</span><span>{formatMoney(total)}</span>
+    </button>
+  );
+  const moreTabs = ['scheduled', 'payees', 'debts', 'investments', 'accounts', 'import', 'trash', 'new'];
   const sideBalance = (n) => (
     <span style={{ fontSize: '0.8rem', fontVariantNumeric: 'tabular-nums', color: n < -0.004 ? '#ffa8a1' : '#e6ecf7', flexShrink: 0 }}>{formatMoney(n)}</span>
   );
@@ -4396,17 +4404,18 @@ export default function BudgetApp() {
           {sideItem('transactions', activeTab === 'transactions' && !txFilterAccount, () => { setTxFilterAccount(''); openTab('transactions'); }, 'Transactions')}
         </nav>
 
-        {sideCash.length > 0 && sideHeading('CASH', sumBal(sideCash))}
-        {sideCash.map(x => sideItem('acc-' + x.acc.id, activeTab === 'transactions' && txFilterAccount === x.acc.id, () => openAccountRegister(x.acc.id), x.acc.name, sideBalance(x.bal), { small: true }))}
-        {sideCredit.length > 0 && sideHeading('CREDIT', sumBal(sideCredit))}
-        {sideCredit.map(x => sideItem('acc-' + x.acc.id, activeTab === 'transactions' && txFilterAccount === x.acc.id, () => openAccountRegister(x.acc.id), x.acc.name, sideBalance(x.bal), { small: true }))}
+        {sideCash.length > 0 && sideToggleHeading('cash', 'CASH', sumBal(sideCash))}
+        {!sideCollapsed.cash && sideCash.map(x => sideItem('acc-' + x.acc.id, activeTab === 'transactions' && txFilterAccount === x.acc.id, () => openAccountRegister(x.acc.id), x.acc.name, sideBalance(x.bal), { small: true }))}
+        {sideCredit.length > 0 && sideToggleHeading('credit', 'CREDIT', sumBal(sideCredit))}
+        {!sideCollapsed.credit && sideCredit.map(x => sideItem('acc-' + x.acc.id, activeTab === 'transactions' && txFilterAccount === x.acc.id, () => openAccountRegister(x.acc.id), x.acc.name, sideBalance(x.bal), { small: true }))}
         {activeInvestments.length > 0 && sideHeading('TRACKING', invTotals.value)}
         {activeInvestments.length > 0 && sideItem('investments', activeTab === 'investments', () => openTab('investments'), 'Investments', sideBalance(invTotals.value), { small: true })}
 
-        <div style={{ height: '1px', backgroundColor: 'rgba(255,255,255,0.12)', margin: '14px 0 8px' }} />
+        <div style={{ height: '1px', backgroundColor: 'rgba(255,255,255,0.12)', margin: '14px 0 6px' }} />
         <nav style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
-          {['new', 'accounts', 'scheduled', 'payees', 'investments', 'debts', 'import', 'trash'].filter(tab => tab !== 'investments' || activeInvestments.length === 0).map(tab =>
-            sideItem(tab, activeTab === tab, () => { if (tab === 'accounts') setManageAccounts(true); openTab(tab); }, tab === 'accounts' && isMobile ? 'Manage Accounts' : NAV_LABELS[tab],
+          <button onClick={() => setSideMoreOpen(o => !o)} aria-expanded={sideMoreOpen || moreTabs.includes(activeTab)} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', width: '100%', textAlign: 'left', padding: isMobile ? '12px' : '8px 10px', background: 'none', border: 'none', borderRadius: '6px', cursor: 'pointer', color: '#cfe0f7', fontSize: '0.85rem', fontWeight: 600 }}><span>{(sideMoreOpen || moreTabs.includes(activeTab)) ? '▾' : '▸'} More</span>{!(sideMoreOpen || moreTabs.includes(activeTab)) && dueSchedules.length > 0 && <span style={{ fontSize: '0.7rem', backgroundColor: '#d97706', color: 'white', borderRadius: '10px', padding: '1px 7px' }}>{dueSchedules.length} due</span>}</button>
+          {(sideMoreOpen || moreTabs.includes(activeTab)) && ['scheduled', 'payees', 'debts', 'investments', 'accounts', 'import', 'trash', 'new'].filter(tab => tab !== 'investments' || activeInvestments.length === 0).map(tab =>
+            sideItem(tab, activeTab === tab, () => { if (tab === 'accounts') setManageAccounts(true); openTab(tab); }, tab === 'accounts' ? 'Manage accounts' : tab === 'new' ? '+ New envelope or group' : NAV_LABELS[tab],
               tab === 'scheduled' && dueSchedules.length > 0
                 ? <span style={{ fontSize: '0.7rem', backgroundColor: '#d97706', color: 'white', borderRadius: '10px', padding: '1px 7px' }}>{dueSchedules.length} due</span>
                 : tab === 'trash' && totalTrashCount > 0
@@ -4414,7 +4423,7 @@ export default function BudgetApp() {
                 : null,
               { small: true })
           )}
-          {(() => {
+          {(sideMoreOpen || moreTabs.includes(activeTab)) && (() => {
             const standalone = (window.matchMedia && window.matchMedia('(display-mode: standalone)').matches) || window.navigator.standalone;
             const ios = /iphone|ipad|ipod/i.test(window.navigator.userAgent || '');
             if (standalone || (!installEvt && !ios)) return null;
@@ -4426,7 +4435,7 @@ export default function BudgetApp() {
         </nav>
 
         <div style={{ marginTop: 'auto', padding: '16px 10px 0 10px', borderTop: '1px solid rgba(255,255,255,0.12)' }}>
-          <div data-testid="signed-in-as" style={{ fontSize: '0.72rem', color: '#8fa0c0', wordBreak: 'break-all', marginBottom: '8px' }}>
+          <div data-testid="signed-in-as" style={{ fontSize: '0.72rem', color: '#8fa0c0', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', marginBottom: '8px' }}>
             Signed in as {session && session.user ? session.user.email : ''}
           </div>
           <button
