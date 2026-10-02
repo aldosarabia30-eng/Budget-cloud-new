@@ -1666,6 +1666,9 @@ export default function BudgetApp() {
   const [planEdit, setPlanEdit] = useState(false);
   const [planFilterOpen, setPlanFilterOpen] = useState(false);
   const [envMenuId, setEnvMenuId] = useState(null);
+  const [kpDraft, setKpDraft] = useState(null); // keypad text for the selected envelope's assigned amount
+  const [kpAuto, setKpAuto] = useState(false);
+  const [pickYear, setPickYear] = useState(null);
   const [assignOpen, setAssignOpen] = useState(false);
   const [mTxId, setMTxId] = useState(null);
   const [mTxMenu, setMTxMenu] = useState(null); // 'type' | 'cat' | 'flag' | null
@@ -4638,11 +4641,11 @@ export default function BudgetApp() {
     </button>
   );
   const dBal = (n) => (
-    <span style={{ flexShrink: 0, fontSize: '0.82rem', fontVariantNumeric: 'tabular-nums', fontWeight: 600, color: 'white', ...(n < -0.004 ? { backgroundColor: '#d4479f', borderRadius: '999px', padding: '2px 9px' } : {}) }}>{formatMoney(n)}</span>
+    <span style={{ flexShrink: 0, fontSize: '0.82rem', fontVariantNumeric: 'tabular-nums', fontWeight: 600, color: 'white', ...(n < -0.004 ? { backgroundColor: 'white', color: '#c1121f', borderRadius: '999px', padding: '2px 9px' } : {}) }}>{formatMoney(n)}</span>
   );
   const dHead = (key, label, total, open, toggle) => (
     <button key={key} onClick={toggle} aria-expanded={open} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', width: '100%', padding: '16px 10px 6px', background: 'none', border: 'none', cursor: 'pointer', color: SB.muted, fontSize: '0.74rem', fontWeight: 700, letterSpacing: '0.08em' }}>
-      <span>{open ? '⌄' : '›'}&nbsp; {label}</span>{total !== null && <span style={{ fontWeight: 600, color: 'white', fontSize: '0.78rem' }}>{formatMoney(total)}</span>}
+      <span>{open ? '⌄' : '›'}&nbsp; {label}</span>{total !== null && <span style={{ fontWeight: 600, fontSize: '0.78rem', ...(total < -0.004 ? { backgroundColor: 'white', color: '#c1121f', borderRadius: '999px', padding: '2px 9px' } : { color: 'white' }) }}>{formatMoney(total)}</span>}
     </button>
   );
   const sideClosed = activeAccounts.filter(a => a.isHidden);
@@ -4706,6 +4709,17 @@ export default function BudgetApp() {
       </div>
     </aside>
   );
+  const deskRail = (
+    <aside data-testid="desk-rail" style={{ width: '64px', flexShrink: 0, boxSizing: 'border-box', backgroundColor: SB.bg, color: 'white', padding: '12px 8px', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '8px', height: '100vh', position: 'sticky', top: 0, zIndex: 50 }}>
+      <button onClick={() => setSidebarOpen(true)} aria-label="Budget menu" title="Open menu" style={{ background: 'none', border: 'none', color: 'white', cursor: 'pointer', fontSize: '1.6rem', padding: '6px 0 14px' }}>❖</button>
+      {[['plan', 'Plan', '▤', activeTab === 'budget', () => openTab('budget')], ['reflect', 'Reflect', '▥', activeTab === 'reports', () => openTab('reports')], ['all', 'All Accounts', '⌂', activeTab === 'transactions' && !txFilterAccount, () => { setTxFilterAccount(''); openTab('transactions'); }]].map(([k, label, ic, on, fn]) => (
+        <button key={k} onClick={fn} aria-label={label} title={label} style={{ width: '44px', height: '44px', borderRadius: '10px', border: 'none', cursor: 'pointer', backgroundColor: on ? SB.active : 'transparent', color: 'white', fontSize: '1.3rem' }}>{ic}</button>
+      ))}
+      <div style={{ marginTop: 'auto' }}>
+        <button onClick={() => setSidebarOpen(true)} aria-label="Expand sidebar" title="Expand sidebar" style={{ backgroundColor: SB.btn, color: 'white', border: 'none', width: '38px', height: '38px', borderRadius: '8px', cursor: 'pointer', fontSize: '1rem' }}>◨</button>
+      </div>
+    </aside>
+  );
   const openAccountRegister = (accId) => { setTxFilterAccount(accId); if (!editingTxId) setTxAccountId(accId); openTab('transactions'); };
 
   const rtaTone = rtaShown < -0.004 ? { bg: '#fde2e0', fg: '#b42318', sub: 'Over-assigned' }
@@ -4759,7 +4773,7 @@ export default function BudgetApp() {
   const circBtn = (dis) => ({ width: '34px', height: '34px', borderRadius: '50%', border: '2px solid ' + (dis ? '#d8d4f0' : '#4b32c3'), backgroundColor: 'white', color: dis ? '#d8d4f0' : '#4b32c3', cursor: dis ? 'not-allowed' : 'pointer', fontSize: '1.1rem', lineHeight: 1, padding: 0, fontWeight: 700 });
   const deskPlanHead = (
     <div style={{ display: 'flex', alignItems: 'center', gap: '14px', minWidth: 0, position: 'relative' }}>
-      {!sidebarOpen && <button onClick={() => setSidebarOpen(true)} aria-label="Toggle menu" style={{ backgroundColor: 'white', border: '1px solid #e3e6eb', borderRadius: '8px', width: '36px', height: '36px', cursor: 'pointer', fontSize: '1.1rem', color: '#374151' }}>☰</button>}
+      {false && <button onClick={() => setSidebarOpen(true)} aria-label="Toggle menu" style={{ backgroundColor: 'white', border: '1px solid #e3e6eb', borderRadius: '8px', width: '36px', height: '36px', cursor: 'pointer', fontSize: '1.1rem', color: '#374151' }}>☰</button>}
       <button disabled={budgetMonth <= budgetEarliest} aria-label="Previous month" onClick={() => setBudgetMonth(addMonthKey(budgetMonth, -1))} style={circBtn(budgetMonth <= budgetEarliest)}>‹</button>
       <div style={{ position: 'relative', minWidth: '120px' }}>
         <button onClick={() => setMonthPickerOpen(o => !o)} aria-label="Choose month" data-testid="month-title" style={{ background: 'none', border: 'none', fontWeight: 700, fontSize: '1.35rem', color: '#111827', cursor: 'pointer', padding: 0 }}>{monthLabel(budgetMonth)} <span style={{ fontSize: '0.7rem', color: '#4b32c3' }}>▼</span></button>
@@ -5518,7 +5532,7 @@ export default function BudgetApp() {
     if (v < -0.004) { if (row.cashOver <= 0.004 && row.creditOver > 0.004) { bg = '#f59e0b'; fg = '#1a1200'; } else { bg = '#e5484d'; fg = '#fff'; } }
     else if (env && getNeeded(env, row) > 0.004) { bg = '#f5c518'; fg = '#1a1500'; }
     else if (v > 0.004) { bg = '#7cc427'; fg = '#0d1a00'; }
-    return <span style={{ display: 'inline-block', minWidth: big ? '64px' : '70px', textAlign: 'center', padding: big ? '3px 12px' : '3px 10px', borderRadius: '999px', fontWeight: 700, fontSize: big ? '0.95rem' : '0.88rem', backgroundColor: bg, color: fg }}>{formatMoney(v)}</span>;
+    return <span style={{ display: 'inline-block', minWidth: big ? '60px' : '62px', textAlign: 'center', padding: big ? '3px 12px' : '1px 9px', borderRadius: '999px', fontWeight: 700, fontSize: big ? '0.92rem' : '0.8rem', backgroundColor: bg, color: fg }}>{formatMoney(v)}</span>;
   };
   const startEnvTx = (env) => {
     cancelEditTx();
@@ -5527,17 +5541,25 @@ export default function BudgetApp() {
     setTxSheetOpen(true);
     setEnvMenuId(null);
   };
+  const commitKp = () => {
+    if (kpDraft !== null && envMenuId) { const v = kpDraft === '' ? 0 : evalAmount(kpDraft); if (!isNaN(v)) handleAssignMonth(envMenuId, Math.max(0, round2(v))); }
+  };
+  const selectKpEnv = (env) => {
+    if (envMenuId !== env.id) commitKp();
+    setEnvMenuId(env.id); setKpDraft(null); setKpAuto(false);
+    setTimeout(() => { const el = document.getElementById('m-env-' + env.id); if (el && el.scrollIntoView) el.scrollIntoView({ block: 'center', behavior: 'smooth' }); }, 60);
+  };
   const renderMobilePlan = () => {
     const filterLabels = { all: 'All', underfunded: 'Underfunded', overspent: 'Overspent', available: 'Money Available' };
     const menuEnv = envMenuId ? envelopes.find(e => e.id === envMenuId && !e.isDeleted) : null;
     const menuRow = menuEnv ? envRow(menuEnv) : null;
     const cards = SHOW_CC_GROUP ? activeAccounts.filter(a => isCreditCard(a) && !a.isHidden) : [];
-    const colHead = (l, v, neg) => (<div style={{ textAlign: 'right', minWidth: '84px' }}><div style={{ fontSize: '0.78rem', fontWeight: 600, color: MD.text }}>{l}</div><div style={{ fontSize: '1.02rem', fontWeight: 800, color: neg ? '#ff7b7f' : '#fff' }}>{formatMoney(v)}</div></div>);
+    const colHead = (l, v, neg) => (<div style={{ textAlign: 'right', minWidth: '76px' }}><div style={{ fontSize: '0.68rem', fontWeight: 600, color: MD.text, lineHeight: 1.2 }}>{l}</div><div style={{ fontSize: '0.9rem', fontWeight: 800, lineHeight: 1.2, color: neg ? '#ff7b7f' : '#fff' }}>{formatMoney(v)}</div></div>);
     const circleBtn = { background: 'none', border: '2px solid ' + MD.text, borderRadius: '50%', width: '30px', height: '30px', color: MD.text, cursor: 'pointer', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', padding: 0, fontSize: '0.9rem' };
     return (
-      <div data-testid="mobile-plan" style={{ backgroundColor: MD.bg, color: MD.text, minHeight: '100vh', paddingBottom: '150px' }}>
-        <div style={{ position: 'sticky', top: 0, zIndex: 25, backgroundColor: MD.bg, padding: '14px 16px 10px', display: 'flex', alignItems: 'center', gap: '12px' }}>
-          <button onClick={() => setMonthPickerOpen(o => !o)} aria-label="Choose month" data-testid="month-title" style={{ background: 'none', border: 'none', color: MD.text, fontWeight: 700, fontSize: '1.45rem', cursor: 'pointer', padding: 0, display: 'flex', alignItems: 'center', gap: '10px' }}>{monthLabel(budgetMonth)}<span style={{ backgroundColor: MD.text, color: MD.bg, borderRadius: '50%', width: '22px', height: '22px', fontSize: '0.75rem', display: 'inline-flex', alignItems: 'center', justifyContent: 'center' }}>⌄</span></button>
+      <div data-testid="mobile-plan" style={{ backgroundColor: MD.bg, color: MD.text, minHeight: '100vh', paddingBottom: envMenuId ? '420px' : '150px' }}>
+        <div style={{ position: 'sticky', top: 0, zIndex: 25, backgroundColor: MD.bg, padding: '10px 16px 6px', display: 'flex', alignItems: 'center', gap: '12px' }}>
+          <button onClick={() => { setPickYear(null); setMonthPickerOpen(o => !o); }} aria-label="Choose month" data-testid="month-title" style={{ background: 'none', border: 'none', color: MD.text, fontWeight: 700, fontSize: '1.25rem', cursor: 'pointer', padding: 0, display: 'flex', alignItems: 'center', gap: '10px' }}>{monthLabel(budgetMonth)}<span style={{ backgroundColor: MD.text, color: MD.bg, borderRadius: '50%', width: '22px', height: '22px', fontSize: '0.75rem', display: 'inline-flex', alignItems: 'center', justifyContent: 'center' }}>⌄</span></button>
           <div style={{ flex: 1 }} />
           <button onClick={() => setPlanEdit(v => !v)} aria-pressed={planEdit} style={{ background: 'none', border: 'none', color: MD.text, fontWeight: 700, fontSize: '0.95rem', cursor: 'pointer' }}>{planEdit ? 'Done' : 'Edit'}</button>
           <button onClick={() => setPlanFilterOpen(o => !o)} aria-label="Filter" aria-expanded={planFilterOpen} style={{ ...circleBtn, backgroundColor: envFilter !== 'all' ? MD.btn : 'transparent' }}>≡</button>
@@ -5547,20 +5569,41 @@ export default function BudgetApp() {
           <>
             <div onClick={() => setPlanFilterOpen(false)} style={{ position: 'fixed', inset: 0, zIndex: 26 }} />
             <div data-testid="plan-filter" style={{ position: 'absolute', right: '12px', top: '56px', zIndex: 27, backgroundColor: MD.card, border: '1px solid ' + MD.line, borderRadius: '12px', boxShadow: '0 10px 30px rgba(0,0,0,0.6)', minWidth: '210px', padding: '6px 0' }}>
-              {Object.entries(filterLabels).map(([k, l]) => (<button key={k} onClick={() => { setEnvFilter(k); setPlanFilterOpen(false); }} style={{ display: 'flex', justifyContent: 'space-between', width: '100%', background: 'none', border: 'none', color: MD.text, padding: '11px 16px', fontSize: '0.95rem', cursor: 'pointer', textAlign: 'left' }}><span>{l}</span>{envFilter === k && <span style={{ color: MD.accent }}>✓</span>}</button>))}
-              {hiddenEnvelopeCount > 0 && <button onClick={() => { setShowHiddenEnvelopes(v => !v); setPlanFilterOpen(false); }} style={{ display: 'flex', justifyContent: 'space-between', width: '100%', background: 'none', border: 'none', borderTop: '1px solid ' + MD.line, color: MD.text, padding: '11px 16px', fontSize: '0.95rem', cursor: 'pointer', textAlign: 'left' }}><span>Show hidden ({hiddenEnvelopeCount})</span>{showHiddenEnvelopes && <span style={{ color: MD.accent }}>✓</span>}</button>}
+              {Object.entries(filterLabels).map(([k, l]) => (<button key={k} onClick={() => { setEnvFilter(k); setPlanFilterOpen(false); }} style={{ display: 'flex', justifyContent: 'space-between', width: '100%', background: 'none', border: 'none', color: MD.text, padding: '12px 16px', fontSize: '0.95rem', cursor: 'pointer', textAlign: 'left' }}><span>{l}</span>{envFilter === k && <span style={{ color: MD.accent }}>✓</span>}</button>))}
+              {hiddenEnvelopeCount > 0 && <button onClick={() => { setShowHiddenEnvelopes(v => !v); setPlanFilterOpen(false); }} style={{ display: 'flex', justifyContent: 'space-between', width: '100%', background: 'none', border: 'none', borderTop: '1px solid ' + MD.line, color: MD.text, padding: '12px 16px', fontSize: '0.95rem', cursor: 'pointer', textAlign: 'left' }}><span>Show hidden ({hiddenEnvelopeCount})</span>{showHiddenEnvelopes && <span style={{ color: MD.accent }}>✓</span>}</button>}
             </div>
           </>
         )}
-        {monthPickerOpen && (
-          <div data-testid="month-picker" style={{ display: 'flex', justifyContent: 'center', padding: '0 16px 10px' }}>
-            <div style={{ backgroundColor: 'white', borderRadius: '999px', padding: '2px 8px' }}>{monthNav}</div>
-          </div>
-        )}
-        <div style={{ position: 'relative', padding: '0 16px 12px' }}>
-          <div data-testid="rta-pill" style={{ backgroundColor: rtaShown < -0.004 ? '#5c1a1a' : '#173a24', color: rtaShown < -0.004 ? '#ffb4b0' : '#9be7b4', borderRadius: '14px', padding: '10px 14px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '10px' }}>
-            <div><div style={{ fontSize: '1.3rem', fontWeight: 800, lineHeight: 1.1 }}>{formatMoney(rtaShown)}</div><div style={{ fontSize: '0.78rem', fontWeight: 600 }}>{rtaShown < -0.004 ? 'Over-assigned' : 'Ready to Assign'}{budgetMonth !== todayMonth ? ` · ${monthLabel(budgetMonth, true)}` : ''}</div></div>
-            <button onClick={() => setAutoMenuOpen(o => !o)} aria-haspopup="menu" aria-expanded={autoMenuOpen} aria-label="Assign Money" style={{ backgroundColor: MD.btn, color: 'white', border: 'none', borderRadius: '999px', padding: '9px 16px', fontWeight: 700, fontSize: '0.88rem', cursor: 'pointer' }}>⚡ Assign Money</button>
+        {monthPickerOpen && (() => {
+          const yr = pickYear || Number(budgetMonth.slice(0, 4));
+          const minY = Number(budgetEarliest.slice(0, 4)), maxY = Number(budgetLatest.slice(0, 4));
+          const names = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+          const arrow = (dir, dis) => (<button disabled={dis} aria-label={dir < 0 ? 'Previous year' : 'Next year'} onClick={() => setPickYear(yr + dir)} style={{ background: 'none', border: 'none', color: dis ? '#4a4a5e' : MD.accent, fontSize: '1.5rem', cursor: dis ? 'default' : 'pointer', padding: '0 8px', lineHeight: 1 }}>{dir < 0 ? '‹' : '›'}</button>);
+          return (
+            <>
+              <div onClick={() => { setMonthPickerOpen(false); setPickYear(null); }} style={{ position: 'fixed', inset: 0, zIndex: 40 }} />
+              <div data-testid="month-picker" role="dialog" aria-label="Choose month" style={{ position: 'fixed', left: '50%', transform: 'translateX(-50%)', top: '120px', zIndex: 41, width: 'min(300px, calc(100vw - 32px))', backgroundColor: '#1b1b36', borderRadius: '18px', boxShadow: '0 12px 36px rgba(0,0,0,0.65)', padding: '8px 10px 12px', boxSizing: 'border-box' }}>
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '4px 4px 8px', borderBottom: '1px solid ' + MD.line, marginBottom: '10px' }}>
+                  {arrow(-1, yr <= minY)}
+                  <div style={{ fontWeight: 700, fontSize: '1rem' }}>{yr}</div>
+                  {arrow(1, yr >= maxY)}
+                </div>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '6px' }}>
+                  {names.map((n, i) => {
+                    const key = `${yr}-${String(i + 1).padStart(2, '0')}`;
+                    const dis = key < budgetEarliest || key > budgetLatest;
+                    const on = key === budgetMonth;
+                    return (<button key={key} disabled={dis} aria-label={`${n} ${yr}`} aria-pressed={on} onClick={() => { setBudgetMonth(key); setMonthPickerOpen(false); setPickYear(null); }} style={{ height: '46px', borderRadius: '14px', border: 'none', backgroundColor: on ? '#b9b9ff' : 'transparent', color: on ? '#14142e' : dis ? '#4a4a5e' : MD.text, fontWeight: on ? 700 : 500, fontSize: '0.95rem', cursor: dis ? 'default' : 'pointer' }}>{n}</button>);
+                  })}
+                </div>
+              </div>
+            </>
+          );
+        })()}
+        <div style={{ position: 'relative', padding: '0 16px 8px' }}>
+          <div data-testid="rta-pill" style={{ backgroundColor: rtaShown < -0.004 ? '#5c1a1a' : '#173a24', color: rtaShown < -0.004 ? '#ffb4b0' : '#9be7b4', borderRadius: '12px', padding: '6px 12px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '10px' }}>
+            <div><div style={{ fontSize: '1.1rem', fontWeight: 800, lineHeight: 1.1 }}>{formatMoney(rtaShown)}</div><div style={{ fontSize: '0.7rem', fontWeight: 600 }}>{rtaShown < -0.004 ? 'Over-assigned' : 'Ready to Assign'}{budgetMonth !== todayMonth ? ` · ${monthLabel(budgetMonth, true)}` : ''}</div></div>
+            <button onClick={() => setAutoMenuOpen(o => !o)} aria-haspopup="menu" aria-expanded={autoMenuOpen} aria-label="Assign Money" style={{ backgroundColor: MD.btn, color: 'white', border: 'none', borderRadius: '999px', padding: '7px 14px', fontWeight: 700, fontSize: '0.8rem', cursor: 'pointer' }}>⚡ Assign Money</button>
           </div>
           {renderAutoMenu()}
         </div>
@@ -5577,8 +5620,8 @@ export default function BudgetApp() {
           const tot = list.reduce((t, e) => { const r = envRow(e); return { a: t.a + r.budgeted + r.income, v: t.v + r.end }; }, { a: 0, v: 0 });
           return (
             <div key={groupName} data-testid="m-group">
-              <div style={{ display: 'flex', alignItems: 'center', gap: '8px', backgroundColor: MD.head, padding: '12px 16px', borderTop: '1px solid ' + MD.line }}>
-                <button onClick={() => toggleGroupCollapse(groupName)} aria-label={`${isCollapsed ? 'Expand' : 'Collapse'} ${groupName}`} style={{ background: 'none', border: 'none', color: MD.text, fontWeight: 800, fontSize: '1.08rem', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '10px', padding: 0, minWidth: 0, textAlign: 'left' }}><span style={{ fontSize: '0.8rem' }}>{isCollapsed ? '›' : '⌄'}</span><span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{groupName}</span></button>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px', backgroundColor: MD.head, padding: '9px 16px', borderTop: '1px solid ' + MD.line }}>
+                <button onClick={() => toggleGroupCollapse(groupName)} aria-label={`${isCollapsed ? 'Expand' : 'Collapse'} ${groupName}`} style={{ background: 'none', border: 'none', color: MD.text, fontWeight: 800, fontSize: '0.98rem', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '8px', padding: 0, minWidth: 0, textAlign: 'left' }}><span style={{ fontSize: '0.8rem' }}>{isCollapsed ? '›' : '⌄'}</span><span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{groupName}</span></button>
                 <div style={{ flex: 1 }} />
                 {planEdit ? (<>
                   <button onClick={() => setEnvPop({ group: groupName, name: '', x: 0, y: 0 })} aria-label={`Add envelope to ${groupName}`} style={{ background: MD.card, border: 'none', color: MD.accent, borderRadius: '8px', padding: '6px 10px', fontWeight: 700, cursor: 'pointer' }}>+ Envelope</button>
@@ -5588,9 +5631,9 @@ export default function BudgetApp() {
               {!isCollapsed && list.map(env => {
                 const row = envRow(env);
                 return (
-                  <button key={env.id} data-testid="env-row" onClick={() => setEnvMenuId(env.id)} style={{ display: 'grid', gridTemplateColumns: 'minmax(0,1fr) 96px 96px', alignItems: 'center', columnGap: '8px', width: '100%', textAlign: 'left', backgroundColor: MD.row, color: MD.text, border: 'none', borderTop: '1px solid ' + MD.line, padding: '15px 16px', cursor: 'pointer', fontSize: '1rem' }}>
+                  <button key={env.id} id={'m-env-' + env.id} data-testid="env-row" onClick={() => selectKpEnv(env)} style={{ display: 'grid', gridTemplateColumns: 'minmax(0,1fr) 84px 88px', alignItems: 'center', columnGap: '8px', width: '100%', textAlign: 'left', backgroundColor: envMenuId === env.id ? '#1d1d4a' : MD.row, color: MD.text, border: 'none', borderTop: '1px solid ' + MD.line, padding: '12px 16px', cursor: 'pointer', fontSize: '0.92rem' }}>
                     <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{env.name}{env.isHidden && <span style={{ marginLeft: '8px', fontSize: '0.7rem', color: MD.muted }}>hidden</span>}</span>
-                    <span style={{ textAlign: 'right' }}>{formatMoney((Number(row.budgeted) || 0) + (Number(row.income) || 0))}</span>
+                    <span data-testid="env-assigned" style={{ textAlign: 'right', ...(envMenuId === env.id ? { color: '#8f8fff', fontWeight: 700 } : {}) }}>{envMenuId === env.id && kpDraft !== null ? '$' + (kpDraft || '0') : formatMoney((Number(row.budgeted) || 0) + (Number(row.income) || 0))}</span>
                     <span style={{ textAlign: 'right' }}>{darkPill(env, row)}</span>
                   </button>
                 );
@@ -5601,14 +5644,14 @@ export default function BudgetApp() {
         })}
         {cards.length > 0 && envFilter === 'all' && (
           <div data-testid="cc-payments">
-            <div style={{ backgroundColor: MD.head, padding: '12px 16px', borderTop: '1px solid ' + MD.line, fontWeight: 800, fontSize: '1.08rem' }}>Credit Card Payments</div>
+            <div style={{ backgroundColor: MD.head, padding: '9px 16px', borderTop: '1px solid ' + MD.line, fontWeight: 800, fontSize: '1.08rem' }}>Credit Card Payments</div>
             {cards.map(acc => {
               const c = budgetView.cc[acc.id] || { assignedMonth: 0, available: 0 };
               const owed = Math.max(0, round2(-getAccountBalance(acc.id)));
               const short = owed > 0.004 && c.available < owed - 0.004;
               const bg = c.available <= 0.004 ? '#4a4a5e' : short ? '#f59e0b' : '#7cc427';
               return (
-                <button key={acc.id} data-testid="cc-row" onClick={() => { const v = window.prompt(`Assign to ${acc.name} payment`, String(c.assignedMonth)); if (v !== null && !isNaN(evalAmount(v))) handleAssignPayment(acc.id, evalAmount(v)); }} style={{ display: 'grid', gridTemplateColumns: 'minmax(0,1fr) 96px 96px', alignItems: 'center', columnGap: '8px', width: '100%', textAlign: 'left', backgroundColor: MD.row, color: MD.text, border: 'none', borderTop: '1px solid ' + MD.line, padding: '15px 16px', cursor: 'pointer', fontSize: '1rem' }}>
+                <button key={acc.id} data-testid="cc-row" onClick={() => { const v = window.prompt(`Assign to ${acc.name} payment`, String(c.assignedMonth)); if (v !== null && !isNaN(evalAmount(v))) handleAssignPayment(acc.id, evalAmount(v)); }} style={{ display: 'grid', gridTemplateColumns: 'minmax(0,1fr) 84px 88px', alignItems: 'center', columnGap: '8px', width: '100%', textAlign: 'left', backgroundColor: MD.row, color: MD.text, border: 'none', borderTop: '1px solid ' + MD.line, padding: '12px 16px', cursor: 'pointer', fontSize: '0.92rem' }}>
                   <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{acc.name}</span>
                   <span style={{ textAlign: 'right' }}>{formatMoney(c.assignedMonth)}</span>
                   <span style={{ textAlign: 'right' }}><span style={{ display: 'inline-block', minWidth: '70px', textAlign: 'center', padding: '3px 10px', borderRadius: '999px', fontWeight: 700, fontSize: '0.88rem', backgroundColor: bg, color: c.available <= 0.004 ? '#aaaabf' : '#10200a' }}>{formatMoney(c.available)}</span></span>
@@ -5634,21 +5677,56 @@ export default function BudgetApp() {
             </form>
           </>
         )}
-        {/* popup menu for a tapped envelope */}
-        {menuEnv && (
-          <>
-            <div onClick={() => setEnvMenuId(null)} style={{ position: 'fixed', inset: 0, backgroundColor: 'rgba(0,0,0,0.55)', zIndex: 70 }} />
-            <div data-testid="env-menu" role="dialog" aria-label={menuEnv.name} style={{ position: 'fixed', left: 0, right: 0, bottom: 0, zIndex: 71, backgroundColor: MD.card, borderRadius: '18px 18px 0 0', padding: '14px 16px calc(18px + env(safe-area-inset-bottom))' }}>
-              <div style={{ width: '40px', height: '4px', borderRadius: '2px', backgroundColor: MD.line, margin: '0 auto 12px' }} />
-              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '12px' }}>
-                <div style={{ fontWeight: 800, fontSize: '1.15rem' }}>{menuEnv.name}</div>
-                {darkPill(menuEnv, menuRow, true)}
+        {/* keypad panel for the selected envelope */}
+        {menuEnv && (() => {
+          const cur = Number(menuRow.budgeted) || 0;
+          const needed = getNeeded(menuEnv, menuRow);
+          const prevRow = (budgetView.rowsByEnv[menuEnv.id] && budgetView.rowsByEnv[menuEnv.id].get(addMonthKey(budgetMonth, -1))) || null;
+          const lastAssigned = prevRow ? Math.max(0, prevRow.budgeted) : 0;
+          const lastSpent = prevRow ? Math.max(0, prevRow.spent) : 0;
+          const setTo = (n) => { handleAssignMonth(menuEnv.id, Math.max(0, round2(n))); setKpDraft(null); setKpAuto(false); };
+          const press = (k) => {
+            setKpDraft(d => {
+              const base = d === null ? '' : d;
+              if (/^[0-9.]$/.test(k)) return (d === null ? '' : d) + k;
+              if (k === '⌫') return d === null ? '' : d.slice(0, -1);
+              if (k === 'C') return '';
+              if (k === '−' || k === '+') { const b2 = d === null ? String(cur) : d; return b2 === '' ? b2 : (/[+\-]$/.test(b2) ? b2.slice(0, -1) : b2) + (k === '−' ? '-' : '+'); }
+              if (k === '=') { const v = evalAmount(base === '' && d === null ? String(cur) : base); return isNaN(v) ? base : String(round2(v)); }
+              return base;
+            });
+          };
+          const done = () => { const src = kpDraft === null ? null : kpDraft; if (src !== null) { const v = src === '' ? 0 : evalAmount(src); if (!isNaN(v)) handleAssignMonth(menuEnv.id, Math.max(0, round2(v))); } setKpDraft(null); setKpAuto(false); setEnvMenuId(null); };
+          const key = (label, onClick, extra) => (<button key={label} onClick={onClick} aria-label={label === '⌫' ? 'Backspace' : label} style={{ height: '52px', borderRadius: '14px', border: 'none', background: 'none', color: MD.text, fontSize: '1.5rem', cursor: 'pointer', ...extra }}>{label}</button>);
+          const op = { backgroundColor: '#3a3a52', color: MD.muted };
+          const topBtn = (icon, label, fn, testId) => (<div style={{ flex: 1, textAlign: 'center' }}><button onClick={fn} data-testid={testId} aria-label={label} style={{ width: '100%', height: '44px', borderRadius: '999px', border: 'none', backgroundColor: '#2f2f46', color: '#b9b9d6', fontSize: '1.2rem', cursor: 'pointer' }}>{icon}</button><div style={{ fontSize: '0.8rem', color: MD.muted, marginTop: '4px' }}>{label}</div></div>);
+          return (
+            <div data-testid="env-keypad" role="dialog" aria-label={menuEnv.name} style={{ position: 'fixed', left: 0, right: 0, bottom: 0, zIndex: 40, backgroundColor: '#2a2a3a', padding: '10px 8px calc(10px + env(safe-area-inset-bottom))', boxShadow: '0 -8px 24px rgba(0,0,0,0.5)' }}>
+              <div style={{ display: 'flex', gap: '8px', marginBottom: '8px', position: 'relative' }}>
+                {topBtn('⚡', 'Auto-Assign', () => setKpAuto(v => !v), 'kp-auto')}
+                {topBtn('➜', 'Move Money', () => { setSelectedEnvId(menuEnv.id); openMove(menuEnv, menuRow.end < -0.004 ? 'cover' : 'move'); setEnvMenuId(null); setKpDraft(null); }, 'kp-move')}
+                {topBtn('⋯', 'Details', () => { setSelectedEnvId(menuEnv.id); setEnvMenuId(null); setKpDraft(null); setAssignOpen(false); }, 'menu-details')}
+                {kpAuto && (
+                  <div data-testid="kp-auto-menu" style={{ position: 'absolute', left: 0, bottom: '64px', width: '260px', backgroundColor: '#1d1d38', borderRadius: '14px', boxShadow: '0 10px 30px rgba(0,0,0,0.6)', overflow: 'hidden' }}>
+                    {[[`Underfunded`, needed, cur + needed], [`Assigned last month`, lastAssigned, lastAssigned], [`Spent last month`, lastSpent, lastSpent], ['Reset to $0', 0, 0]].map(([l, amt, target]) => (
+                      <button key={l} onClick={() => setTo(target)} style={{ display: 'flex', justifyContent: 'space-between', width: '100%', background: 'none', border: 'none', color: MD.text, padding: '12px 14px', fontSize: '0.92rem', cursor: 'pointer' }}><span>{l}</span>{l !== 'Reset to $0' && <span style={{ color: MD.muted }}>{formatMoney(amt)}</span>}</button>
+                    ))}
+                  </div>
+                )}
               </div>
-              <button onClick={() => startEnvTx(menuEnv)} data-testid="menu-add-tx" style={{ display: 'flex', alignItems: 'center', gap: '12px', width: '100%', background: MD.bg, color: MD.text, border: 'none', borderRadius: '12px', padding: '15px 16px', fontSize: '1rem', fontWeight: 600, cursor: 'pointer', marginBottom: '8px' }}><span style={{ color: MD.accent, fontSize: '1.2rem' }}>⊕</span>Add Transaction</button>
-              <button onClick={() => { setSelectedEnvId(menuEnv.id); setEnvMenuId(null); setAssignOpen(false); }} data-testid="menu-details" style={{ display: 'flex', alignItems: 'center', gap: '12px', width: '100%', background: MD.bg, color: MD.text, border: 'none', borderRadius: '12px', padding: '15px 16px', fontSize: '1rem', fontWeight: 600, cursor: 'pointer' }}><span style={{ color: MD.accent, fontSize: '1.2rem' }}>ⓘ</span>Details</button>
+              {needed > 0.004 && (
+                <button onClick={() => setTo(cur + needed)} data-testid="kp-assign-target" style={{ width: '100%', backgroundColor: '#35356e', color: '#b8b8ff', border: 'none', borderRadius: '999px', padding: '12px', fontSize: '0.95rem', cursor: 'pointer', marginBottom: '8px' }}>Assign {formatMoney(needed)} more to reach your target</button>
+              )}
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr 1.1fr', gap: '6px' }}>
+                {key('7', () => press('7'))}{key('8', () => press('8'))}{key('9', () => press('9'))}{key('−', () => press('−'), op)}
+                {key('4', () => press('4'))}{key('5', () => press('5'))}{key('6', () => press('6'))}{key('+', () => press('+'), op)}
+                {key('1', () => press('1'))}{key('2', () => press('2'))}{key('3', () => press('3'))}{key('=', () => press('='), op)}
+                {key('.', () => press('.'))}{key('0', () => press('0'))}{key('⌫', () => press('⌫'), { color: '#8f8fff' })}
+                <button onClick={done} data-testid="kp-done" style={{ height: '52px', borderRadius: '999px', border: 'none', backgroundColor: '#5b5bff', color: 'white', fontWeight: 700, fontSize: '1.1rem', cursor: 'pointer' }}>Done</button>
+              </div>
             </div>
-          </>
-        )}
+          );
+        })()}
       </div>
     );
   };
@@ -5800,13 +5878,13 @@ export default function BudgetApp() {
     const chip = (children, tone) => {
       const tones = { cat: ['#25253f', '#f1f1fa'], xfer: ['#26265e', '#c9c9ff'], rta: ['#1c3a1c', '#b6f08a'], warn: ['#4a3410', '#ffcf70'], split: ['#25253f', '#f1f1fa'] };
       const [bg, fg] = tones[tone] || tones.cat;
-      return <span style={{ display: 'inline-flex', alignItems: 'center', gap: '6px', backgroundColor: bg, color: fg, borderRadius: '8px', padding: '5px 10px', fontSize: '0.88rem', maxWidth: '100%', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{children}</span>;
+      return <span style={{ display: 'inline-flex', alignItems: 'center', gap: '6px', backgroundColor: bg, color: fg, borderRadius: '7px', padding: '3px 8px', fontSize: '0.78rem', maxWidth: '100%', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{children}</span>;
     };
     const sel = { width: '100%', padding: '10px', borderRadius: '10px', border: 'none', backgroundColor: MD.bg, color: MD.text };
     return (
       <div data-testid="mobile-spending" style={{ backgroundColor: MD.bg, color: MD.text, minHeight: '100vh', paddingBottom: '160px' }}>
-        <div style={{ position: 'sticky', top: 0, zIndex: 25, backgroundColor: MD.bg, padding: '16px 16px 10px', display: 'flex', alignItems: 'center', gap: '14px' }}>
-          <div style={{ fontWeight: 700, fontSize: '1.4rem', flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{acct ? acct.name : 'Spending'}</div>
+        <div style={{ position: 'sticky', top: 0, zIndex: 25, backgroundColor: MD.bg, padding: '10px 16px 6px', display: 'flex', alignItems: 'center', gap: '14px' }}>
+          <div style={{ fontWeight: 700, fontSize: '1.25rem', flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{acct ? acct.name : 'Spending'}</div>
           <button onClick={() => setMSearchOpen(o => !o)} aria-label="Search and filter" aria-expanded={mSearchOpen} style={{ background: 'none', border: 'none', color: txFiltersActive ? MD.accent : MD.text, fontSize: '1.35rem', cursor: 'pointer', padding: 0 }}>⌕</button>
           <button onClick={() => setSidebarOpen(true)} aria-label="Menu" style={{ background: 'none', border: 'none', color: MD.text, fontSize: '1.5rem', cursor: 'pointer', padding: '0 4px', lineHeight: 1 }}>⋮</button>
         </div>
@@ -5865,7 +5943,7 @@ export default function BudgetApp() {
         {flat.length === 0 && <div style={{ padding: '30px 16px', textAlign: 'center', color: MD.muted }}>{txFiltersActive ? 'No transactions match your search or filters.' : 'No transactions recorded yet.'}</div>}
         {flat.map(([d, list]) => (
           <div key={d}>
-            <div style={{ padding: '14px 16px', fontWeight: 800, fontSize: '1.02rem', backgroundColor: MD.bg }}>{formatDate(d, 'us')}</div>
+            <div style={{ padding: '8px 16px', fontWeight: 800, fontSize: '0.92rem', backgroundColor: MD.bg }}>{formatDate(d, 'us')}</div>
             {list.map(tx => {
               const { acc, env, other } = txRowParts(tx);
               const locked = isTxLocked(tx);
@@ -5873,21 +5951,21 @@ export default function BudgetApp() {
               const cleared = !!(tx.cleared || tx.reconciled);
               const income = tx.type === 'income';
               return (
-                <div key={tx.id} data-testid="m-tx-row" role="button" onClick={() => { setMTxId(tx.id); setMTxMenu(null); setMTxMore(false); }} style={{ backgroundColor: MD.row, borderTop: '1px solid ' + MD.line, padding: '14px 16px', cursor: 'pointer' }}>
+                <div key={tx.id} data-testid="m-tx-row" role="button" onClick={() => { setMTxId(tx.id); setMTxMenu(null); setMTxMore(false); }} style={{ backgroundColor: MD.row, borderTop: '1px solid ' + MD.line, padding: '9px 16px', cursor: 'pointer' }}>
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: '10px' }}>
-                    <div style={{ minWidth: 0, fontWeight: 600, fontSize: '1rem', lineHeight: 1.35 }}>
+                    <div style={{ minWidth: 0, fontWeight: 600, fontSize: '0.9rem', lineHeight: 1.3 }}>
                       {tx.isTransfer ? (<>
                         <div>{income ? 'Transfer from' : 'Transfer to'} <strong>{other ? other.name : (tx.payee || '').replace(/^Transfer: /, '')}</strong></div>
                         <div style={{ fontWeight: 500 }}>{income ? 'To' : 'From'} <strong>{acc ? acc.name : ''}</strong></div>
                       </>) : tx.payee}
                     </div>
                     <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexShrink: 0 }}>
-                      <span style={{ fontWeight: 700, fontSize: '1rem', color: income && !tx.isTransfer ? '#a8e65a' : MD.text }}>{(income ? '' : '−') + formatMoney(Math.abs(Number(tx.amount) || 0))}</span>
+                      <span style={{ fontWeight: 700, fontSize: '0.9rem', color: income && !tx.isTransfer ? '#a8e65a' : MD.text }}>{(income ? '' : '−') + formatMoney(Math.abs(Number(tx.amount) || 0))}</span>
                       {hasLock ? <span title="Locked" style={{ color: MD.muted, fontSize: '0.9rem' }}>🔒</span>
                         : <button onClick={(e) => { e.stopPropagation(); handleToggleCleared(tx.id); }} aria-label={`${cleared ? 'Cleared' : 'Uncleared'}: ${tx.payee}`} style={{ width: '20px', height: '20px', borderRadius: '50%', border: '2px solid ' + (cleared ? '#7cc427' : '#55556f'), backgroundColor: cleared ? '#7cc427' : 'transparent', color: cleared ? '#0d1a00' : '#8a8aa5', fontSize: '0.6rem', fontWeight: 800, cursor: 'pointer', padding: 0, lineHeight: 1 }}>C</button>}
                     </div>
                   </div>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '10px', marginTop: '8px' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '10px', marginTop: '5px' }}>
                     <div style={{ minWidth: 0 }}>
                       {tx.isTransfer ? chip(<><span>⇄</span>Transfer</>, 'xfer')
                         : isSplitTx(tx) ? chip(`Split (${tx.splits.length})`, 'split')
@@ -5895,7 +5973,7 @@ export default function BudgetApp() {
                         : env ? chip(env.name + (env.isDeleted ? ' (deleted)' : ''), 'cat')
                         : chip('Uncategorized', 'warn')}
                     </div>
-                    {!tx.isTransfer && <span style={{ color: MD.muted, fontSize: '0.95rem', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: '45%' }}>{acc ? acc.name : ''}</span>}
+                    {!tx.isTransfer && <span style={{ color: MD.muted, fontSize: '0.85rem', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: '45%' }}>{acc ? acc.name : ''}</span>}
                   </div>
                 </div>
               );
@@ -6114,6 +6192,16 @@ export default function BudgetApp() {
     );
   };
 
+  const wrapMobileDark = (node) => (!isMobile ? node : (
+    <div data-testid="m-reports">
+      <style>{`.m-dark{filter:invert(1) hue-rotate(180deg);background:#f3f3fd;padding:6px 12px 90px;min-height:100vh;box-sizing:border-box}.m-dark [style*="background-color: white"],.m-dark [style*="background-color: rgb(255, 255, 255)"]{background-color:#e7e7fd !important}.m-dark input,.m-dark select{color-scheme:light}`}</style>
+      <div style={{ backgroundColor: MD.bg, color: MD.text, padding: '16px 16px 10px', display: 'flex', alignItems: 'center', gap: '16px', position: 'sticky', top: 0, zIndex: 25 }}>
+        <div style={{ fontWeight: 700, fontSize: '1.4rem', flex: 1 }}>Reflect</div>
+        <button onClick={() => setSidebarOpen(true)} aria-label="Menu" style={{ background: 'none', border: 'none', color: MD.text, fontSize: '1.5rem', cursor: 'pointer', padding: '0 4px', lineHeight: 1 }}>⋮</button>
+      </div>
+      <div className="m-dark">{node}</div>
+    </div>
+  ));
   const MOBILE_TABS = [['budget', 'Plan', '◔'], ['transactions', 'Spending', '$'], ['accounts', 'Accounts', '▦'], ['reports', 'Reflect', '◭']];
 
   if (session === undefined) {
@@ -6122,7 +6210,7 @@ export default function BudgetApp() {
   if (!session) return <AuthScreen />;
 
   return (
-    <div style={{ display: 'flex', minHeight: '100vh', fontFamily: 'system-ui, -apple-system, sans-serif', color: '#1f2937', backgroundColor: isMobile ? ((activeTab === 'budget' || activeTab === 'transactions' || (activeTab === 'accounts' && !manageAccounts)) ? '#0a0a14' : '#f4f5f7') : (activeTab === 'budget' || activeTab === 'transactions' || activeTab === 'reports' ? '#ffffff' : '#f4f5f7') }}>
+    <div style={{ display: 'flex', minHeight: '100vh', fontFamily: 'system-ui, -apple-system, sans-serif', color: '#1f2937', backgroundColor: isMobile ? ((activeTab === 'budget' || activeTab === 'transactions' || activeTab === 'reports' || (activeTab === 'accounts' && !manageAccounts)) ? '#0a0a14' : '#f4f5f7') : (activeTab === 'budget' || activeTab === 'transactions' || activeTab === 'reports' ? '#ffffff' : '#f4f5f7') }}>
 
       {/* Mobile overlay behind the drawer */}
       {isMobile && sidebarOpen && (
@@ -6133,7 +6221,7 @@ export default function BudgetApp() {
       )}
 
       {/* Side menu */}
-      {!isMobile && deskSidebar}
+      {!isMobile && (sidebarOpen ? deskSidebar : deskRail)}
       {isMobile && <aside
         style={{
           width: '240px',
@@ -6211,12 +6299,12 @@ export default function BudgetApp() {
 
       {/* Main content */}
       <div style={{ flex: 1, minWidth: 0 }}>
-        <div style={{ width: '100%', maxWidth: (!isMobile && ((isWide && activeTab === 'budget') || activeTab === 'reports' || activeTab === 'transactions')) ? 'none' : '1040px', margin: (!isMobile && ((isWide && activeTab === 'budget') || activeTab === 'reports' || activeTab === 'transactions')) ? '0' : '0 auto', padding: isMobile ? ((activeTab === 'budget' || activeTab === 'transactions' || (activeTab === 'accounts' && !manageAccounts)) ? '0 0 0' : '10px 10px 96px') : ((isWide && activeTab === 'budget') ? '16px 356px 16px 24px' : (activeTab === 'reports' || activeTab === 'transactions') ? '0 24px 24px' : '16px 20px'), boxSizing: 'border-box' }}>
+        <div style={{ width: '100%', maxWidth: (!isMobile && ((isWide && activeTab === 'budget') || activeTab === 'reports' || activeTab === 'transactions')) ? 'none' : '1040px', margin: (!isMobile && ((isWide && activeTab === 'budget') || activeTab === 'reports' || activeTab === 'transactions')) ? '0' : '0 auto', padding: isMobile ? ((activeTab === 'budget' || activeTab === 'transactions' || activeTab === 'reports' || (activeTab === 'accounts' && !manageAccounts)) ? '0 0 0' : '10px 10px 96px') : ((isWide && activeTab === 'budget') ? '16px 356px 16px 24px' : (activeTab === 'reports' || activeTab === 'transactions') ? '0 24px 24px' : '16px 20px'), boxSizing: 'border-box' }}>
 
       {/* Top bar */}
-      <header style={{ position: 'relative', display: (isMobile && (activeTab === 'budget' || activeTab === 'transactions' || (activeTab === 'accounts' && !manageAccounts))) ? 'none' : 'flex', justifyContent: isMobile ? 'center' : 'space-between', alignItems: 'center', gap: '10px', marginBottom: '14px', flexWrap: 'wrap' }}>
+      <header style={{ position: 'relative', display: (isMobile && (activeTab === 'budget' || activeTab === 'transactions' || activeTab === 'reports' || (activeTab === 'accounts' && !manageAccounts))) ? 'none' : 'flex', justifyContent: isMobile ? 'center' : 'space-between', alignItems: 'center', gap: '10px', marginBottom: '14px', flexWrap: 'wrap' }}>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: isMobile ? (activeTab === 'budget' ? 'flex-start' : 'center') : 'flex-start', gap: '10px', minWidth: 0, width: isMobile ? '100%' : 'auto' }}>
-          {!isMobile && (
+          {false && (
             <button
               onClick={() => setSidebarOpen(o => !o)}
               aria-label="Toggle menu"
@@ -6242,7 +6330,7 @@ export default function BudgetApp() {
         </div>
         {activeTab === 'budget' && !isMobile ? (
           null
-        ) : isMobile && activeTab === 'budget' ? null : !isMobile && rtaPill}
+        ) : null}
         {isMobile && activeTab !== 'budget' && <button onClick={() => setSidebarOpen(true)} aria-label="Menu" style={{ position: 'absolute', right: '10px', top: '12px', background: 'none', border: 'none', fontSize: '1.5rem', color: '#374151', cursor: 'pointer', lineHeight: 1 }}>⋮</button>}
       </header>
       {false && isMobile && activeTab === 'budget' && monthPickerOpen && (
@@ -7253,11 +7341,11 @@ export default function BudgetApp() {
           </div>
         );
         const icon = (kind) => (
-          <span style={{ width: '34px', height: '34px', borderRadius: '50%', flexShrink: 0, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', fontSize: '0.8rem', backgroundColor: kind === 'card' ? '#23235a' : kind === 'loan' ? '#23233a' : '#1d3318', color: kind === 'card' ? '#8f8fff' : kind === 'loan' ? '#a4a4bf' : '#7cc427', border: '1px solid ' + (kind === 'card' ? '#35358a' : kind === 'loan' ? '#33334d' : '#2f4d22') }}>{kind === 'card' ? '▭' : kind === 'loan' ? '↘' : '$'}</span>
+          <span style={{ width: '30px', height: '30px', borderRadius: '50%', flexShrink: 0, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', fontSize: '0.8rem', backgroundColor: kind === 'card' ? '#23235a' : kind === 'loan' ? '#23233a' : '#1d3318', color: kind === 'card' ? '#8f8fff' : kind === 'loan' ? '#a4a4bf' : '#7cc427', border: '1px solid ' + (kind === 'card' ? '#35358a' : kind === 'loan' ? '#33334d' : '#2f4d22') }}>{kind === 'card' ? '▭' : kind === 'loan' ? '↘' : '$'}</span>
         );
         const balColor = (v) => (v > 0.004 ? '#a8e65a' : v < -0.004 ? '#fff' : MD.muted);
         const rowOf = (key, kind, name, bal, onClick, last) => (
-          <button key={key} data-testid="acc-row" onClick={onClick} style={{ display: 'flex', alignItems: 'center', gap: '14px', width: '100%', background: 'none', border: 'none', borderBottom: last ? 'none' : '1px solid ' + MD.line, color: MD.text, padding: '15px 16px', cursor: 'pointer', textAlign: 'left', fontSize: '1rem' }}>
+          <button key={key} data-testid="acc-row" onClick={onClick} style={{ display: 'flex', alignItems: 'center', gap: '14px', width: '100%', background: 'none', border: 'none', borderBottom: last ? 'none' : '1px solid ' + MD.line, color: MD.text, padding: '11px 16px', cursor: 'pointer', textAlign: 'left', fontSize: '0.92rem' }}>
             {icon(kind)}<span style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{name}</span>
             <span style={{ fontWeight: 700, fontVariantNumeric: 'tabular-nums', color: balColor(bal) }}>{formatMoney(bal)}</span>
           </button>
@@ -7265,8 +7353,8 @@ export default function BudgetApp() {
         const loanTotal = -activeDebts.reduce((t, d) => t + (Number(d.balance) || 0), 0);
         return (
           <div data-testid="accounts-overview" style={{ backgroundColor: MD.bg, color: MD.text, minHeight: '100vh', paddingBottom: '170px' }}>
-            <div style={{ position: 'sticky', top: 0, zIndex: 25, backgroundColor: MD.bg, padding: '16px 16px 10px', display: 'flex', alignItems: 'center', gap: '16px' }}>
-              <div style={{ fontWeight: 700, fontSize: '1.4rem', flex: 1 }}>Accounts</div>
+            <div style={{ position: 'sticky', top: 0, zIndex: 25, backgroundColor: MD.bg, padding: '10px 16px 6px', display: 'flex', alignItems: 'center', gap: '16px' }}>
+              <div style={{ fontWeight: 700, fontSize: '1.25rem', flex: 1 }}>Accounts</div>
               <button onClick={() => setManageAccounts(true)} aria-label="Add account" style={{ background: 'none', border: '2px solid ' + MD.text, borderRadius: '50%', width: '28px', height: '28px', color: MD.text, fontSize: '1.1rem', lineHeight: 1, cursor: 'pointer', padding: 0 }}>+</button>
               <button onClick={() => setSidebarOpen(true)} aria-label="Menu" style={{ background: 'none', border: 'none', color: MD.text, fontSize: '1.5rem', cursor: 'pointer', padding: '0 4px', lineHeight: 1 }}>⋮</button>
             </div>
@@ -7701,7 +7789,7 @@ export default function BudgetApp() {
       })()}
 
       {/* REPORTS TAB */}
-      {activeTab === 'reports' && (() => {
+      {activeTab === 'reports' && wrapMobileDark((() => {
         const viewPills = (
           <div style={{ backgroundColor: 'white', padding: '10px 14px', borderRadius: '10px', boxShadow: '0 1px 3px rgba(0,0,0,0.1)', display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
             {[['spending', 'Spending'], ['incexp', 'Income vs Expense'], ['networth', 'Net Worth'], ['age', 'Age of Money']].map(([key, label]) => (
@@ -8026,7 +8114,7 @@ export default function BudgetApp() {
             </div>
           </div>
         );
-      })()}
+      })())}
 
       {/* TRANSACTIONS TAB */}
       {isMobile && activeTab === 'transactions' && renderMobileSpending()}
@@ -8983,18 +9071,18 @@ export default function BudgetApp() {
       {isMobile && (
         <>
         {!txSheetOpen && !selectedEnvId && !mTxId && !envMenuId && (activeTab === 'budget' || activeTab === 'transactions') && (
-          <button data-testid="fab-add" onClick={() => { cancelEditTx(); if (txFilterAccount) setTxAccountId(txFilterAccount); setTxSheetOpen(true); }} aria-label="Add transaction" style={{ position: 'fixed', right: '16px', bottom: 'calc(76px + env(safe-area-inset-bottom))', zIndex: 31, backgroundColor: '#5b5bff', color: 'white', border: 'none', borderRadius: '16px', padding: '16px 24px', fontWeight: 700, fontSize: '1.05rem', boxShadow: '0 8px 22px rgba(0,0,0,0.5)', cursor: 'pointer' }}>＋ Transaction</button>
+          <button data-testid="fab-add" onClick={() => { cancelEditTx(); if (txFilterAccount) setTxAccountId(txFilterAccount); setTxSheetOpen(true); }} aria-label="Add transaction" style={{ position: 'fixed', right: '16px', bottom: 'calc(64px + env(safe-area-inset-bottom))', zIndex: 31, backgroundColor: '#5b5bff', color: 'white', border: 'none', borderRadius: '14px', padding: '12px 20px', fontWeight: 700, fontSize: '0.95rem', boxShadow: '0 8px 22px rgba(0,0,0,0.5)', cursor: 'pointer' }}>＋ Transaction</button>
         )}
-        <nav data-testid="mobile-tabs" style={{ position: 'fixed', left: 0, right: 0, bottom: 0, height: 'calc(64px + env(safe-area-inset-bottom))', paddingBottom: 'env(safe-area-inset-bottom)', display: 'flex', backgroundColor: '#0a0a14', borderTop: '1px solid #26263f', zIndex: 30 }}>
+        <nav data-testid="mobile-tabs" style={{ position: 'fixed', left: 0, right: 0, bottom: 0, height: 'calc(54px + env(safe-area-inset-bottom))', paddingBottom: 'env(safe-area-inset-bottom)', display: 'flex', backgroundColor: '#0a0a14', borderTop: '1px solid #26263f', zIndex: 30 }}>
           {MOBILE_TABS.map(([tab, label, glyph]) => {
             const active = activeTab === tab;
             return (
               <button
                 key={tab}
                 onClick={() => { if (tab === 'transactions') setTxFilterAccount(''); if (tab === 'accounts') setManageAccounts(false); setSelectedEnvId(null); setMTxId(null); openTab(tab); }}
-                style={{ flex: 1, background: 'none', border: 'none', cursor: 'pointer', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: '3px', color: active ? '#fff' : '#a4a4bf', fontWeight: active ? 700 : 500, fontSize: '0.72rem' }}
+                style={{ flex: 1, background: 'none', border: 'none', cursor: 'pointer', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: '1px', color: active ? '#fff' : '#a4a4bf', fontWeight: active ? 700 : 500, fontSize: '0.64rem' }}
               >
-                <span style={{ fontSize: '1.15rem', lineHeight: 1, padding: '4px 20px', borderRadius: '999px', backgroundColor: active ? '#2a2a66' : 'transparent' }}>{glyph}</span>
+                <span style={{ fontSize: '1rem', lineHeight: 1, padding: '3px 18px', borderRadius: '999px', backgroundColor: active ? '#2a2a66' : 'transparent' }}>{glyph}</span>
                 {label}
               </button>
             );
