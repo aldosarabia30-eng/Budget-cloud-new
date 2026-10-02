@@ -1334,9 +1334,12 @@ export default function BudgetApp() {
     try { const v = JSON.parse(sessionStorage.getItem('budget-unlocked-tx') || '[]'); return Array.isArray(v) ? v : []; } catch (e) { return []; }
   });
   useEffect(() => { try { sessionStorage.setItem('budget-unlocked-tx', JSON.stringify(unlockedTxIds)); } catch (e) { /* storage unavailable */ } }, [unlockedTxIds]);
+  const [monthPickerOpen, setMonthPickerOpen] = useState(false);
   const [selectedEnvId, setSelectedEnvId] = useState(null); // envelope row opened for actions
   const [txSheetOpen, setTxSheetOpen] = useState(false); // phone: add/edit transaction sheet
   const [txFiltersOpen, setTxFiltersOpen] = useState(false); // phone: filters collapsed by default
+  const [showAddForm, setShowAddForm] = useState(false); // desktop register: Add Transaction form toggled from the toolbar
+  const [acctMenuOpen, setAcctMenuOpen] = useState(false);
   const [showCsv, setShowCsv] = useState(false); // phone: CSV import collapsed by default
   const [manageAccounts, setManageAccounts] = useState(false); // phone: Accounts tab shows overview unless true
   const [showRtaInfo, setShowRtaInfo] = useState(false); // phone: Ready to Assign breakdown
@@ -1433,6 +1436,7 @@ export default function BudgetApp() {
 
   // Side menu state
   const [isMobile, setIsMobile] = useState(isMobileNow);
+  const [isWide, setIsWide] = useState(() => typeof window !== 'undefined' && !!window.matchMedia && window.matchMedia('(min-width: 1180px)').matches);
   const [sidebarOpen, setSidebarOpen] = useState(() => !isMobileNow());
 
   const [newDebtName, setNewDebtName] = useState('');
@@ -1718,6 +1722,13 @@ export default function BudgetApp() {
     return () => window.removeEventListener('keydown', onKey);
   }, []);
 
+  useEffect(() => {
+    if (!window.matchMedia) return undefined;
+    const mq = window.matchMedia('(min-width: 1180px)');
+    const onChange = (e) => setIsWide(e.matches);
+    mq.addEventListener('change', onChange);
+    return () => mq.removeEventListener('change', onChange);
+  }, []);
   // Keep the side menu sensible when the window is resized (open on desktop, closed drawer on mobile)
   useEffect(() => {
     if (!window.matchMedia) return;
@@ -2386,6 +2397,26 @@ export default function BudgetApp() {
     }
     return Math.max(0, Math.round(prog.left * 100) / 100);
   };
+
+  const renderAutoMenu = () => autoMenuOpen && (
+                  <>
+                    <div onClick={() => setAutoMenuOpen(false)} style={{ position: 'fixed', inset: 0, zIndex: 9 }} />
+                    <div role="menu" data-testid="auto-menu" style={{ position: 'absolute', right: 0, top: '100%', marginTop: '6px', width: '270px', backgroundColor: 'white', border: '1px solid #e3e6eb', borderRadius: '8px', boxShadow: '0 8px 24px rgba(0,0,0,0.15)', zIndex: 10, padding: '4px' }}>
+                      {AUTO_OPTIONS.map(([key, label, hint]) => (
+                        <button
+                          key={key}
+                          role="menuitem"
+                          onClick={() => runAutoAssign(key)}
+                          style={{ display: 'block', width: '100%', textAlign: 'left', background: 'none', border: 'none', padding: '8px 10px', borderRadius: '6px', cursor: 'pointer' }}
+                        >
+                          <div style={{ fontSize: '0.85rem', fontWeight: 600, color: '#1f2937' }}>{label}</div>
+                          <div style={{ fontSize: '0.72rem', color: '#6b7280' }}>{hint}</div>
+                        </button>
+                      ))}
+                      <div style={{ fontSize: '0.68rem', color: '#9ca3af', padding: '4px 10px 6px' }}>Uses Ready to Assign only and never lowers an amount (except Reset).</div>
+                    </div>
+                  </>
+                );
 
   const AUTO_OPTIONS = [
     ['underfunded', 'Underfunded', 'Fill each goal to what it needs this month'],
@@ -3937,6 +3968,41 @@ export default function BudgetApp() {
   );
 
   // ----- Net worth and age of money reports -----
+  // Age of money right now (first in, first out), for the header
+  const computeAgeCurrent = () => {
+    const dated = activeTransactions.filter(t => /^\d{4}-\d{2}-\d{2}$/.test(t.date || ''));
+    const cashIds = new Set(activeAccounts.filter(a => !isCreditCard(a)).map(a => a.id));
+    const cardIds = new Set(activeAccounts.filter(isCreditCard).map(a => a.id));
+    const toMs = (d) => new Date(d + 'T00:00:00').getTime();
+    const events = [];
+    const openingTotal = activeAccounts.filter(a => !isCreditCard(a)).reduce((t, a) => t + Math.max(0, Number(a.initialBalance) || 0), 0);
+    if (openingTotal > 0 && dated.length) events.push({ date: dated.reduce((m, t) => (t.date < m ? t.date : m), dated[0].date), kind: 'in', amount: openingTotal, order: 0 });
+    dated.forEach(t => {
+      const amt = Number(t.amount) || 0;
+      if (!cashIds.has(t.accountId)) return;
+      if (t.type === 'income' && !t.isTransfer && amt > 0) events.push({ date: t.date, kind: 'in', amount: amt, order: 1 });
+      else if (t.type === 'expense' && !t.isTransfer) events.push(amt >= 0 ? { date: t.date, kind: 'out', amount: amt, order: 2 } : { date: t.date, kind: 'in', amount: -amt, order: 1 });
+      else if (t.type === 'expense' && t.isTransfer && cardIds.has(t.transferAccountId)) events.push({ date: t.date, kind: 'out', amount: amt, order: 2 }); // paying a card
+    });
+    events.sort((a, b) => a.date.localeCompare(b.date) || a.order - b.order);
+    const queue = [];
+    const ages = []; // [{ date, age }]
+    events.forEach(ev => {
+      if (ev.kind === 'in') { queue.push({ ms: toMs(ev.date), left: ev.amount }); return; }
+      let need = ev.amount, taken = 0, weighted = 0;
+      while (need > 0.004 && queue.length) {
+        const head = queue[0];
+        const use = Math.min(head.left, need);
+        taken += use; weighted += use * head.ms; need -= use; head.left -= use;
+        if (head.left <= 0.004) queue.shift();
+      }
+      if (taken > 0.004) ages.push({ date: ev.date, age: Math.max(0, (toMs(ev.date) - weighted / taken) / 86400000) });
+    });
+    const avgLast = (list) => { const l = list.slice(-10); return l.length ? l.reduce((t, a) => t + a.age, 0) / l.length : null; };
+    const current = avgLast(ages);
+    return current;
+  };
+
   const renderOtherReport = (view, viewPills) => {
     const card = { backgroundColor: 'white', padding: '14px', borderRadius: '10px', boxShadow: '0 1px 3px rgba(0,0,0,0.1)' };
     const statBox = (label, value, color, sub) => (
@@ -4121,12 +4187,12 @@ export default function BudgetApp() {
   };
 
   // ----- Shell pieces (YNAB-style sidebar, month bar, Ready to Assign pill) -----
-  const SIDE_BG = '#1f2f4f';
+  const SIDE_BG = '#2c4a7f';
   const sideItem = (key, active, onClick, label, right, opts = {}) => (
     <button
       key={key}
       onClick={onClick}
-      style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '8px', width: '100%', textAlign: 'left', padding: isMobile ? '12px 12px' : (opts.small ? '6px 10px' : '8px 10px'), borderRadius: '6px', border: 'none', cursor: 'pointer', fontSize: opts.small ? '0.84rem' : '0.9rem', fontWeight: active ? 600 : 500, backgroundColor: active ? 'rgba(255,255,255,0.14)' : 'transparent', color: active ? 'white' : '#c9d3e6' }}
+      style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '8px', width: '100%', textAlign: 'left', padding: isMobile ? '12px 12px' : (opts.small ? '6px 10px' : '8px 10px'), borderRadius: '6px', border: 'none', cursor: 'pointer', fontSize: opts.small ? '0.84rem' : '0.9rem', fontWeight: active ? 600 : 500, backgroundColor: active ? 'rgba(255,255,255,0.2)' : 'transparent', color: active ? 'white' : '#d5def0' }}
     >
       <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{label}</span>
       {right}
@@ -4173,7 +4239,10 @@ export default function BudgetApp() {
       >
         ‹
       </button>
-      <div style={{ minWidth: '130px', textAlign: 'center', fontWeight: 700, fontSize: '1.05rem' }}>{monthLabel(budgetMonth)}</div>
+      <div style={{ minWidth: '130px', textAlign: 'center' }}>
+        {!isMobile && budgetMonth === todayMonth && <div style={{ fontWeight: 700, fontSize: '1.05rem', lineHeight: 1.15 }}>This Month</div>}
+        <div style={!isMobile && budgetMonth === todayMonth ? { fontSize: '0.78rem', color: '#6b7280' } : { fontWeight: 700, fontSize: '1.05rem' }}>{monthLabel(budgetMonth)}</div>
+      </div>
       <button
         disabled={budgetMonth >= budgetLatest}
         aria-label="Next month"
@@ -4199,13 +4268,49 @@ export default function BudgetApp() {
       <button onClick={redo} disabled={!histRef.current.redo.length} aria-label="Redo" title="Redo (Ctrl+Shift+Z)" style={undoBtnStyle(!!histRef.current.redo.length)}>↷</button>
     </div>
   );
+  const balanceTriple = (cleared, working) => (
+    <div data-testid="balance-triple" style={{ display: 'flex', alignItems: 'center', gap: '14px', flexWrap: 'wrap' }}>
+      {[[cleared, '© Cleared Balance'], [round2(working - cleared), '© Uncleared Balance']].map(([v, l], i) => (
+        <React.Fragment key={l}>
+          {i === 1 && <span style={{ color: '#6b7280' }}>+</span>}
+          <div><div style={{ fontWeight: 800, fontSize: '1.15rem', color: v < -0.004 ? '#b42318' : '#2f7d32', lineHeight: 1.1 }}>{formatMoney(v)}</div><div style={{ fontSize: '0.72rem', color: '#4b5563' }}>{l}</div></div>
+        </React.Fragment>
+      ))}
+      <span style={{ color: '#6b7280' }}>=</span>
+      <div><div style={{ fontWeight: 800, fontSize: '1.15rem', color: working < -0.004 ? '#b42318' : '#2f7d32', lineHeight: 1.1 }}>{formatMoney(working)}</div><div style={{ fontSize: '0.72rem', color: '#4b5563' }}>Working Balance</div></div>
+    </div>
+  );
   // Account header shown above the register when one account is selected: balances, reconcile, hide, delete
   const renderAccountHeader = (acc) => {
     const clearedBal = getClearedBalance(acc.id);
     const workingBal = getAccountBalance(acc.id);
     const isReconciling = reconcilingAccId === acc.id;
     return (
-      <div data-testid="account-header" style={{ backgroundColor: acc.isHidden ? '#f9fafb' : 'white', borderRadius: '10px', padding: '14px', boxShadow: '0 1px 3px rgba(0,0,0,0.1)' }}>
+      <div data-testid="account-header" style={{ backgroundColor: acc.isHidden ? '#f9fafb' : 'white', borderRadius: '10px', padding: '14px', boxShadow: '0 1px 3px rgba(0,0,0,0.1)', position: 'relative', zIndex: 5 }}>
+                {!isMobile ? (
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '10px' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '22px', flexWrap: 'wrap' }}>
+                      <div style={{ fontWeight: 800, fontSize: '1.3rem', color: '#111827' }}>
+                        {acc.name}
+                        {acc.isHidden && <span data-testid="hidden-account-badge" style={{ marginLeft: '8px', fontSize: '0.7rem', fontWeight: 600, color: '#6b7280', backgroundColor: '#e5e7eb', borderRadius: '999px', padding: '1px 8px' }}>hidden</span>}
+                      </div>
+                      {balanceTriple(clearedBal, workingBal)}
+                    </div>
+                    <div style={{ display: 'flex', gap: '8px', alignItems: 'center', position: 'relative' }}>
+                      <div style={{ textAlign: 'right' }}>
+                        <button onClick={() => (isReconciling ? setReconcilingAccId(null) : startReconcile(acc.id))} style={{ backgroundColor: 'white', color: '#1f2937', border: '1px solid #9ca3af', padding: '8px 18px', borderRadius: '8px', fontWeight: 600, cursor: 'pointer', fontSize: '0.9rem' }}>Reconcile</button>
+                        {acc.lastReconciledDate && <div style={{ fontSize: '0.7rem', color: '#059669', fontWeight: 600, marginTop: '2px' }}>✓ Reconciled {formatDate(acc.lastReconciledDate, 'us')} (${Number(acc.lastReconciledBalance).toFixed(2)})</div>}
+                      </div>
+                      <button onClick={() => setAcctMenuOpen(o => !o)} aria-label="Account options" aria-expanded={acctMenuOpen} style={{ background: 'white', border: '1px solid #d1d5db', borderRadius: '8px', padding: '8px 10px', cursor: 'pointer', fontWeight: 700 }}>⋯</button>
+                      {acctMenuOpen && (
+                        <div style={{ position: 'absolute', right: 0, top: '100%', marginTop: '4px', backgroundColor: 'white', border: '1px solid #e3e6eb', borderRadius: '8px', boxShadow: '0 8px 20px rgba(0,0,0,0.15)', zIndex: 40, minWidth: '160px', overflow: 'hidden' }}>
+                          <button onClick={() => { setAcctMenuOpen(false); (acc.isHidden ? handleUnhideAccount(acc) : handleHideAccount(acc)); }} aria-label={`${acc.isHidden ? 'Unhide' : 'Hide'} account ${acc.name.trim()}`} style={{ display: 'block', width: '100%', textAlign: 'left', padding: '10px 14px', background: 'white', border: 'none', cursor: 'pointer', fontSize: '0.9rem' }}>{acc.isHidden ? 'Unhide account' : 'Hide account'}</button>
+                          <button onClick={() => { setAcctMenuOpen(false); handleSoftDeleteAccount(acc.id); }} style={{ display: 'block', width: '100%', textAlign: 'left', padding: '10px 14px', background: 'white', border: 'none', cursor: 'pointer', fontSize: '0.9rem', color: '#dc2626' }}>Delete account</button>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                ) : (
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexWrap: 'wrap', gap: '10px' }}>
                   <div>
                     <h3 style={{ margin: '0 0 4px 0', fontSize: '1.1rem' }}>
@@ -4244,6 +4349,7 @@ export default function BudgetApp() {
                     </button>
                   </div>
                 </div>
+                )}
 
                 {/* Reconcile Area */}
                 {isReconciling && (
@@ -4279,6 +4385,178 @@ export default function BudgetApp() {
                   </div>
                 )}
 
+      </div>
+    );
+  };
+
+  // Desktop register: YNAB-style table (date, payee, category, memo, outflow, inflow, cleared)
+  const renderDesktopRegister = () => {
+    const allMode = !txFilterAccount;
+    const cols = `30px ${allMode ? '150px ' : ''}100px minmax(0,1fr) minmax(0,2fr) minmax(0,0.9fr) 96px 96px 34px 60px`;
+    const flat = sortedTransactionDates.flatMap(d => groupedTransactions[d]);
+    const inp = { padding: '7px 9px', border: '1px solid #d1d5db', borderRadius: '8px', fontSize: '0.85rem', backgroundColor: 'white' };
+    const tbtn = { background: 'none', border: 'none', color: '#2f6fb3', fontWeight: 600, fontSize: '0.9rem', cursor: 'pointer', padding: '6px 4px', display: 'inline-flex', alignItems: 'center', gap: '6px' };
+    const linkBtn = (extra) => ({ background: 'none', border: 'none', color: '#2563eb', cursor: 'pointer', padding: 0, fontSize: '0.72rem', fontWeight: 600, ...extra });
+    const accList = activeAccounts.filter(a => !a.isHidden);
+    const totCleared = round2(accList.reduce((t, a) => t + getClearedBalance(a.id), 0));
+    const totWork = round2(accList.reduce((t, a) => t + getAccountBalance(a.id), 0));
+    return (
+      <div data-testid="desktop-register" style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+        {allMode && (
+          <div style={{ backgroundColor: 'white', borderRadius: '10px', padding: '14px', boxShadow: '0 1px 3px rgba(0,0,0,0.1)', display: 'flex', alignItems: 'center', gap: '28px', flexWrap: 'wrap' }}>
+            <div style={{ fontWeight: 800, fontSize: '1.3rem', color: '#111827' }}>All Accounts</div>
+            {balanceTriple(totCleared, totWork)}
+          </div>
+        )}
+        <div style={{ backgroundColor: 'white', borderRadius: '10px', boxShadow: '0 1px 3px rgba(0,0,0,0.1)' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '14px', padding: '8px 14px', flexWrap: 'wrap', borderBottom: '1px solid #eef0f3' }}>
+            <button onClick={() => setShowAddForm(v => !v)} aria-expanded={showAddForm} style={tbtn}>⊕ Add Transaction</button>
+            <button onClick={() => setShowCsv(v => !v)} aria-expanded={showCsv} style={tbtn}>⬆ File Import</button>
+            <span style={{ width: '1px', height: '20px', backgroundColor: '#e3e6eb' }} />
+            <button onClick={undo} disabled={!histRef.current.undo.length} aria-label="Undo" style={{ ...tbtn, color: histRef.current.undo.length ? '#2f6fb3' : '#b6c2d1', cursor: histRef.current.undo.length ? 'pointer' : 'not-allowed' }}>↶ Undo</button>
+            <button onClick={redo} disabled={!histRef.current.redo.length} aria-label="Redo" style={{ ...tbtn, color: histRef.current.redo.length ? '#2f6fb3' : '#b6c2d1', cursor: histRef.current.redo.length ? 'pointer' : 'not-allowed' }}>↷ Redo</button>
+            <div style={{ flex: 1 }} />
+            <button onClick={() => setTxFiltersOpen(v => !v)} aria-expanded={txFiltersOpen} style={{ ...tbtn, color: txFiltersActive ? '#1d4ed8' : '#2f6fb3' }}>View ▾</button>
+            <input type="search" placeholder={allMode ? 'Search All Accounts' : 'Search this account'} value={txSearch} onChange={e => setTxSearch(e.target.value)} aria-label="Search transactions" style={{ ...inp, width: '230px', borderColor: '#9bbbe0' }} />
+          </div>
+          {txFiltersOpen && (
+            <div data-testid="tx-filters" style={{ display: 'flex', gap: '6px', flexWrap: 'wrap', alignItems: 'center', padding: '8px 14px', backgroundColor: '#f9fafb', borderBottom: '1px solid #eef0f3' }}>
+              <select value={txFilterAccount} onChange={e => setTxFilterAccount(e.target.value)} aria-label="Filter by account" style={inp}>
+                <option value="">All accounts</option>
+                {activeAccounts.map(a => (<option key={a.id} value={a.id}>{a.name}{a.isHidden ? ' (hidden)' : ''}</option>))}
+              </select>
+              <select value={txFilterEnvelope} onChange={e => setTxFilterEnvelope(e.target.value)} aria-label="Filter by envelope" style={inp}>
+                <option value="">All envelopes</option>
+                <option value="__has__">Has an envelope</option>
+                <option value="__none__">No envelope (uncategorized)</option>
+                {envelopeChoicesAll.map(c => (<optgroup key={c.label} label={c.label}>{c.list.map(e => (<option key={e.id} value={e.id}>{e.name}</option>))}</optgroup>))}
+              </select>
+              <select value={txFilterType} onChange={e => setTxFilterType(e.target.value)} aria-label="Filter by type" style={inp}>
+                <option value="">All types</option><option value="expense">Expenses</option><option value="income">Income</option><option value="transfer">Transfers</option>
+              </select>
+              <select value={txFilterStatus} onChange={e => setTxFilterStatus(e.target.value)} aria-label="Filter by cleared status" style={inp}>
+                <option value="">Cleared or not</option><option value="cleared">Cleared</option><option value="uncleared">Not cleared</option>
+              </select>
+              <input type="date" value={txFromDate} onChange={e => setTxFromDate(e.target.value)} aria-label="From date" style={inp} />
+              <input type="date" value={txToDate} onChange={e => setTxToDate(e.target.value)} aria-label="To date" style={inp} />
+              {txFiltersActive && (<>
+                <span data-testid="tx-filter-count" style={{ fontSize: '0.8rem', color: '#6b7280' }}>{visibleTransactions.length} of {activeTransactions.length} shown</span>
+                <button onClick={clearTxFilters} style={{ background: 'none', border: 'none', color: '#2563eb', cursor: 'pointer', fontSize: '0.8rem', fontWeight: 600 }}>Clear filters</button>
+              </>)}
+            </div>
+          )}
+          {/* column headings */}
+          <div style={{ display: 'grid', gridTemplateColumns: cols, columnGap: '10px', alignItems: 'center', padding: '8px 14px', fontSize: '0.7rem', fontWeight: 700, letterSpacing: '0.05em', color: '#6b7280', borderBottom: '1px solid #e3e6eb', backgroundColor: '#fafbfc', position: 'sticky', top: 0, zIndex: 3 }}>
+            <input type="checkbox" aria-label="Select all transactions" checked={selectedTxIds.length === visibleTransactions.length && visibleTransactions.length > 0} onChange={handleSelectAllTx} style={{ cursor: 'pointer' }} />
+            {allMode && <div>ACCOUNT</div>}<div>DATE ▾</div><div>PAYEE</div><div>CATEGORY</div><div>MEMO</div><div style={{ textAlign: 'right' }}>OUTFLOW</div><div style={{ textAlign: 'right' }}>INFLOW</div><div style={{ textAlign: 'center' }}>©</div><div />
+          </div>
+          {flat.length === 0 && <p style={{ color: '#6b7280', fontSize: '0.9rem', padding: '16px 14px', margin: 0 }}>{txFiltersActive ? 'No transactions match your search or filters.' : 'No transactions recorded yet.'}</p>}
+          {flat.map(tx => {
+            const acc = accounts.find(a => a.id === tx.accountId);
+            const env = envelopes.find(e => e.id === tx.envelopeId);
+            const isSelected = selectedTxIds.includes(tx.id);
+            const locked = isTxLocked(tx);
+            const hasLock = locked || tx.reconciled || unlockedTxIds.includes(tx.id);
+            const cleared = !!(tx.cleared || tx.reconciled);
+            const v = (tx.type === 'income' ? 1 : -1) * (Number(tx.amount) || 0);
+            const amtCell = (show, txt) => <div style={{ textAlign: 'right', fontSize: '0.9rem', fontVariantNumeric: 'tabular-nums', color: tx.isTransfer ? '#6b7280' : '#1f2937' }}>{show ? txt : ''}</div>;
+            return (
+              <React.Fragment key={tx.id}>
+                <div data-testid="reg-row" style={{ display: 'grid', gridTemplateColumns: cols, columnGap: '10px', alignItems: 'center', padding: '7px 14px', borderBottom: '1px solid #f0f2f5', backgroundColor: isSelected ? '#e8f0fe' : 'white' }}>
+                  <input type="checkbox" checked={isSelected} onChange={() => handleToggleSelectTx(tx.id)} aria-label={`Select ${tx.payee}`} style={{ cursor: 'pointer' }} />
+                  {allMode && <div style={{ fontSize: '0.85rem', color: '#374151', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{acc?.name}</div>}
+                  <div style={{ fontSize: '0.88rem' }}>{formatDate(tx.date, 'us')}</div>
+                  <div style={{ minWidth: 0, fontSize: '0.9rem', fontWeight: 500 }}>
+                    <div style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{tx.payee}</div>
+                    {tx.isTransfer && (
+                      <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+                        <span data-testid="transfer-badge" style={{ fontSize: '0.68rem', fontWeight: 600, color: '#4f46e5', backgroundColor: '#eef2ff', padding: '1px 6px', borderRadius: '999px' }}>Transfer {tx.type === 'expense' ? 'out' : 'in'}</span>
+                        <button type="button" onClick={() => handleUnlinkTransfer(tx)} disabled={locked} style={linkBtn({ color: '#6b7280', opacity: locked ? 0.4 : 1 })}>Unlink</button>
+                      </div>
+                    )}
+                  </div>
+                  <div style={{ minWidth: 0, fontSize: '0.85rem' }}>
+                    {tx.isTransfer ? <span style={{ color: '#6b7280' }}>Transfer</span>
+                      : isSplitTx(tx) ? (
+                        <span>Split ({tx.splits.length}){' '}
+                          <button type="button" onClick={() => (splitTxId === tx.id ? closeSplit() : openSplit(tx))} disabled={locked} style={linkBtn({ opacity: locked ? 0.4 : 1 })}>{splitTxId === tx.id ? 'Close split' : 'Edit split'}</button>{' '}
+                          <button type="button" onClick={() => handleRemoveSplit(tx.id)} disabled={locked} style={linkBtn({ color: '#6b7280', opacity: locked ? 0.4 : 1 })}>Remove split</button>
+                        </span>
+                      ) : tx.type === 'expense' ? (
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                          <select value={tx.envelopeId || ''} onChange={e => handleAssignTxEnvelope(tx.id, e.target.value)} disabled={locked} aria-label="Assign envelope" style={{ minWidth: 0, flex: 1, maxWidth: '100%', padding: '4px 6px', border: '1px solid ' + (tx.envelopeId ? '#e5e7eb' : '#fbbf24'), borderRadius: '6px', fontSize: '0.82rem', color: tx.envelopeId ? '#374151' : '#b45309', backgroundColor: tx.envelopeId ? 'white' : '#fffbeb' }}>
+                            <option value="">Uncategorized</option>
+                            {tx.envelopeId && env && (env.isDeleted || env.isHidden) && (<option value={tx.envelopeId}>{env.name} ({env.isDeleted ? 'deleted' : 'hidden'})</option>)}
+                            {envelopeChoices.map(c => (<optgroup key={c.label} label={c.label}>{c.list.map(e => (<option key={e.id} value={e.id}>{e.name}</option>))}</optgroup>))}
+                          </select>
+                          <button type="button" onClick={() => (splitTxId === tx.id ? closeSplit() : openSplit(tx))} disabled={locked} style={linkBtn({ opacity: locked ? 0.4 : 1 })}>{splitTxId === tx.id ? 'Close split' : 'Split'}</button>
+                        </div>
+                      ) : (
+                        <span style={{ color: '#374151' }}>Inflow: Ready to Assign{countsTowardRTA(tx) ? <>{' '}<button type="button" onClick={() => (splitTxId === tx.id ? closeSplit() : openSplit(tx))} disabled={locked} style={linkBtn({ opacity: locked ? 0.4 : 1 })}>{splitTxId === tx.id ? 'Close' : incomeAllocs(tx).length ? 'Edit envelopes' : 'Send to envelopes'}</button></> : null}</span>
+                      )}
+                  </div>
+                  <div style={{ fontSize: '0.82rem', color: '#6b7280', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={tx.notes || ''}>{tx.notes || ''}</div>
+                  {amtCell(v < 0, plainMoney(Math.abs(v)))}
+                  {amtCell(v >= 0, plainMoney(Math.abs(v)))}
+                  <div style={{ textAlign: 'center' }}>
+                    {hasLock ? (
+                      <button onClick={() => (locked ? unlockTx(tx) : relockTx(tx))} title={locked ? 'Reconciled and locked. Click to unlock.' : 'Unlocked. Click to lock again.'} aria-label={locked ? 'Unlock transaction' : 'Lock transaction'} style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 0, fontSize: '0.9rem' }}>{locked ? '🔒' : '🔓'}</button>
+                    ) : (
+                      <button onClick={() => handleToggleCleared(tx.id)} title="Toggle cleared" aria-label={`${cleared ? 'Cleared' : 'Uncleared'}: ${tx.payee}`} style={{ width: '18px', height: '18px', borderRadius: '50%', border: '2px solid ' + (cleared ? '#2e9e4f' : '#c4c9d2'), backgroundColor: cleared ? '#2e9e4f' : 'white', color: cleared ? 'white' : '#9ca3af', fontSize: '0.6rem', fontWeight: 800, lineHeight: 1, cursor: 'pointer', padding: 0 }}>C</button>
+                    )}
+                  </div>
+                  <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '2px' }}>
+                    <button onClick={() => startEditTx(tx)} disabled={locked} title={locked ? 'Reconciled and locked' : 'Edit transaction'} aria-label="Edit transaction" style={{ background: 'none', border: 'none', color: '#2563eb', cursor: locked ? 'not-allowed' : 'pointer', padding: '4px', opacity: locked ? 0.35 : 1 }}>✎</button>
+                    <button onClick={() => handleSoftDeleteTransaction(tx.id)} disabled={locked} title={locked ? 'Reconciled and locked' : 'Delete transaction'} aria-label="Delete transaction" style={{ background: 'none', border: 'none', color: '#dc2626', cursor: locked ? 'not-allowed' : 'pointer', padding: '4px', opacity: locked ? 0.35 : 1 }}>✕</button>
+                  </div>
+                </div>
+                {(isSplitTx(tx) || (incomeAllocs(tx).length > 0 && countsTowardRTA(tx)) || (splitTxId === tx.id && editingTxId !== tx.id) || (unlockAskId === tx.id && locked)) && (
+                  <div style={{ padding: '4px 14px 8px 54px', borderBottom: '1px solid #f0f2f5', backgroundColor: '#fcfcfd' }}>
+                    {isSplitTx(tx) && tx.splits.map((sp, i) => {
+                      const se = envelopes.find(e => e.id === sp.envelopeId);
+                      return <div key={i} data-testid="split-part" style={{ fontSize: '0.75rem', color: sp.envelopeId ? '#374151' : '#b45309' }}>{se ? se.name + (se.isDeleted ? ' (deleted)' : '') : 'No envelope'}: {plainMoney(sp.amount)}</div>;
+                    })}
+                    {incomeAllocs(tx).length > 0 && countsTowardRTA(tx) && (<>
+                      {incomeAllocs(tx).map((al, i) => {
+                        const ae = envelopes.find(e => e.id === al.envelopeId);
+                        return <div key={i} data-testid="income-alloc" style={{ fontSize: '0.75rem', color: '#059669' }}>→ {ae ? ae.name + (ae.isDeleted ? ' (deleted)' : '') : 'Unknown envelope'}: {plainMoney(al.amount)}</div>;
+                      })}
+                      <div style={{ fontSize: '0.72rem', color: '#6b7280' }}>{plainMoney(round2(Number(tx.amount) - incomeAllocs(tx).reduce((t, al) => t + al.amount, 0)))} stays in Ready to Assign</div>
+                    </>)}
+                    {splitTxId === tx.id && editingTxId !== tx.id && renderSplitEditor(tx)}
+                    {unlockAskId === tx.id && locked && (
+                      <div data-testid="unlock-ask" style={{ backgroundColor: '#fffbeb', border: '1px solid #fcd34d', color: '#92400e', borderRadius: '8px', padding: '8px 10px', margin: '4px 0', fontSize: '0.8rem' }}>
+                        <div style={{ marginBottom: '6px' }}>This {tx.isTransfer ? 'transfer' : 'transaction'} was reconciled with your bank. Changing it can throw off your reconciled balance.</div>
+                        <div style={{ display: 'flex', gap: '8px' }}>
+                          <button onClick={() => unlockTx(tx)} style={{ backgroundColor: '#d97706', color: 'white', border: 'none', borderRadius: '6px', padding: '4px 10px', fontWeight: 'bold', cursor: 'pointer', fontSize: '0.8rem' }}>Unlock to edit</button>
+                          <button onClick={() => setUnlockAskId(null)} style={{ background: 'none', border: 'none', color: '#92400e', cursor: 'pointer', fontSize: '0.8rem' }}>Keep locked</button>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
+              </React.Fragment>
+            );
+          })}
+          {visibleTransactions.length > pagedTransactions.length && (
+            <div style={{ textAlign: 'center', padding: '14px 0' }}>
+              <div style={{ fontSize: '0.8rem', color: '#6b7280', marginBottom: '6px' }}>Showing {pagedTransactions.length} of {visibleTransactions.length}</div>
+              <button onClick={() => setTxLimit(n => n + 200)} style={{ backgroundColor: 'white', color: '#2563eb', border: '1px solid #bfdbfe', padding: '7px 14px', borderRadius: '6px', fontWeight: 'bold', cursor: 'pointer', fontSize: '0.85rem' }}>Show 200 more</button>
+            </div>
+          )}
+        </div>
+        {selectedTxIds.length > 0 && (
+          <div data-testid="bulk-bar" style={{ position: 'fixed', left: '50%', bottom: '22px', transform: 'translateX(-50%)', zIndex: 45, backgroundColor: '#1f2a44', color: 'white', borderRadius: '10px', padding: '10px 16px', display: 'flex', gap: '14px', alignItems: 'center', boxShadow: '0 8px 24px rgba(0,0,0,0.3)' }}>
+            <button onClick={() => setSelectedTxIds([])} aria-label="Clear selection" style={{ background: 'none', border: 'none', color: '#cbd5e1', cursor: 'pointer' }}>×</button>
+            <strong style={{ fontSize: '0.9rem' }}>{selectedTxIds.length} Transaction{selectedTxIds.length === 1 ? '' : 's'}</strong>
+            {selectedTxIds.length === 2 && <button onClick={handleLinkSelected} style={{ background: 'none', border: 'none', color: 'white', fontWeight: 600, cursor: 'pointer' }}>Link as transfer</button>}
+            <select value="" onChange={e => handleAssignSelectedEnvelope(e.target.value)} aria-label="Assign envelope to selected transactions" style={{ padding: '6px 8px', border: 'none', borderRadius: '6px', fontSize: '0.85rem', backgroundColor: '#2b3a5e', color: 'white' }}>
+              <option value="">Categorize…</option>
+              {envelopeChoices.map(c => (<optgroup key={c.label} label={c.label}>{c.list.map(e => (<option key={e.id} value={e.id}>{e.name}</option>))}</optgroup>))}
+            </select>
+            <button onClick={handleDeleteSelectedTransactions} style={{ background: 'none', border: 'none', color: '#fca5a5', fontWeight: 700, cursor: 'pointer' }}>Delete Selected ({selectedTxIds.length})</button>
+          </div>
+        )}
       </div>
     );
   };
@@ -4456,7 +4734,8 @@ export default function BudgetApp() {
             </form>
           </div>
   );
-  const MOBILE_TABS = [['budget', 'Budget', '◔'], ['accounts', 'Accounts', '▦'], ['transactions', 'Transactions', '☰'], ['reports', 'Reports', '◭']];
+  const ageNow = useMemo(() => computeAgeCurrent(), [transactions, accounts]);
+  const MOBILE_TABS = [['budget', 'Budget', '◔'], ['accounts', 'Accounts', '▦'], ['add', 'Transaction', '+'], ['reports', 'Reports', '◭']];
 
   if (session === undefined) {
     return <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', fontFamily: 'system-ui, sans-serif', color: '#6b7280', backgroundColor: '#f4f5f7' }}>Loading…</div>;
@@ -4495,14 +4774,15 @@ export default function BudgetApp() {
           transition: 'transform 0.2s ease'
         }}
       >
-        <div style={{ fontWeight: 700, fontSize: '1rem', color: 'white', padding: '4px 10px 14px 10px' }}>
-          Envelope Budgeting
+        <div style={{ padding: '4px 10px 14px 10px' }}>
+          <div style={{ fontWeight: 700, fontSize: '1.05rem', color: 'white' }}>Envelope Budgeting</div>
+          <div style={{ fontSize: '0.72rem', color: '#b6c6e6', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{session && session.user ? session.user.email : ''}</div>
         </div>
 
         <nav style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
           {sideItem('budget', activeTab === 'budget', () => openTab('budget'), 'Budget')}
           {sideItem('reports', activeTab === 'reports', () => openTab('reports'), 'Reports')}
-          {sideItem('transactions', activeTab === 'transactions' && !txFilterAccount, () => { setTxFilterAccount(''); openTab('transactions'); }, 'Transactions')}
+          {sideItem('transactions', activeTab === 'transactions' && !txFilterAccount, () => { setTxFilterAccount(''); openTab('transactions'); }, 'All Accounts')}
         </nav>
 
         {sideCash.length > 0 && sideToggleHeading('cash', 'CASH', sumBal(sideCash))}
@@ -4535,7 +4815,8 @@ export default function BudgetApp() {
           })()}
         </nav>
 
-        <div style={{ marginTop: 'auto', padding: '16px 10px 0 10px', borderTop: '1px solid rgba(255,255,255,0.12)' }}>
+        <div style={{ marginTop: 'auto', padding: '16px 10px 0 10px', borderTop: '1px solid rgba(255,255,255,0.18)' }}>
+          <button onClick={() => { setManageAccounts(true); openTab('accounts'); }} style={{ width: '100%', backgroundColor: 'rgba(255,255,255,0.14)', color: 'white', border: 'none', padding: '8px', borderRadius: '8px', fontSize: '0.82rem', cursor: 'pointer', fontWeight: 600, marginBottom: '12px' }}>⊕ Add Account</button>
           <div data-testid="signed-in-as" style={{ fontSize: '0.72rem', color: '#8fa0c0', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', marginBottom: '8px' }}>
             Signed in as {session && session.user ? session.user.email : ''}
           </div>
@@ -4550,11 +4831,11 @@ export default function BudgetApp() {
 
       {/* Main content */}
       <div style={{ flex: 1, minWidth: 0 }}>
-        <div style={{ width: '100%', maxWidth: '1040px', margin: '0 auto', padding: isMobile ? '10px 10px 96px' : '16px 20px', boxSizing: 'border-box' }}>
+        <div style={{ width: '100%', maxWidth: (!isMobile && isWide && activeTab === 'budget') ? 'none' : '1040px', margin: (!isMobile && isWide && activeTab === 'budget') ? '0' : '0 auto', padding: isMobile ? '10px 10px 96px' : ((isWide && activeTab === 'budget') ? '16px 340px 16px 24px' : '16px 20px'), boxSizing: 'border-box' }}>
 
       {/* Top bar */}
-      <header style={{ display: 'flex', justifyContent: isMobile ? 'center' : 'space-between', alignItems: 'center', gap: '10px', marginBottom: '14px', flexWrap: 'wrap' }}>
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: isMobile ? 'center' : 'flex-start', gap: '10px', minWidth: 0, width: isMobile ? '100%' : 'auto' }}>
+      <header style={{ position: 'relative', display: 'flex', justifyContent: isMobile ? 'center' : 'space-between', alignItems: 'center', gap: '10px', marginBottom: '14px', flexWrap: 'wrap' }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: isMobile ? (activeTab === 'budget' ? 'flex-start' : 'center') : 'flex-start', gap: '10px', minWidth: 0, width: isMobile ? '100%' : 'auto' }}>
           {!isMobile && (
             <button
               onClick={() => setSidebarOpen(o => !o)}
@@ -4564,13 +4845,107 @@ export default function BudgetApp() {
               ☰
             </button>
           )}
-          {undoRedoButtons}
-          {activeTab === 'budget'
+          {!isMobile && activeTab !== 'budget' && activeTab !== 'transactions' && undoRedoButtons}
+          {isMobile && activeTab === 'budget'
+            ? (
+              <div style={{ display: 'flex', alignItems: 'center', width: '100%', gap: '4px' }}>
+                <button onClick={() => setMonthPickerOpen(o => !o)} aria-label="Choose month" data-testid="month-title" style={{ background: 'none', border: 'none', fontWeight: 800, fontSize: '1.35rem', color: '#111827', cursor: 'pointer', padding: '4px 2px' }}>{monthLabel(budgetMonth)} ▾</button>
+                <div style={{ flex: 1 }} />
+                <button onClick={undo} disabled={!histRef.current.undo.length} aria-label="Undo" style={{ ...undoBtnStyle(!!histRef.current.undo.length), border: 'none', background: 'none', fontSize: '1.3rem' }}>↶</button>
+                <button onClick={redo} disabled={!histRef.current.redo.length} aria-label="Redo" style={{ ...undoBtnStyle(!!histRef.current.redo.length), border: 'none', background: 'none', fontSize: '1.3rem' }}>↷</button>
+                <button onClick={() => setSidebarOpen(true)} aria-label="Menu" data-testid="more-menu" style={{ background: 'none', border: 'none', fontSize: '1.5rem', color: '#374151', cursor: 'pointer', padding: '2px 8px', lineHeight: 1 }}>⋮</button>
+              </div>
+            )
+            : activeTab === 'budget'
             ? monthNav
-            : <h1 style={{ margin: 0, fontSize: '1.15rem', fontWeight: 700, color: '#111827' }}>{TAB_LABELS[activeTab]}{activeTab === 'transactions' && txFilterAccount ? ` · ${(accounts.find(a => a.id === txFilterAccount) || {}).name || ''}` : ''}</h1>}
+            : (!isMobile && activeTab === 'transactions') ? null : <h1 style={{ margin: 0, fontSize: '1.15rem', fontWeight: 700, color: '#111827' }}>{TAB_LABELS[activeTab]}{activeTab === 'transactions' && txFilterAccount ? ` · ${(accounts.find(a => a.id === txFilterAccount) || {}).name || ''}` : ''}</h1>}
         </div>
-        {(activeTab === 'budget' || !isMobile) && rtaPill}
+        {activeTab === 'budget' && !isMobile ? (
+          <div style={{ display: 'flex', alignItems: 'center', gap: '22px' }}>
+            <div data-testid="rta-pill" style={{ position: 'relative', display: 'flex', alignItems: 'center', gap: '18px', backgroundColor: rtaTone.bg, color: rtaTone.fg, padding: '8px 8px 8px 18px', borderRadius: '10px' }}>
+              <div>
+                <div style={{ fontSize: '1.4rem', fontWeight: 800, lineHeight: 1.1 }}>{formatMoney(rtaShown)}</div>
+                <div style={{ fontSize: '0.78rem', fontWeight: 600 }}>{rtaShown < -0.004 ? 'Over-assigned' : 'Ready to Assign'}</div>
+              </div>
+              <button onClick={() => setAutoMenuOpen(o => !o)} aria-haspopup="menu" aria-expanded={autoMenuOpen} aria-label="Auto-Assign" style={{ backgroundColor: '#1f7a4d', color: 'white', border: 'none', borderRadius: '8px', padding: '10px 14px', fontWeight: 700, fontSize: '0.9rem', cursor: 'pointer' }}>Assign ▾</button>
+              {renderAutoMenu()}
+            </div>
+            <button onClick={() => { setReportView('age'); openTab('reports'); }} data-testid="age-pill" title="See how old the money you spend is" style={{ background: 'none', border: 'none', cursor: 'pointer', textAlign: 'right', padding: 0 }}>
+              <div style={{ fontSize: '1.4rem', fontWeight: 800, color: '#2f9e6e', lineHeight: 1.1 }}>{ageNow === null ? '—' : `${Math.round(ageNow)} ${Math.round(ageNow) === 1 ? 'day' : 'days'}`}</div>
+              <div style={{ fontSize: '0.78rem', color: '#4b5563' }}>Age of Money</div>
+            </button>
+          </div>
+        ) : isMobile && activeTab === 'budget' ? null : !isMobile && rtaPill}
+        {isMobile && activeTab !== 'budget' && <button onClick={() => setSidebarOpen(true)} aria-label="Menu" style={{ position: 'absolute', right: '10px', top: '12px', background: 'none', border: 'none', fontSize: '1.5rem', color: '#374151', cursor: 'pointer', lineHeight: 1 }}>⋮</button>}
       </header>
+      {isMobile && activeTab === 'budget' && monthPickerOpen && (
+        <div data-testid="month-picker" style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '6px', marginTop: '-6px', marginBottom: '10px' }}>
+          {monthNav}
+        </div>
+      )}
+      {isMobile && activeTab === 'budget' && (
+        <div style={{ position: 'relative', marginBottom: '12px' }}>
+          <div data-testid="rta-pill" style={{ backgroundColor: rtaTone.bg, color: rtaTone.fg, borderRadius: '14px', padding: '14px 12px', textAlign: 'center' }}>
+            <div style={{ fontSize: '1.7rem', fontWeight: 800, lineHeight: 1.1 }}>{formatMoney(rtaShown)}</div>
+            <div style={{ fontSize: '0.85rem', fontWeight: 600, marginBottom: '10px' }}>{rtaShown < -0.004 ? 'Over-assigned' : 'Ready to Assign'}{budgetMonth !== todayMonth ? ` · ${monthLabel(budgetMonth, true)}` : ''}</div>
+            <button onClick={() => setAutoMenuOpen(o => !o)} aria-haspopup="menu" aria-expanded={autoMenuOpen} aria-label="Assign Money" style={{ backgroundColor: '#1f7a4d', color: 'white', border: 'none', borderRadius: '999px', padding: '10px 22px', fontWeight: 700, fontSize: '0.95rem', cursor: 'pointer' }}>⚡ Assign Money</button>
+          </div>
+          {renderAutoMenu()}
+        </div>
+      )}
+
+      {/* Right-hand inspector (wide screens, Budget tab): Auto-Assign shortcuts and this month's totals */}
+      {!isMobile && isWide && activeTab === 'budget' && groups.length > 0 && (() => {
+        const prevKeys = [1, 2, 3].map(n => addMonthKey(budgetMonth, -n));
+        let underfunded = 0, lastAssigned = 0, lastSpent = 0, avgAssigned = 0, avgSpent = 0, resetTotal = 0, leftOver = 0, assignedNow = 0, activity = 0, availableNow = 0;
+        visibleEnvelopes.forEach(env => {
+          const row = envRow(env);
+          const rowOf = (k) => (budgetView.rowsByEnv[env.id] && budgetView.rowsByEnv[env.id].get(k)) || { budgeted: 0, spent: 0 };
+          underfunded += getNeeded(env, row);
+          lastAssigned += rowOf(prevKeys[0]).budgeted;
+          lastSpent += Math.max(0, rowOf(prevKeys[0]).spent);
+          avgAssigned += prevKeys.reduce((t, k) => t + rowOf(k).budgeted, 0) / 3;
+          avgSpent += Math.max(0, prevKeys.reduce((t, k) => t + rowOf(k).spent, 0) / 3);
+          resetTotal += row.budgeted;
+          leftOver += Math.max(0, row.start);
+          assignedNow += row.budgeted + row.income;
+          activity += row.spent;
+          availableNow += row.end;
+        });
+        const card = { backgroundColor: 'white', border: '1px solid #e3e6eb', borderRadius: '10px', padding: '14px' };
+        const line = (label, value, onClick, tid) => (
+          <button key={label} data-testid={tid} onClick={onClick} style={{ display: 'flex', justifyContent: 'space-between', width: '100%', padding: '8px 10px', margin: '0 0 6px', borderRadius: '6px', border: 'none', backgroundColor: '#eef3fb', color: '#2f6fb3', fontSize: '0.85rem', fontWeight: 500, cursor: 'pointer', textAlign: 'left' }}>
+            <span>{label}</span><span style={{ fontWeight: 700 }}>{formatMoney(value)}</span>
+          </button>
+        );
+        const stat = (label, value, bold) => (
+          <div style={{ display: 'flex', justifyContent: 'space-between', padding: '7px 0', fontSize: '0.85rem', color: '#374151', fontWeight: bold ? 700 : 400 }}>
+            <span>{label}</span><span>{formatMoney(value)}</span>
+          </div>
+        );
+        return (
+          <aside data-testid="inspector" style={{ position: 'fixed', top: '80px', right: '20px', width: '292px', maxHeight: 'calc(100vh - 100px)', overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '14px', zIndex: 5 }}>
+            <div style={card}>
+              <div style={{ fontWeight: 700, fontSize: '0.95rem', marginBottom: '10px' }}>Auto-Assign</div>
+              {line('Underfunded', underfunded, () => runAutoAssign('underfunded'), 'ins-underfunded')}
+              {line('Assigned Last Month', lastAssigned, () => runAutoAssign('lastAssigned'), 'ins-lastAssigned')}
+              {line('Spent Last Month', lastSpent, () => runAutoAssign('lastSpent'), 'ins-lastSpent')}
+              {line('Average Assigned', avgAssigned, () => runAutoAssign('avgAssigned'), 'ins-avgAssigned')}
+              {line('Average Spent', avgSpent, () => runAutoAssign('avgSpent'), 'ins-avgSpent')}
+              {line('Reset Assigned Amounts', 0, () => runAutoAssign('reset'), 'ins-reset')}
+              <div style={{ fontSize: '0.68rem', color: '#9ca3af', marginTop: '4px' }}>Uses Ready to Assign only and never lowers an amount (except Reset).</div>
+            </div>
+            <div style={card}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', fontWeight: 700, fontSize: '0.95rem', marginBottom: '6px' }}>
+                <span>Available in {monthLabel(budgetMonth).split(' ')[0]}</span><span>{formatMoney(availableNow)}</span>
+              </div>
+              {stat('Left Over from Last Month', leftOver)}
+              {stat(`Assigned in ${monthLabel(budgetMonth).split(' ')[0]}`, assignedNow)}
+              {stat('Activity', activity === 0 ? 0 : -activity)}
+            </div>
+          </aside>
+        );
+      })()}
 
       {/* Notification Toast */}
       {notification && (
@@ -4602,7 +4977,7 @@ export default function BudgetApp() {
             </div>
           </div>}
 
-          {groups.length > 0 && (
+          {isMobile && groups.length > 0 && (
             <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
               <button
                 onClick={() => openTab('new')}
@@ -4635,6 +5010,13 @@ export default function BudgetApp() {
           {/* Filters and Auto-Assign */}
           {groups.length > 0 && (
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '8px', flexWrap: 'wrap', position: 'relative' }}>
+              {!isMobile && (
+                <div data-testid="budget-toolbar" style={{ display: 'flex', alignItems: 'center', gap: '18px' }}>
+                  <button onClick={() => openTab('new')} style={{ background: 'none', border: 'none', color: '#2f6fb3', fontWeight: 600, fontSize: '0.88rem', cursor: 'pointer', padding: '4px 0' }}>⊕ Category Group</button>
+                  <button onClick={undo} disabled={!histRef.current.undo.length} aria-label="Undo" style={{ background: 'none', border: 'none', color: histRef.current.undo.length ? '#2f6fb3' : '#b8c2d1', fontWeight: 600, fontSize: '0.88rem', cursor: histRef.current.undo.length ? 'pointer' : 'default', padding: '4px 0' }}>↶ Undo</button>
+                  <button onClick={redo} disabled={!histRef.current.redo.length} aria-label="Redo" style={{ background: 'none', border: 'none', color: histRef.current.redo.length ? '#2f6fb3' : '#b8c2d1', fontWeight: 600, fontSize: '0.88rem', cursor: histRef.current.redo.length ? 'pointer' : 'default', padding: '4px 0' }}>↷ Redo</button>
+                </div>
+              )}
               <div style={{ display: 'flex', gap: '6px', flexWrap: isMobile ? 'nowrap' : 'wrap', overflowX: isMobile ? 'auto' : 'visible', maxWidth: '100%' }}>
                 {[['all', 'All'], ['underfunded', 'Underfunded'], ['overspent', 'Overspent'], ['available', 'Available']].map(([key, label]) => {
                   const n = key === 'all' ? null : envCounts[key];
@@ -4650,35 +5032,6 @@ export default function BudgetApp() {
                     </button>
                   );
                 })}
-              </div>
-              <div style={{ position: 'relative' }}>
-                <button
-                  onClick={() => setAutoMenuOpen(o => !o)}
-                  aria-haspopup="menu"
-                  aria-expanded={autoMenuOpen}
-                  style={{ padding: '5px 12px', borderRadius: '6px', border: '1px solid #c9dcf0', backgroundColor: 'white', color: '#2f6fb3', fontSize: '0.8rem', fontWeight: 700, cursor: 'pointer' }}
-                >
-                  Auto-Assign ▾
-                </button>
-                {autoMenuOpen && (
-                  <>
-                    <div onClick={() => setAutoMenuOpen(false)} style={{ position: 'fixed', inset: 0, zIndex: 9 }} />
-                    <div role="menu" data-testid="auto-menu" style={{ position: 'absolute', right: 0, top: '34px', width: '270px', backgroundColor: 'white', border: '1px solid #e3e6eb', borderRadius: '8px', boxShadow: '0 8px 24px rgba(0,0,0,0.15)', zIndex: 10, padding: '4px' }}>
-                      {AUTO_OPTIONS.map(([key, label, hint]) => (
-                        <button
-                          key={key}
-                          role="menuitem"
-                          onClick={() => runAutoAssign(key)}
-                          style={{ display: 'block', width: '100%', textAlign: 'left', background: 'none', border: 'none', padding: '8px 10px', borderRadius: '6px', cursor: 'pointer' }}
-                        >
-                          <div style={{ fontSize: '0.85rem', fontWeight: 600, color: '#1f2937' }}>{label}</div>
-                          <div style={{ fontSize: '0.72rem', color: '#6b7280' }}>{hint}</div>
-                        </button>
-                      ))}
-                      <div style={{ fontSize: '0.68rem', color: '#9ca3af', padding: '4px 10px 6px' }}>Uses Ready to Assign only and never lowers an amount (except Reset).</div>
-                    </div>
-                  </>
-                )}
               </div>
             </div>
           )}
@@ -4757,7 +5110,10 @@ export default function BudgetApp() {
                   </div>
                   {!isMobile && <div style={{ textAlign: 'right', fontSize: '0.82rem', fontWeight: 600, color: '#4b5563' }}>{formatMoney(groupTotals.assigned)}</div>}
                   {!isMobile && <div style={{ textAlign: 'right', fontSize: '0.82rem', fontWeight: 600, color: '#4b5563' }}>{formatMoney(groupTotals.activity)}</div>}
-                  <div style={{ textAlign: 'right', fontSize: '0.82rem', fontWeight: 700, color: groupTotals.available < -0.004 ? '#b42318' : '#4b5563' }}>{formatMoney(groupTotals.available)}</div>
+                  <div style={{ textAlign: 'right', fontSize: '0.82rem', fontWeight: 700, color: groupTotals.available < -0.004 ? '#b42318' : '#4b5563' }}>
+                    {isMobile && <div style={{ fontSize: '0.62rem', fontWeight: 600, color: '#6b7280' }}>Available to spend</div>}
+                    {formatMoney(groupTotals.available)}
+                  </div>
                 </div>
 
                 {!isCollapsed && (
@@ -4770,30 +5126,31 @@ export default function BudgetApp() {
                         const spent = row.spent;
                         const remaining = row.end;
                         const progress = getTargetProgress(env, row);
+                        // Status line shown to the right of the name (desktop): goal progress, or how much of the money was spent
+                        const funds = (Number(row.start) || 0) + (Number(row.budgeted) || 0) + (Number(row.income) || 0);
+                        let status = null;
+                        if (progress) status = progress.left <= 0.004 ? { text: 'Funded', color: '#166534', pct: 100, bar: '#34a853' } : { text: `${formatMoney(progress.left)} more needed`, color: '#b45309', pct: progress.pct, bar: '#3b82f6' };
+                        else if (spent > 0.004 && funds > 0.004) status = remaining <= 0.004 ? { text: 'Fully Spent', color: '#6b7280', pct: 100, bar: '#9ca3af' } : { text: `Spent ${formatMoney(spent)} of ${formatMoney(funds)}`, color: '#6b7280', pct: Math.min(100, (spent / funds) * 100), bar: '#34a853' };
 
                         const selected = selectedEnvId === env.id;
                         return (
                           <div key={env.id} data-testid="env-row" style={{ display: 'grid', gridTemplateColumns: isMobile ? 'minmax(0,1fr) auto' : 'minmax(0,1fr) 118px 104px 124px', alignItems: 'center', columnGap: '10px', rowGap: '8px', padding: isMobile ? '10px 12px' : '8px 14px', backgroundColor: selected ? '#eef4fb' : env.isHidden ? '#f3f4f6' : 'white', opacity: env.isHidden ? 0.75 : 1, borderBottom: '1px solid #eef0f3' }}>
                             <div onClick={() => setSelectedEnvId(selected ? null : env.id)} style={{ minWidth: 0, cursor: 'pointer' }}>
-                              <div style={{ fontWeight: '600', fontSize: '0.95rem' }}>
-                                {env.name}
-                                {env.isHidden && <span data-testid="hidden-badge" style={{ marginLeft: '8px', fontSize: '0.7rem', fontWeight: 600, color: '#6b7280', backgroundColor: '#e5e7eb', borderRadius: '999px', padding: '1px 8px' }}>hidden</span>}
+                              <div style={{ fontWeight: '600', fontSize: '0.95rem', display: isMobile ? 'block' : 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: '10px' }}>
+                                <span>
+                                  {env.name}
+                                  {env.isHidden && <span data-testid="hidden-badge" style={{ marginLeft: '8px', fontSize: '0.7rem', fontWeight: 600, color: '#6b7280', backgroundColor: '#e5e7eb', borderRadius: '999px', padding: '1px 8px' }}>hidden</span>}
+                                </span>
+                                {!isMobile && status && <span data-testid="row-status" style={{ fontSize: '0.8rem', fontWeight: 600, color: status.color, whiteSpace: 'nowrap' }}>{status.text}</span>}
                               </div>
-                              {env.goalType !== 'none' && (
-                                <div style={{ fontSize: '0.75rem', color: '#6b7280' }}>
-                                  {getScheduleText(env)} {env.targetAmount > 0 ? `(Target: $${Number(env.targetAmount).toFixed(2)})` : ''} {env.targetDate ? `by ${formatDate(env.targetDate, 'us')}` : ''}
+                              {!isMobile && status && (
+                                <div style={{ height: '6px', backgroundColor: '#e5e7eb', borderRadius: '3px', overflow: 'hidden', marginTop: '5px' }}>
+                                  <div style={{ width: `${status.pct}%`, height: '100%', backgroundColor: status.bar, borderRadius: '3px' }} />
                                 </div>
                               )}
-                              {progress && (
-                                <div style={{ marginTop: '6px' }}>
-                                  <div style={{ height: '6px', backgroundColor: '#e5e7eb', borderRadius: '3px', overflow: 'hidden' }}>
-                                    <div style={{ width: `${progress.pct}%`, height: '100%', backgroundColor: progress.left === 0 ? '#059669' : '#3b82f6' }} />
-                                  </div>
-                                  <div style={{ fontSize: '0.75rem', marginTop: '3px', fontWeight: '600', color: progress.left === 0 ? '#059669' : '#b45309' }}>
-                                    {progress.left === 0
-                                      ? 'Target reached ✓'
-                                      : `$${progress.left.toFixed(2)} left to reach target`}
-                                  </div>
+                              {env.goalType !== 'none' && !isMobile && selected && (
+                                <div style={{ fontSize: '0.75rem', color: '#6b7280' }}>
+                                  {getScheduleText(env)} {env.targetAmount > 0 ? `(Target: $${Number(env.targetAmount).toFixed(2)})` : ''} {env.targetDate ? `by ${formatDate(env.targetDate, 'us')}` : ''}
                                 </div>
                               )}
                               {(env.goalType === 'target_by_date' || env.goalType === 'savings_balance') && getNeeded(env, row) > 0.004 && (
@@ -4836,16 +5193,49 @@ export default function BudgetApp() {
                             <div style={{ textAlign: 'right' }}>
                               <AvailPill value={remaining} row={row} label={`Available ${env.name}`} onClick={() => setSelectedEnvId(selected ? null : env.id)} />
                             </div>
-                            {selected && isMobile && <div onClick={() => { setSelectedEnvId(null); closeMove(); setHideEnvUi(null); }} style={{ position: 'fixed', inset: 0, backgroundColor: 'rgba(17,24,39,0.45)', zIndex: 59 }} />}
-                            <div data-testid={selected && isMobile ? 'env-sheet' : undefined} style={selected && isMobile ? { position: 'fixed', left: 0, right: 0, bottom: kbInset.bottom, zIndex: 60, backgroundColor: 'white', borderRadius: '18px 18px 0 0', maxHeight: kbInset.height ? `${Math.round(kbInset.height * 0.92)}px` : '88vh', overflowY: 'auto', boxShadow: '0 -8px 28px rgba(0,0,0,0.25)', padding: kbInset.bottom ? '14px 16px 18px' : '14px 16px calc(18px + env(safe-area-inset-bottom))', display: 'flex', flexDirection: 'column', gap: '12px' } : { display: 'contents' }}>
-                            {selected && isMobile && (
-                              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '10px' }}>
-                                <div style={{ fontWeight: 700, fontSize: '1.1rem', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis' }}>{env.name}</div>
-                                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                                  <AvailPill value={remaining} row={row} label={`Sheet available ${env.name}`} />
-                                  <button onClick={() => { setSelectedEnvId(null); closeMove(); setHideEnvUi(null); }} aria-label="Close" style={{ background: '#f3f4f6', border: 'none', borderRadius: '50%', width: '32px', height: '32px', cursor: 'pointer', color: '#4b5563' }}>✕</button>
+                            {isMobile && funds > 0.004 && (() => {
+                              const behind = progress && progress.left > 0.004;
+                              const parts = [];
+                              if (behind) parts.push(`${formatMoney(progress.left)} more needed`); else parts.push('Funded');
+                              if (spent > 0.004) parts.push(remaining <= 0.004 ? 'Fully spent' : `Spent ${formatMoney(spent)} of ${formatMoney(funds)}`);
+                              const pct = behind ? progress.pct : Math.min(100, (spent / funds) * 100);
+                              return (
+                                <div data-testid="row-progress" style={{ gridColumn: '1 / -1', marginTop: '-2px' }}>
+                                  <div style={{ height: '6px', backgroundColor: '#e5e7eb', borderRadius: '3px', overflow: 'hidden' }}>
+                                    <div style={{ width: `${pct}%`, height: '100%', backgroundColor: behind ? '#3b82f6' : '#34a853', borderRadius: '3px' }} />
+                                  </div>
+                                  <div style={{ fontSize: '0.78rem', marginTop: '3px', color: behind ? '#b45309' : '#6b7280' }}>{parts.join('. ')}</div>
                                 </div>
-                              </div>
+                              );
+                            })()}
+                            <div data-testid={selected && isMobile ? 'env-sheet' : undefined} style={selected && isMobile ? { position: 'fixed', left: 0, right: 0, top: 0, bottom: 0, zIndex: 60, backgroundColor: '#f3f4f6', overflowY: 'auto', padding: '10px 14px calc(30px + env(safe-area-inset-bottom))', display: 'flex', flexDirection: 'column', gap: '12px', boxSizing: 'border-box' } : { display: 'contents' }}>
+                            {selected && isMobile && (
+                              <>
+                                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                                  <button onClick={() => { setSelectedEnvId(null); closeMove(); setHideEnvUi(null); }} aria-label="Close" style={{ background: 'none', border: 'none', fontSize: '1.5rem', color: '#374151', cursor: 'pointer', padding: '4px 8px 4px 0', lineHeight: 1 }}>←</button>
+                                  <div style={{ fontWeight: 800, fontSize: '1.25rem', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 }}>{env.name}</div>
+                                </div>
+                                <div data-testid="env-summary" style={{ backgroundColor: 'white', borderRadius: '12px', border: '1px solid #e3e6eb', padding: '4px 14px' }}>
+                                  {[['From Last Month', row.start], ['Assigned for This Month', (Number(row.budgeted) || 0) + (Number(row.income) || 0)], ['Activity This Month', -spent]].map(([l, v]) => (
+                                    <div key={l} style={{ display: 'flex', justifyContent: 'space-between', padding: '11px 0', borderBottom: '1px solid #f0f2f5', fontSize: '0.95rem' }}><span>{l}</span><span style={{ fontWeight: 600 }}>{formatMoney(v)}</span></div>
+                                  ))}
+                                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '11px 0', fontSize: '0.95rem' }}><span>Available</span><AvailPill value={remaining} row={row} label={`Sheet available ${env.name}`} /></div>
+                                </div>
+                                {progress && (
+                                  <div data-testid="target-card" style={{ backgroundColor: 'white', borderRadius: '12px', border: '1px solid #e3e6eb', padding: '14px' }}>
+                                    <div style={{ fontWeight: 700, marginBottom: '8px' }}>Spending Target</div>
+                                    <div style={{ height: '8px', backgroundColor: '#e5e7eb', borderRadius: '4px', overflow: 'hidden' }}>
+                                      <div style={{ width: `${progress.pct}%`, height: '100%', backgroundColor: progress.left <= 0.004 ? '#34a853' : '#3b82f6' }} />
+                                    </div>
+                                    <div style={{ marginTop: '10px', padding: '8px 10px', borderRadius: '8px', fontSize: '0.85rem', backgroundColor: progress.left <= 0.004 ? '#e6f6ea' : '#fff4e0', color: progress.left <= 0.004 ? '#17603a' : '#8a4b00' }}>{progress.left <= 0.004 ? "You're on track. Target reached ✓" : `${formatMoney(progress.left)} to go to reach your target`}</div>
+                                    {[['Total Needed', progress.target], ['Funded', Math.min(progress.target, Math.max(0, progress.funded))], ['To Go', progress.left]].map(([l, v]) => (
+                                      <div key={l} style={{ display: 'flex', justifyContent: 'space-between', padding: '8px 0 0', fontSize: '0.9rem' }}><span style={{ color: '#6b7280' }}>{l}</span><span style={{ fontWeight: 600 }}>{formatMoney(v)}</span></div>
+                                    ))}
+                                    <div style={{ fontSize: '0.75rem', color: '#6b7280', marginTop: '8px' }}>{getScheduleText(env)} {env.targetDate ? `by ${formatDate(env.targetDate, 'us')}` : ''}</div>
+                                    <button onClick={() => startEditEnv(env)} style={{ marginTop: '10px', width: '100%', padding: '12px', borderRadius: '10px', border: '1px solid #c9dcf0', backgroundColor: 'white', color: '#2f6fb3', fontWeight: 700, cursor: 'pointer' }}>Edit Target</button>
+                                  </div>
+                                )}
+                              </>
                             )}
                             {selected && (
                               <div data-testid="env-actions" style={{ gridColumn: '1 / -1', display: 'flex', alignItems: 'center', gap: isMobile ? '14px' : '10px', flexWrap: 'wrap', paddingTop: '2px' }}>
@@ -4864,7 +5254,7 @@ export default function BudgetApp() {
                                   ].filter(Boolean);
                                   const stepBtn = isMobile ? { width: '52px', height: '52px', flexShrink: 0, borderRadius: '14px', border: '1px solid #d1d5db', backgroundColor: '#f9fafb', fontSize: '1.6rem', lineHeight: 1, color: '#1f2937', cursor: 'pointer' } : { height: '30px', padding: '0 12px', borderRadius: '8px', border: '1px solid #d1d5db', backgroundColor: '#f9fafb', fontSize: '0.85rem', fontWeight: 600, color: '#1f2937', cursor: 'pointer' };
                                   return (
-                                    <div data-testid="assign-block" style={{ width: '100%', display: 'flex', flexDirection: isMobile ? 'column' : 'row', flexWrap: 'wrap', alignItems: isMobile ? 'stretch' : 'center', gap: isMobile ? '10px' : '8px' }}>
+                                    <div data-testid="assign-block" style={{ width: '100%', ...(isMobile ? { backgroundColor: 'white', borderRadius: '12px', border: '1px solid #e3e6eb', padding: '14px', boxSizing: 'border-box' } : {}), display: 'flex', flexDirection: isMobile ? 'column' : 'row', flexWrap: 'wrap', alignItems: isMobile ? 'stretch' : 'center', gap: isMobile ? '10px' : '8px' }}>
                                       <div style={{ display: isMobile ? 'flex' : 'none', justifyContent: 'space-between', fontSize: '0.8rem', color: '#6b7280' }}>
                                         <span>Assigned this month</span>
                                         <span>Ready to Assign <strong style={{ color: rtaShown < -0.004 ? '#b42318' : '#17603a' }}>{formatMoney(rtaShown)}</strong></span>
@@ -4893,7 +5283,7 @@ export default function BudgetApp() {
                                           ))}
                                         </div>
                                       )}
-                                      <div style={{ display: isMobile ? 'flex' : 'none', justifyContent: 'space-between', fontSize: '0.85rem', color: '#374151', padding: '8px 0', borderTop: '1px solid #f3f4f6' }}>
+                                      <div style={{ display: 'none' }}>
                                         <span>Activity <strong>{formatMoney(spent)}</strong></span>
                                         <span>Available <strong style={{ color: remaining < -0.004 ? '#b42318' : '#17603a' }}>{formatMoney(remaining)}</strong></span>
                                       </div>
@@ -5409,6 +5799,7 @@ export default function BudgetApp() {
               </button>
             </div>
           )}
+          <button data-testid="all-transactions" onClick={() => { setTxFilterAccount(''); openTab('transactions'); }} style={{ display: 'flex', justifyContent: 'space-between', padding: '15px 14px', borderRadius: '12px', border: '1px solid #e3e6eb', backgroundColor: 'white', fontSize: '1rem', cursor: 'pointer', textAlign: 'left' }}><span>All transactions</span><span style={{ color: '#9ca3af' }}>›</span></button>
           {sideAccounts.length === 0 && <div style={{ textAlign: 'center', color: '#6b7280', padding: '20px' }}>No accounts yet.</div>}
           <button onClick={() => setManageAccounts(true)} style={{ padding: '14px', borderRadius: '12px', border: '1px solid #c9dcf0', backgroundColor: 'white', color: '#2f6fb3', fontWeight: 700, fontSize: '1rem', cursor: 'pointer' }}>+ Add / manage accounts</button>
         </div>
@@ -6162,7 +6553,7 @@ export default function BudgetApp() {
           {txFilterAccount && (() => { const hdrAcc = accounts.find(a => a.id === txFilterAccount && !a.isDeleted); return hdrAcc ? renderAccountHeader(hdrAcc) : null; })()}
           {!isMobile && (
             <div ref={addCardRef} style={editingTxId ? { height: addCardH.current || undefined, flexShrink: 0 } : undefined}>
-              {!editingTxId && txFormCard}
+              {!editingTxId && showAddForm && txFormCard}
             </div>
           )}
 
@@ -6205,7 +6596,7 @@ export default function BudgetApp() {
           )}
 
           {/* CSV import */}
-          {isMobile && !showCsv ? (
+          {!showCsv && !isMobile ? null : isMobile && !showCsv ? (
             <button onClick={() => setShowCsv(true)} style={{ background: 'white', border: '1px dashed #c9d2de', borderRadius: '10px', padding: '12px', color: '#2f6fb3', fontWeight: 600, fontSize: '0.9rem', cursor: 'pointer' }}>Import transactions from a CSV file…</button>
           ) : (
           <div style={{ backgroundColor: 'white', padding: '14px', borderRadius: '10px', boxShadow: '0 1px 3px rgba(0,0,0,0.1)' }}>
@@ -6372,6 +6763,8 @@ export default function BudgetApp() {
           </div>
 
           )}
+          {!isMobile && renderDesktopRegister()}
+          {isMobile && (
           <div style={{ backgroundColor: 'white', padding: '14px', borderRadius: '10px', boxShadow: '0 1px 3px rgba(0,0,0,0.1)' }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px', flexWrap: 'wrap', gap: '8px' }}>
               <h3 style={{ margin: 0, fontSize: '1rem' }}>All Transactions</h3>
@@ -6695,6 +7088,7 @@ export default function BudgetApp() {
               </div>
             )}
           </div>
+          )}
         </div>
       )}
 
@@ -7085,16 +7479,6 @@ export default function BudgetApp() {
           {txFormCard}
         </BottomSheet>
       )}
-      {/* Phone layout: floating add button and bottom tab bar */}
-      {isMobile && ['budget', 'accounts', 'transactions'].includes(activeTab) && !selectMode && (
-        <button
-          onClick={() => { cancelEditTx(); if (txFilterAccount) setTxAccountId(txFilterAccount); setTxSheetOpen(true); }}
-          aria-label="Add transaction"
-          style={{ position: 'fixed', right: '16px', bottom: 'calc(72px + env(safe-area-inset-bottom))', width: '56px', height: '56px', borderRadius: '50%', border: 'none', backgroundColor: '#2f6fb3', color: 'white', fontSize: '1.8rem', lineHeight: 1, boxShadow: '0 4px 12px rgba(0,0,0,0.25)', cursor: 'pointer', zIndex: 30 }}
-        >
-          +
-        </button>
-      )}
       {isMobile && (
         <nav data-testid="mobile-tabs" style={{ position: 'fixed', left: 0, right: 0, bottom: 0, height: 'calc(58px + env(safe-area-inset-bottom))', paddingBottom: 'env(safe-area-inset-bottom)', display: 'flex', backgroundColor: 'white', borderTop: '1px solid #e3e6eb', zIndex: 30 }}>
           {MOBILE_TABS.map(([tab, label, glyph]) => {
@@ -7102,21 +7486,17 @@ export default function BudgetApp() {
             return (
               <button
                 key={tab}
-                onClick={() => { if (tab === 'transactions') setTxFilterAccount(''); if (tab === 'accounts') setManageAccounts(false); setSelectedEnvId(null); openTab(tab); }}
-                style={{ flex: 1, background: 'none', border: 'none', cursor: 'pointer', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: '2px', color: active ? '#2f6fb3' : '#6b7280', fontWeight: active ? 700 : 500, fontSize: '0.68rem', borderTop: active ? '2px solid #2f6fb3' : '2px solid transparent' }}
+                onClick={() => { if (tab === 'add') { cancelEditTx(); if (txFilterAccount) setTxAccountId(txFilterAccount); setTxSheetOpen(true); return; } if (tab === 'transactions') setTxFilterAccount(''); if (tab === 'accounts') setManageAccounts(false); setSelectedEnvId(null); openTab(tab); }}
+                aria-label={tab === 'add' ? 'Add transaction' : undefined}
+                style={tab === 'add' ? { flex: 1, background: 'none', border: 'none', cursor: 'pointer', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'flex-start', gap: '2px', color: '#2f6fb3', fontWeight: 600, fontSize: '0.68rem', paddingTop: 0 } : { flex: 1, background: 'none', border: 'none', cursor: 'pointer', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: '2px', color: active ? '#2f6fb3' : '#6b7280', fontWeight: active ? 700 : 500, fontSize: '0.68rem', borderTop: active ? '2px solid #2f6fb3' : '2px solid transparent' }}
               >
-                <span style={{ fontSize: '1.1rem', lineHeight: 1 }}>{glyph}</span>
+                {tab === 'add'
+                  ? <span style={{ width: '46px', height: '46px', marginTop: '-14px', borderRadius: '50%', backgroundColor: '#2f6fb3', color: 'white', fontSize: '1.9rem', lineHeight: '44px', boxShadow: '0 3px 10px rgba(0,0,0,0.25)' }}>+</span>
+                  : <span style={{ fontSize: '1.1rem', lineHeight: 1 }}>{glyph}</span>}
                 {label}
               </button>
             );
           })}
-          <button
-            onClick={() => setSidebarOpen(true)}
-            style={{ flex: 1, background: 'none', border: 'none', cursor: 'pointer', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: '2px', color: '#6b7280', fontSize: '0.68rem', borderTop: '2px solid transparent' }}
-          >
-            <span style={{ fontSize: '1.1rem', lineHeight: 1 }}>⋯</span>
-            More
-          </button>
         </nav>
       )}
     </div>
