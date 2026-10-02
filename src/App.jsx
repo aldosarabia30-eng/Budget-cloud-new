@@ -969,6 +969,315 @@ const buildActualImport = (tables, choices, stamp) => {
 };
 // ---- end Actual Budget import ----
 
+
+// ---- YNAB import ----
+// YNAB's "Export Budget Data" gives a .zip with Register.csv (every transaction) and Budget.csv / Plan.csv
+// (assigned, activity and available per category per month). Everything is read in the browser.
+const ynabHeaderIndex = (header) => {
+  const m = {};
+  header.forEach((h, i) => { m[String(h).replace(/^﻿/, '').trim().toLowerCase()] = i; });
+  return m;
+};
+const ynabKind = (rows) => {
+  if (!rows.length) return '';
+  const h = ynabHeaderIndex(rows[0]);
+  if ('outflow' in h && 'inflow' in h && 'account' in h) return 'register';
+  if ('budgeted' in h && 'month' in h) return 'plan';
+  return '';
+};
+const ynabMoney = (v) => {
+  let t = String(v == null ? '' : v).replace(/[^0-9.,\-()]/g, '');
+  if (!t) return 0;
+  const neg = /^\(.*\)$/.test(t) || t.startsWith('-');
+  t = t.replace(/[()\-]/g, '');
+  const lc = t.lastIndexOf(','), ld = t.lastIndexOf('.');
+  if (lc >= 0 && ld >= 0) t = lc > ld ? t.replace(/\./g, '').replace(',', '.') : t.replace(/,/g, '');
+  else if (lc >= 0) t = /,\d{1,2}$/.test(t) && t.split(',').length === 2 ? t.replace(',', '.') : t.replace(/,/g, '');
+  const n = Math.round((parseFloat(t) || 0) * 100) / 100;
+  return neg ? -n : n;
+};
+// Work out whether dates are month/day or day/month by looking at every date in the file.
+const ynabDateOrder = (strs) => {
+  let dmy = false, mdy = false;
+  strs.forEach(d => {
+    const m = /^(\d{1,2})[\/.\-](\d{1,2})[\/.\-](\d{2,4})$/.exec(String(d).trim());
+    if (!m) return;
+    if (+m[1] > 12) dmy = true;
+    if (+m[2] > 12) mdy = true;
+  });
+  return dmy && !mdy ? 'dmy' : 'mdy';
+};
+const ynabDate = (d, order) => {
+  const t = String(d || '').trim();
+  let m = /^(\d{4})-(\d{1,2})-(\d{1,2})/.exec(t);
+  if (m) return `${m[1]}-${m[2].padStart(2, '0')}-${m[3].padStart(2, '0')}`;
+  m = /^(\d{1,2})[\/.\-](\d{1,2})[\/.\-](\d{2,4})$/.exec(t);
+  if (!m) return '';
+  const [a, b] = order === 'dmy' ? [m[2], m[1]] : [m[1], m[2]];
+  const y = m[3].length === 2 ? '20' + m[3] : m[3];
+  return `${y}-${a.padStart(2, '0')}-${b.padStart(2, '0')}`;
+};
+const YNAB_MONTHS = ['jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec'];
+const ynabMonthKey = (v) => {
+  const t = String(v || '').trim();
+  let m = /^(\d{4})[-\/](\d{1,2})/.exec(t);
+  if (m) return `${m[1]}-${m[2].padStart(2, '0')}`;
+  m = /^([A-Za-z]+)\.?\s+(\d{4})$/.exec(t);
+  if (m) { const i = YNAB_MONTHS.indexOf(m[1].slice(0, 3).toLowerCase()); if (i >= 0) return `${m[2]}-${String(i + 1).padStart(2, '0')}`; }
+  m = /^(\d{1,2})[\/\-](\d{4})$/.exec(t);
+  if (m) return `${m[2]}-${m[1].padStart(2, '0')}`;
+  return '';
+};
+// Split "Group: Category" (older exports have only this column) or use the separate columns.
+const ynabCategory = (row, h) => {
+  const col = (n) => (n in h ? String(row[h[n]] || '').trim() : '');
+  let group = col('category group'), cat = col('category');
+  const both = col('category group/category');
+  if ((!group || !cat) && both) {
+    const i = both.indexOf(': ');
+    if (i >= 0) { group = both.slice(0, i).trim(); cat = both.slice(i + 2).trim(); } else { group = ''; cat = both; }
+  }
+  return { group, cat };
+};
+const ynabIsIncome = (group, cat) => /^inflow$/i.test(group) || /^income for/i.test(group) || /^income for/i.test(cat) || /^(ready to assign|to be budgeted)$/i.test(cat);
+const ynabIsInternal = (group) => /^internal master category$/i.test(group);
+
+const readYnabFiles = async (files) => {
+  let reg = null, plan = null, name = '';
+  const take = (text, fname) => {
+    const rows = parseCSV(text).filter(r => r.some(c => String(c).trim() !== ''));
+    const kind = ynabKind(rows);
+    if (kind === 'register' && !reg) { reg = rows; name = name || fname; }
+    else if (kind === 'plan' && !plan) plan = rows;
+  };
+  for (const f of files) {
+    if (/\.zip$/i.test(f.name)) {
+      const bytes = new Uint8Array(await f.arrayBuffer());
+      const entries = zipEntries(bytes);
+      for (const n of entries.keys()) {
+        if (!/\.csv$/i.test(n) || /__MACOSX/.test(n)) continue;
+        const data = await zipRead(bytes, entries, n);
+        if (data) take(new TextDecoder().decode(data), f.name.replace(/\.zip$/i, ''));
+      }
+      name = f.name.replace(/\.zip$/i, '');
+    } else {
+      take(await f.text(), f.name);
+    }
+  }
+  if (!reg) throw new Error("No Register.csv found. In YNAB choose Export Budget Data and pick the .zip it gives you (or the Register.csv file).");
+  return { reg, plan, name };
+};
+
+const describeYnabExport = (reg, plan) => {
+  const h = ynabHeaderIndex(reg[0]);
+  const body = reg.slice(1);
+  const order = ynabDateOrder(body.map(r => r[h.date]));
+  const byAcc = new Map();
+  const dates = [];
+  body.forEach(r => {
+    const n = String(r[h.account] || '').trim();
+    if (!n) return;
+    const a = byAcc.get(n) || { balance: 0, txCount: 0 };
+    a.balance += ynabMoney(r[h.inflow]) - ynabMoney(r[h.outflow]);
+    a.txCount++;
+    byAcc.set(n, a);
+    const d = ynabDate(r[h.date], order);
+    if (d) dates.push(d);
+  });
+  dates.sort();
+  const accounts = [...byAcc.entries()].map(([n, a]) => ({
+    id: n, name: n, offBudget: false, closed: false,
+    balance: Math.round(a.balance * 100) / 100, txCount: a.txCount,
+    include: !looksLikeInvestment(n), investment: looksLikeInvestment(n), type: guessActualAccountType(n)
+  }));
+  let budgetCount = 0;
+  if (plan) { const ph = ynabHeaderIndex(plan[0]); plan.slice(1).forEach(r => { if (ynabMoney(r[ph.budgeted]) !== 0) budgetCount++; }); }
+  return { accounts, txCount: body.length, firstDate: dates[0] || '', lastDate: dates[dates.length - 1] || '', budgetCount };
+};
+
+const buildYnabImport = (reg, plan, choices, stamp) => {
+  const warnings = [];
+  const round = (n) => Math.round(n * 100) / 100;
+  const nid = (() => { let i = 0; return (p) => `${p}-imp${stamp}-${++i}`; })();
+  const choice = (n) => (choices && choices[n]) || {};
+  const h = ynabHeaderIndex(reg[0]);
+  const body = reg.slice(1).filter(r => String(r[h.account] || '').trim());
+  const order = ynabDateOrder(body.map(r => r[h.date]));
+  const isIncluded = (n) => choice(n).include !== false;
+
+  // --- parse register rows
+  const rows = body.map(r => {
+    const { group, cat } = ynabCategory(r, h);
+    const payee = String(r[h.payee] || '').trim();
+    const tm = /^transfer\s*:\s*(.+)$/i.exec(payee);
+    const income = ynabIsIncome(group, cat);
+    const hasCat = !!cat && !income && !ynabIsInternal(group) && !/^uncategorized$/i.test(cat) && !/^split/i.test(cat);
+    const status = String(r[h.cleared] || '').trim().toLowerCase();
+    return {
+      acct: String(r[h.account]).trim(), date: ynabDate(r[h.date], order), payee,
+      transferTo: tm ? tm[1].trim() : '', group, cat, income, hasCat,
+      memo: String('memo' in h ? r[h.memo] || '' : ''),
+      out: ynabMoney(r[h.outflow]), inn: ynabMoney(r[h.inflow]),
+      reconciled: status === 'reconciled', cleared: status === 'cleared' || status === 'reconciled'
+    };
+  }).filter(r => r.date);
+  const net = (r) => round(r.inn - r.out);
+
+  // --- envelopes: every spending category with activity or an assigned amount
+  const catKey = (g, c) => `${g}\u0001${c}`;
+  const used = new Map(); // key -> { group, cat }
+  const order_ = [];
+  const noteCat = (g, c) => { const k = catKey(g, c); if (!used.has(k)) { used.set(k, { group: g || 'Other', cat: c }); order_.push(k); } };
+  const planRows = [];
+  if (plan) {
+    const ph = ynabHeaderIndex(plan[0]);
+    plan.slice(1).forEach(r => {
+      const { group, cat } = ynabCategory(r, ph);
+      if (!cat || ynabIsIncome(group, cat) || ynabIsInternal(group)) return;
+      const month = ynabMonthKey(r[ph.month]);
+      const amt = ynabMoney(r[ph.budgeted]);
+      planRows.push({ group, cat, month, amt });
+    });
+  }
+  // Keep the order YNAB lists categories in (plan first, then anything only in the register)
+  planRows.forEach(p => { if (p.amt !== 0) noteCat(p.group, p.cat); });
+  rows.forEach(r => { if (isIncluded(r.acct) && r.hasCat) noteCat(r.group, r.cat); });
+  if (plan) {
+    // categories that appear in the plan with no activity and no money still keep their place in the list order
+    const seen = [];
+    planRows.forEach(p => { const k = catKey(p.group, p.cat); if (!seen.includes(k)) seen.push(k); });
+    order_.sort((a, b) => {
+      const ia = seen.indexOf(a), ib = seen.indexOf(b);
+      return (ia < 0 ? 1e9 : ia) - (ib < 0 ? 1e9 : ib);
+    });
+  }
+  const groups = [];
+  const envByKey = new Map();
+  const envelopes = order_.map(k => {
+    const { group, cat } = used.get(k);
+    if (!groups.includes(group)) groups.push(group);
+    const env = { id: nid('env'), name: cat || 'Envelope', group, budget: {}, isDeleted: false, isHidden: false, goalType: 'none', targetAmount: 0, targetDate: '' };
+    envByKey.set(k, env);
+    return env;
+  });
+  let budgetCount = 0;
+  planRows.forEach(p => {
+    const env = envByKey.get(catKey(p.group, p.cat));
+    if (!env || !p.month || !p.amt) return;
+    env.budget[p.month] = round((env.budget[p.month] || 0) + p.amt);
+    budgetCount++;
+  });
+  envelopes.forEach(e => Object.keys(e.budget).forEach(k => { if (!e.budget[k]) delete e.budget[k]; }));
+  const envOf = (r) => (r.hasCat ? (envByKey.get(catKey(r.group, r.cat)) || {}).id || '' : '');
+
+  // --- accounts
+  const outAccounts = [];
+  const accOut = new Map();
+  [...new Set(rows.map(r => r.acct))].forEach(n => {
+    if (!isIncluded(n)) return;
+    const acc = { id: nid('acc'), name: n, isHidden: false, type: choice(n).type || guessActualAccountType(n), initialBalance: 0, isDeleted: false, lastReconciledDate: '', lastReconciledBalance: null };
+    outAccounts.push(acc);
+    accOut.set(n, acc);
+  });
+
+  // --- transactions
+  const out = [];
+  const stats = { oneSidedTransfers: 0, linkedTransfers: 0, splits: 0, flattened: 0, refunds: 0, negativeCardIncome: 0, uncategorizedDeposits: 0 };
+  const flags = (r) => ({ cleared: r.cleared, reconciled: r.reconciled });
+  const base = (r, notes) => ({ date: r.date, payee: r.payee || '(no payee)', notes: notes !== undefined ? notes : r.memo, isDeleted: false, ...flags(r) });
+  const stripSplit = (m) => String(m || '').replace(/^\s*Split\s*\(\d+\/\d+\)\s*/i, '');
+
+  // Transfers: pair an outflow in A (to B) with an inflow in B (from A), same date and amount, neither categorized.
+  const isXfer = (r) => !!r.transferTo && !r.hasCat && !r.income;
+  const xferPool = new Map();
+  rows.forEach((r, i) => {
+    if (!isXfer(r) || !accOut.has(r.acct)) return;
+    const k = `${r.date}|${r.inn > 0 ? r.transferTo : r.acct}|${r.inn > 0 ? r.acct : r.transferTo}|${Math.round(Math.abs(net(r)) * 100)}`;
+    if (!xferPool.has(k)) xferPool.set(k, { outs: [], ins: [] });
+    (r.inn > 0 ? xferPool.get(k).ins : xferPool.get(k).outs).push(i);
+  });
+  const done = new Set();
+  xferPool.forEach(pool => {
+    while (pool.outs.length && pool.ins.length) {
+      const o = rows[pool.outs.shift()], i = rows[pool.ins.shift()];
+      const transferId = nid('xfer');
+      const mk = (leg, type, other) => ({ id: nid('tx'), ...base(leg), payee: 'Transfer: ' + other.acct, type, amount: Math.abs(net(leg)), accountId: accOut.get(leg.acct).id, envelopeId: '', isTransfer: true, transferId, transferAccountId: accOut.get(other.acct).id });
+      out.push(mk(o, 'expense', i), mk(i, 'income', o));
+      done.add(o); done.add(i);
+      stats.linkedTransfers++;
+    }
+  });
+
+  const plain = (r, notes) => {
+    const acc = accOut.get(r.acct);
+    const amount = net(r);
+    const isCard = acc.type === 'Credit Card';
+    if (r.transferTo && !r.hasCat && !r.income) {
+      stats.oneSidedTransfers++;
+      out.push({ id: nid('tx'), ...base(r, notes), type: amount < 0 ? 'expense' : 'income', amount: Math.abs(amount), accountId: acc.id, envelopeId: '', isTransfer: true, transferAccountId: '' });
+    } else if (r.income) {
+      const tx = { id: nid('tx'), ...base(r, notes), type: 'income', amount, accountId: acc.id, envelopeId: '' };
+      if (isCard) { tx.budgetIncome = true; if (amount < 0) stats.negativeCardIncome++; }
+      out.push(tx);
+    } else if (r.hasCat || amount < 0) {
+      if (amount > 0) stats.refunds++;
+      out.push({ id: nid('tx'), ...base(r, notes), type: 'expense', amount: round(-amount), accountId: acc.id, envelopeId: envOf(r) });
+    } else {
+      // Money in with no category is not income in YNAB, so it must not feed Ready to Assign here.
+      stats.uncategorizedDeposits++;
+      out.push({ id: nid('tx'), ...base(r, notes), type: 'income', amount, accountId: acc.id, envelopeId: '', isTransfer: true });
+    }
+  };
+
+  // Walk the register in file order so split parts (which sit together) can be gathered.
+  for (let i = 0; i < rows.length; i++) {
+    const r = rows[i];
+    if (done.has(r) || !accOut.has(r.acct)) continue;
+    const sm = /^\s*Split\s*\((\d+)\/(\d+)\)/i.exec(r.memo);
+    if (sm && +sm[2] > 1) {
+      const need = +sm[2];
+      const parts = [r];
+      let j = i + 1;
+      while (parts.length < need && j < rows.length) {
+        const q = rows[j];
+        const qm = /^\s*Split\s*\((\d+)\/(\d+)\)/i.exec(q.memo);
+        if (!qm || +qm[2] !== need || q.acct !== r.acct || q.date !== r.date || q.payee !== r.payee) break;
+        parts.push(q); j++;
+      }
+      if (parts.length === need) {
+        i = j - 1;
+        const acc = accOut.get(r.acct);
+        const allSpend = parts.every(q => !q.income && !(q.transferTo && !q.hasCat) && (q.hasCat || q.out > 0 || q.inn === 0));
+        const sameSign = parts.every(q => net(q) <= 0) || parts.every(q => net(q) >= 0);
+        const notes = stripSplit(parts.map(q => q.memo).find(m => stripSplit(m)) || '');
+        if (allSpend && sameSign) {
+          const sp = [];
+          parts.forEach(q => {
+            const envId = envOf(q), amt = round(-net(q));
+            const hit = sp.find(x => x.envelopeId === envId);
+            if (hit) hit.amount = round(hit.amount + amt); else sp.push({ envelopeId: envId, amount: amt });
+          });
+          const total = round(sp.reduce((t, x) => t + x.amount, 0));
+          const tx = { id: nid('tx'), ...base(r, notes), type: 'expense', amount: total, accountId: acc.id, envelopeId: '' };
+          if (total < 0) stats.refunds++;
+          if (sp.length > 1) { tx.splits = sp; stats.splits++; } else tx.envelopeId = sp[0].envelopeId;
+          out.push(tx);
+        } else {
+          stats.flattened++;
+          parts.forEach(q => plain(q, stripSplit(q.memo)));
+        }
+        continue;
+      }
+    }
+    plain(r, sm ? stripSplit(r.memo) : undefined);
+  }
+
+  if (!plan) warnings.push('No Budget/Plan file was included, so envelopes start with nothing assigned.');
+  out.sort((a, b) => b.date.localeCompare(a.date));
+  return { accounts: outAccounts, groups, envelopes, transactions: out, debts: [], warnings, stats, budgetCount };
+};
+// ---- end YNAB import ----
+
 // Older saves kept one lump "assigned" amount per envelope. Move it into the month the envelope was
 // first used (or this month), so balances are unchanged at the moment of upgrade.
 const migrateBudgetData = (d) => {
@@ -1392,6 +1701,7 @@ export default function BudgetApp() {
   const [axUndo, setAxUndo] = useState(null); // what the budget looked like before the last import
   const [axConfirm, setAxConfirm] = useState(false);
   const axFileRef = useRef(null);
+  const ynabFileRef = useRef(null);
   const [importSkipDupes, setImportSkipDupes] = useState(true);
   const importFileRef = useRef(null);
 
@@ -2483,7 +2793,7 @@ export default function BudgetApp() {
   // ----- Import from Actual Budget -----
   const axPreview = useMemo(() => {
     if (!ax) return null;
-    try { return buildActualImport(ax.tables, ax.choices, 0); } catch (e) { return { error: String(e && e.message || e) }; }
+    try { return ax.source === 'ynab' ? buildYnabImport(ax.reg, ax.plan, ax.choices, 0) : buildActualImport(ax.tables, ax.choices, 0); } catch (e) { return { error: String(e && e.message || e) }; }
   }, [ax]);
 
   const handleActualFile = async (e) => {
@@ -2506,6 +2816,22 @@ export default function BudgetApp() {
     setAxBusy(false);
   };
 
+  const handleYnabFile = async (e) => {
+    const files = Array.from((e.target.files) || []);
+    e.target.value = '';
+    if (!files.length) return;
+    setAxBusy(true); setAxError(''); setAx(null); setAxConfirm(false);
+    try {
+      const { reg, plan, name } = await readYnabFiles(files);
+      const desc = describeYnabExport(reg, plan);
+      if (!desc.accounts.length) throw new Error('That Register file has no transactions.');
+      const choices = Object.fromEntries(desc.accounts.map(a => [a.id, { include: a.include, type: a.type }]));
+      setAx({ source: 'ynab', fileName: name || files[0].name, meta: { budgetName: name }, reg, plan, desc, choices, mode: 'replace' });
+    } catch (err) {
+      setAxError(String((err && err.message) || err));
+    }
+    setAxBusy(false);
+  };
   const axSetChoice = (id, patch) => setAx(prev => (prev ? { ...prev, choices: { ...prev.choices, [id]: { ...prev.choices[id], ...patch } } } : prev));
 
   const downloadBudgetBackup = () => {
@@ -2588,7 +2914,7 @@ export default function BudgetApp() {
 
   const handleRunActualImport = () => {
     if (!ax || !axPreview || axPreview.error) return;
-    const built = buildActualImport(ax.tables, ax.choices, Date.now());
+    const built = ax.source === 'ynab' ? buildYnabImport(ax.reg, ax.plan, ax.choices, Date.now()) : buildActualImport(ax.tables, ax.choices, Date.now());
     if (ax.mode === 'replace' && !axConfirm && (transactions.length || accounts.length || envelopes.length)) {
       setAxConfirm(true);
       return;
@@ -7241,6 +7567,16 @@ export default function BudgetApp() {
             </div>
             {axError && <div role="alert" style={{ marginTop: '10px', color: '#b91c1c', fontSize: '0.85rem' }}>{axError}</div>}
           </div>
+          <div data-testid="ynab-import-card" style={{ backgroundColor: 'white', padding: '14px', borderRadius: '10px', boxShadow: '0 1px 3px rgba(0,0,0,0.1)' }}>
+            <h3 style={{ margin: '0 0 6px 0', fontSize: '1rem' }}>Import from YNAB</h3>
+            <p style={{ margin: '0 0 10px 0', fontSize: '0.85rem', color: '#6b7280' }}>
+              In YNAB open the budget menu and choose Export Budget Data (Export Plan Data in newer versions), then choose the .zip. You can also pick Register.csv together with Budget.csv or Plan.csv. Everything is read in your browser.
+            </p>
+            <input ref={ynabFileRef} type="file" multiple accept=".zip,.csv,application/zip,text/csv" onChange={handleYnabFile} style={{ display: 'none' }} aria-label="YNAB export file" />
+            <button onClick={() => ynabFileRef.current && ynabFileRef.current.click()} disabled={axBusy} style={{ backgroundColor: '#2563eb', color: 'white', border: 'none', padding: '8px 14px', borderRadius: '6px', fontWeight: 'bold', cursor: axBusy ? 'wait' : 'pointer', fontSize: '0.9rem' }}>
+              {axBusy ? 'Reading…' : 'Choose YNAB export'}
+            </button>
+          </div>
 
           {ax && axPreview && axPreview.error && (
             <div role="alert" style={{ backgroundColor: '#fef2f2', color: '#b91c1c', padding: '12px', borderRadius: '10px', fontSize: '0.85rem' }}>
@@ -7313,6 +7649,16 @@ export default function BudgetApp() {
                 })}
               </div>
 
+              {ax.source === 'ynab' ? (
+              <div style={{ fontSize: '0.8rem', color: '#4b5563', backgroundColor: '#f9fafb', borderRadius: '8px', padding: '10px', marginBottom: '12px', lineHeight: 1.5 }}>
+                <div>• YNAB's assigned amounts for each month become each envelope's assigned amounts, so Ready to Assign and rollover pick up where YNAB left off.</div>
+                <div>• Transfers between the accounts you import are linked. Split transactions stay split. Inflows to Ready to Assign are income.</div>
+                <div>• Refunds in a spending category import as negative spending. Money in with no category is not counted as income.</div>
+                <div>• Account balances are rebuilt from the transactions (YNAB's Starting Balance rows come in as income). Untick tracking-only accounts such as investments.</div>
+                {axPreview.warnings && axPreview.warnings.map(w => <div key={w}>• {w}</div>)}
+                <div>• Not imported: scheduled transactions, goals, flags and hidden/closed status.</div>
+              </div>
+              ) : (
               <div style={{ fontSize: '0.8rem', color: '#4b5563', backgroundColor: '#f9fafb', borderRadius: '8px', padding: '10px', marginBottom: '12px', lineHeight: 1.5 }}>
                 <div>• Actual's monthly budget amounts become each envelope's assigned amounts, so rollover continues from where you left off.</div>
                 <div>• Transfers between the accounts you import are linked. Categorized payments to off-budget loans stay as spending in their envelope.</div>
@@ -7320,6 +7666,7 @@ export default function BudgetApp() {
                 <div>• Income on credit cards (opening balances, cash back) counts toward Ready to Assign, as in Actual.</div>
                 <div>• Not imported: schedules, rules, goals and notes on categories. Closed accounts and hidden categories come in hidden, with their history.</div>
               </div>
+              )}
 
               <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', marginBottom: '12px', fontSize: '0.85rem' }}>
                 <label style={{ display: 'flex', gap: '8px', alignItems: 'flex-start', cursor: 'pointer' }}>
