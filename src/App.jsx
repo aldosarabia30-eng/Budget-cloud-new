@@ -1669,6 +1669,7 @@ export default function BudgetApp() {
   const [txFromDate, setTxFromDate] = useState('');
   const [txToDate, setTxToDate] = useState('');
   // Budget tab: which envelope has its "move money" / "cover overspending" panel open
+  const [movePick, setMovePick] = useState(null); // phone Move Money: 'from' | 'to' while choosing
   const [moveUi, setMoveUi] = useState(null); // { envId, mode: 'move' | 'cover', otherId, amount }
   const [txSplitLines, setTxSplitLines] = useState(null); // split editor inside the add form: null = off
   const [txEnvelopeId, setTxEnvelopeId] = useState('');
@@ -2230,7 +2231,7 @@ export default function BudgetApp() {
     const steps = [
       [envMenuId, () => { setEnvMenuId(null); setKpDraft(null); }], [mTxId, () => setMTxId(null)], [planEdit, () => setPlanEdit(false)],
       [tgtSub, () => setTgtSub(null)], [tgt, () => setTgt(null)], [ctxMenu, () => setCtxMenu(null)],
-      [splitTxId, () => setSplitTxId(null)], [txSheetOpen, () => setTxSheetOpen(false)], [moveUi, () => setMoveUi(null)],
+      [splitTxId, () => setSplitTxId(null)], [txSheetOpen, () => setTxSheetOpen(false)], [movePick, () => setMovePick(null)], [moveUi, () => setMoveUi(null)],
       [hideEnvUi, () => setHideEnvUi(null)], [selectedEnvId, () => setSelectedEnvId(null)], [showRtaInfo, () => setShowRtaInfo(false)],
       [assignOpen, () => setAssignOpen(false)], [monthPickerOpen, () => setMonthPickerOpen(false)], [budgetMenuOpen, () => setBudgetMenuOpen(false)],
       [acctMenuOpen, () => setAcctMenuOpen(false)], [autoMenuOpen, () => setAutoMenuOpen(false)], [movesOpen, () => setMovesOpen(false)],
@@ -3119,7 +3120,7 @@ export default function BudgetApp() {
       setMoveUi({ envId: env.id, mode, otherId: '', amount: String(Math.max(0, round2(row.end))) });
     }
   };
-  const closeMove = () => setMoveUi(null);
+  const closeMove = () => { setMoveUi(null); setMovePick(null); };
 
   const confirmMove = () => {
     if (!moveUi) return;
@@ -6235,22 +6236,7 @@ export default function BudgetApp() {
             <span>Available</span><span style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>{darkPill(env, row, true)}<span style={{ color: MD.muted }}>›</span></span>
           </div>
         </div>
-        {moveUi && moveUi.envId === env.id && (
-          <div data-testid="move-panel" style={{ marginTop: '12px', backgroundColor: MD.card, borderRadius: '18px', padding: '14px' }}>
-            <div style={{ fontWeight: 700, marginBottom: '10px' }}>{moveUi.mode === 'cover' ? `Cover ${env.name}'s overspending` : `Move money out of ${env.name}`}</div>
-            <div style={{ fontSize: '0.8rem', color: MD.muted, marginBottom: '4px' }}>{moveUi.mode === 'cover' ? 'From' : 'To'}</div>
-            <select value={moveUi.otherId} onChange={e => setMoveUi({ ...moveUi, otherId: e.target.value })} aria-label={moveUi.mode === 'cover' ? 'Take money from' : 'Move money to'} style={{ width: '100%', padding: '11px', borderRadius: '10px', border: 'none', marginBottom: '10px' }}>
-              <option value="">Choose…</option>
-              {(moveUi.mode === 'cover' ? rtaShown > 0.004 : true) && <option value="rta">Ready to Assign{moveUi.mode === 'cover' ? ` (${formatMoney(rtaShown)})` : ''}</option>}
-              {(moveUi.mode === 'cover' ? moveSources(env.id) : visibleEnvelopes.filter(e => e.id !== env.id)).map(e => (<option key={e.id} value={e.id}>{e.name}{moveUi.mode === 'cover' ? ` (${formatMoney(envRow(e).end)} available)` : ''}</option>))}
-            </select>
-            <SplitAmountInput value={moveUi.amount} onChange={v => setMoveUi({ ...moveUi, amount: v })} ariaLabel="Amount to move" width="100%" />
-            <div style={{ display: 'flex', gap: '10px', marginTop: '12px' }}>
-              <button onClick={confirmMove} style={{ flex: 1, backgroundColor: MD.btn, color: 'white', border: 'none', borderRadius: '999px', padding: '12px', fontWeight: 700, cursor: 'pointer' }}>{moveUi.mode === 'cover' ? 'Cover' : 'Move'}</button>
-              <button onClick={closeMove} style={{ flex: 1, backgroundColor: MD.line, color: MD.text, border: 'none', borderRadius: '999px', padding: '12px', cursor: 'pointer' }}>Cancel</button>
-            </div>
-          </div>
-        )}
+        {moveUi && moveUi.envId === env.id && renderMoveScreen(env)}
         {progress && (<>
           {secTitle('Target')}
           <div data-testid="target-card" style={{ backgroundColor: MD.card, borderRadius: '22px', padding: '18px' }}>
@@ -6435,6 +6421,94 @@ export default function BudgetApp() {
         {visibleTransactions.length > pagedTransactions.length && (
           <div style={{ textAlign: 'center', padding: '16px' }}><button onClick={() => setTxLimit(n => n + 200)} style={{ backgroundColor: MD.card, color: MD.accent, border: 'none', borderRadius: '999px', padding: '10px 20px', fontWeight: 700, cursor: 'pointer' }}>Show 200 more</button></div>
         )}
+      </div>
+    );
+  };
+  // Phone Move Money: full screen, big amount, From / To rows and a number pad (like YNAB).
+  const renderMoveScreen = (env) => {
+    const cover = moveUi.mode === 'cover';
+    const fromId = cover ? moveUi.otherId : env.id;
+    const toId = cover ? env.id : moveUi.otherId;
+    const availOf = (id) => (id === 'rta' ? rtaShown : (() => { const e = envelopes.find(x => x.id === id); return e ? envRow(e).end : null; })());
+    const nameOf = (id) => (id === 'rta' ? 'Ready to Assign' : ((envelopes.find(x => x.id === id) || {}).name || 'Choose…'));
+    const side = (label, id, which) => {
+      const av = id ? availOf(id) : null;
+      return (
+        <button type="button" data-testid={'move-' + which} onClick={() => setMovePick(which)} style={{ display: 'flex', alignItems: 'center', gap: '10px', width: '100%', background: 'none', border: 'none', color: MD.text, padding: '14px 0', cursor: 'pointer', textAlign: 'left', fontFamily: 'inherit' }}>
+          <span style={{ fontWeight: 700, fontSize: '1.1rem', color: MD.muted, width: '58px' }}>{label}</span>
+          <span style={{ flex: 1, textAlign: 'right', fontWeight: 700, fontSize: '1.1rem', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{nameOf(id)}</span>
+          {av !== null && <span style={{ color: '#7f7fff', fontSize: '1.05rem' }}>{formatMoney(av)}</span>}
+          <span style={{ color: MD.muted, fontSize: '1.3rem' }}>›</span>
+        </button>
+      );
+    };
+    // Rebuild the move so that From and To can each be any envelope (or Ready to Assign)
+    const setSides = (f, t) => {
+      if (f === t) { showNotification('Choose two different places.'); return; }
+      if (f === 'rta') setMoveUi({ ...moveUi, mode: 'cover', envId: t, otherId: 'rta' });
+      else setMoveUi({ ...moveUi, mode: t === 'rta' ? 'move' : 'move', envId: f, otherId: t });
+    };
+    // Digits slide in from the right as cents (like YNAB), so there is no decimal key.
+    const cents = Math.round((parseFloat(moveUi.amount) || 0) * 100);
+    const amt = (cents / 100).toFixed(2);
+    const press = (k) => {
+      let c = moveUi.typed ? cents : 0;
+      if (k === 'back') c = Math.floor(cents / 10);
+      else c = c * 10 + Number(k);
+      if (c > 99999999999) return;
+      setMoveUi({ ...moveUi, amount: (c / 100).toFixed(2), typed: true });
+    };
+    const val = parseFloat(amt) || 0;
+    const key = (k, label) => (
+      <button key={k} type="button" onClick={() => press(k)} aria-label={k === 'back' ? 'Delete' : k} style={{ background: 'none', border: 'none', color: MD.text, fontSize: '1.9rem', padding: '14px 0', cursor: 'pointer', fontFamily: 'inherit' }}>{label || k}</button>
+    );
+    const pickList = () => {
+      const choose = (id) => {
+        const f = movePick === 'from' ? id : fromId;
+        const t = movePick === 'to' ? id : toId;
+        setMovePick(null);
+        setSides(f, t);
+      };
+      return (
+        <div data-testid="move-picker" style={{ position: 'fixed', inset: 0, zIndex: 66, backgroundColor: '#04040a', color: MD.text, overflowY: 'auto' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '14px', padding: '16px' }}>
+            <button onClick={() => setMovePick(null)} aria-label="Back" style={{ background: 'none', border: 'none', color: MD.text, fontSize: '1.7rem', cursor: 'pointer' }}>←</button>
+            <span style={{ fontSize: '1.5rem' }}>{movePick === 'from' ? 'Move from' : 'Move to'}</span>
+          </div>
+          <button onClick={() => choose('rta')} style={{ display: 'flex', justifyContent: 'space-between', width: '100%', background: 'none', border: 'none', borderBottom: '1px solid ' + MD.line, color: MD.text, padding: '16px', fontSize: '1.05rem', cursor: 'pointer', fontFamily: 'inherit' }}><span style={{ fontWeight: 700 }}>Ready to Assign</span><span style={{ color: '#7f7fff' }}>{formatMoney(rtaShown)}</span></button>
+          {envelopeChoices.map(c => (
+            <div key={c.label}>
+              <div style={{ padding: '14px 16px 6px', fontSize: '0.8rem', fontWeight: 700, color: MD.muted, textTransform: 'uppercase', letterSpacing: '0.04em' }}>{c.label}</div>
+              {c.list.map(e => (
+                <button key={e.id} onClick={() => choose(e.id)} style={{ display: 'flex', justifyContent: 'space-between', width: '100%', background: (movePick === 'from' ? fromId : toId) === e.id ? '#23235a' : 'none', border: 'none', color: MD.text, padding: '14px 16px', fontSize: '1.02rem', cursor: 'pointer', textAlign: 'left', fontFamily: 'inherit' }}><span>{e.name}</span><span style={{ color: envRow(e).end < -0.004 ? '#ff8a8a' : '#7f7fff' }}>{formatMoney(envRow(e).end)}</span></button>
+              ))}
+            </div>
+          ))}
+        </div>
+      );
+    };
+    return (
+      <div data-testid="move-panel" style={{ position: 'fixed', inset: 0, zIndex: 62, backgroundColor: '#04040a', color: MD.text, display: 'flex', flexDirection: 'column' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '18px', padding: '16px' }}>
+          <button onClick={closeMove} aria-label="Close" style={{ background: 'none', border: 'none', color: MD.text, fontSize: '1.7rem', cursor: 'pointer' }}>←</button>
+          <span style={{ fontSize: '1.6rem' }}>Move Money</span>
+        </div>
+        <div data-testid="move-amount" style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'flex-end', padding: '0 20px', fontSize: val > 9999999 ? '3rem' : '4.6rem', fontWeight: 300, color: val > 0 ? '#86d13a' : '#8a8aa5' }}>{'$' + Number(amt).toLocaleString('en-US', { minimumFractionDigits: 2 })}</div>
+        <div style={{ borderTop: '1px solid ' + MD.line, borderBottom: '1px solid ' + MD.line, display: 'flex', alignItems: 'center', padding: '0 0 0 14px' }}>
+          <button type="button" aria-label="Swap" onClick={() => setSides(toId, fromId)} style={{ background: 'none', border: 'none', color: '#9a9ab5', fontSize: '1.8rem', cursor: 'pointer', paddingRight: '14px' }}>⇅</button>
+          <div style={{ flex: 1, paddingRight: '16px' }}>
+            {side('From:', fromId, 'from')}
+            <div style={{ borderTop: '1px solid ' + MD.line }} />
+            {side('To:', toId, 'to')}
+          </div>
+        </div>
+        <div style={{ backgroundColor: '#282a3d', display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', alignItems: 'center', textAlign: 'center', padding: '6px 10px calc(10px + env(safe-area-inset-bottom))' }}>
+          {['7', '8', '9', '4', '5', '6', '1', '2', '3'].map(k => key(k))}
+          {key('back', '⌫')}
+          {key('0')}
+          <button type="button" onClick={confirmMove} style={{ margin: '6px 0 6px 10px', background: MD.btn, color: '#fff', border: 'none', borderRadius: '999px', padding: '14px 0', fontWeight: 700, fontSize: '1.3rem', cursor: 'pointer', fontFamily: 'inherit' }}>Done</button>
+        </div>
+        {movePick && pickList()}
       </div>
     );
   };
