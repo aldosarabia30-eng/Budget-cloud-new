@@ -164,6 +164,9 @@ const loanPayoff = (balance, apr, payment) => {
   return { months, interest: Math.round(interest * 100) / 100 };
 };
 
+// The "Credit Card Payments" group at the bottom of the budget. Off: card spending just comes out of its envelope.
+const SHOW_CC_GROUP = false;
+
 // ----- Scheduled (recurring) transactions -----
 const SCHED_FREQS = [['weekly', 'Every week'], ['biweekly', 'Every 2 weeks'], ['monthly', 'Every month'], ['yearly', 'Every year']];
 const isoToDate = (iso) => { const [y, m, d] = iso.split('-').map(Number); return new Date(y, m - 1, d); };
@@ -1340,6 +1343,7 @@ export default function BudgetApp() {
   useEffect(() => { setTxSheetOpen(false); }, [transactions]);
   useEffect(() => { setSelectedEnvId(null); setSelectMode(false); setSwipe(null); }, [activeTab]);
   useEffect(() => { setAdjustAmt(''); }, [selectedEnvId]);
+  useEffect(() => { if (!editingTxId && addCardRef.current) addCardH.current = addCardRef.current.offsetHeight; });
   // Keep bottom sheets above the on-screen keyboard
   useEffect(() => {
     const vv = typeof window !== 'undefined' ? window.visualViewport : null;
@@ -1391,6 +1395,8 @@ export default function BudgetApp() {
   // Investments (tracked separately from the budget)
   const [investments, setInvestments] = useState([]);
   const [scheduled, setScheduled] = useState([]);
+  const addCardRef = useRef(null); // wrapper of the Add Transaction card, so the page doesn't jump while the edit panel is open
+  const addCardH = useRef(0);
   const [adjustAmt, setAdjustAmt] = useState(''); // phone envelope sheet: exact amount to add or subtract
   const [kbInset, setKbInset] = useState({ bottom: 0, height: 0 }); // on-screen keyboard space (phones)
   const [sideMoreOpen, setSideMoreOpen] = useState(false); // sidebar "More" section
@@ -1985,7 +1991,7 @@ export default function BudgetApp() {
       });
     });
     Object.values(cc).forEach(c => { c.available = round2(c.setAside + c.assigned - c.paid); });
-    budgetedThrough += ccAssignedThrough;
+    if (SHOW_CC_GROUP) budgetedThrough += ccAssignedThrough;
 
     const opening = activeAccounts.filter(a => !isCreditCard(a)).reduce((sum, a) => sum + Number(a.initialBalance), 0);
     const income = activeTransactions
@@ -2775,7 +2781,7 @@ export default function BudgetApp() {
       setTxToAccountId('');
       setTxEnvelopeId(tx.envelopeId || '');
     }
-    scrollToTop();
+    // the edit form opens as a floating panel, so there is no need to scroll the page
   };
 
   // Merge lines with the same envelope; returns { lines, error }
@@ -4193,8 +4199,91 @@ export default function BudgetApp() {
       <button onClick={redo} disabled={!histRef.current.redo.length} aria-label="Redo" title="Redo (Ctrl+Shift+Z)" style={undoBtnStyle(!!histRef.current.redo.length)}>↷</button>
     </div>
   );
+  // Account header shown above the register when one account is selected: balances, reconcile, hide, delete
+  const renderAccountHeader = (acc) => {
+    const clearedBal = getClearedBalance(acc.id);
+    const workingBal = getAccountBalance(acc.id);
+    const isReconciling = reconcilingAccId === acc.id;
+    return (
+      <div data-testid="account-header" style={{ backgroundColor: acc.isHidden ? '#f9fafb' : 'white', borderRadius: '10px', padding: '14px', boxShadow: '0 1px 3px rgba(0,0,0,0.1)' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexWrap: 'wrap', gap: '10px' }}>
+                  <div>
+                    <h3 style={{ margin: '0 0 4px 0', fontSize: '1.1rem' }}>
+                      {acc.name} <span style={{ fontSize: '0.8rem', color: '#6b7280', fontWeight: 'normal' }}>({acc.type})</span>
+                      {acc.isHidden && <span data-testid="hidden-account-badge" style={{ marginLeft: '8px', fontSize: '0.7rem', fontWeight: 600, color: '#6b7280', backgroundColor: '#e5e7eb', borderRadius: '999px', padding: '1px 8px' }}>hidden</span>}
+                    </h3>
+                    <p style={{ margin: '0 0 4px 0', fontSize: '0.85rem', color: '#4b5563' }}>
+                      Cleared: <strong>${clearedBal.toFixed(2)}</strong> | Working: <strong>${workingBal.toFixed(2)}</strong>
+                    </p>
+                    {acc.lastReconciledDate && (
+                      <p style={{ margin: 0, fontSize: '0.75rem', color: '#059669', fontWeight: '600' }}>
+                        ✓ Reconciled {formatDate(acc.lastReconciledDate, 'us')} (${Number(acc.lastReconciledBalance).toFixed(2)})
+                      </p>
+                    )}
+                  </div>
+                  <div style={{ display: 'flex', gap: '6px' }}>
+                    <button
+                      onClick={() => (isReconciling ? setReconcilingAccId(null) : startReconcile(acc.id))}
+                      style={{ backgroundColor: '#059669', color: 'white', border: 'none', padding: '6px 10px', borderRadius: '6px', fontWeight: 'bold', cursor: 'pointer', fontSize: '0.8rem' }}
+                    >
+                      Reconcile
+                    </button>
+                    <button
+                      onClick={() => (acc.isHidden ? handleUnhideAccount(acc) : handleHideAccount(acc))}
+                      title={acc.isHidden ? 'Show this account again' : 'Hide this account. Its history stays.'}
+                      aria-label={`${acc.isHidden ? 'Unhide' : 'Hide'} account ${acc.name.trim()}`}
+                      style={{ backgroundColor: 'white', color: '#374151', border: '1px solid #d1d5db', padding: '6px 10px', borderRadius: '6px', fontWeight: 'bold', cursor: 'pointer', fontSize: '0.8rem' }}
+                    >
+                      {acc.isHidden ? 'Unhide' : 'Hide'}
+                    </button>
+                    <button
+                      onClick={() => handleSoftDeleteAccount(acc.id)}
+                      style={{ backgroundColor: '#fee2e2', color: '#dc2626', border: 'none', padding: '6px 10px', borderRadius: '6px', fontWeight: 'bold', cursor: 'pointer', fontSize: '0.8rem' }}
+                    >
+                      Delete
+                    </button>
+                  </div>
+                </div>
+
+                {/* Reconcile Area */}
+                {isReconciling && (
+                  <div style={{ marginTop: '12px', backgroundColor: '#f0fdf4', padding: '12px', borderRadius: '8px', border: '1px solid #bbf7d0' }}>
+                    <h4 style={{ margin: '0 0 6px 0', color: '#166534', fontSize: '0.95rem' }}>Reconcile {acc.name}</h4>
+                    <p style={{ margin: '0 0 10px 0', fontSize: '0.8rem', color: '#15803d' }}>
+                      Mark the transactions that appear on your statement as cleared (C), then enter the statement ending balance. Uncleared transactions stay open.
+                    </p>
+                    <div style={{ display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap' }}>
+                      <input
+                        type="number"
+                        step="0.01"
+                        value={targetBankBalance}
+                        onChange={e => setTargetBankBalance(e.target.value)}
+                        placeholder="Statement Bal ($)"
+                        style={{ padding: '8px', border: '1px solid #86efac', borderRadius: '6px', flex: '1 1 130px', fontSize: '0.85rem' }}
+                      />
+                      <div style={{ display: 'flex', gap: '6px', flex: '1 1 130px' }}>
+                        <button
+                          onClick={() => handleFinishReconciliation(acc.id)}
+                          style={{ backgroundColor: '#16a34a', color: 'white', border: 'none', padding: '8px 12px', borderRadius: '6px', fontWeight: 'bold', cursor: 'pointer', fontSize: '0.85rem', flex: 1 }}
+                        >
+                          Finish
+                        </button>
+                        <button
+                          onClick={() => setReconcilingAccId(null)}
+                          style={{ backgroundColor: '#e5e7eb', color: '#374151', border: 'none', padding: '8px 12px', borderRadius: '6px', fontWeight: 'bold', cursor: 'pointer', fontSize: '0.85rem' }}
+                        >
+                          Cancel
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+      </div>
+    );
+  };
   const txFormCard = (
-          <div style={isMobile ? {} : { backgroundColor: 'white', padding: '14px', borderRadius: '10px', boxShadow: '0 1px 3px rgba(0,0,0,0.1)' }}>
+          <div style={(isMobile || editingTxId) ? {} : { backgroundColor: 'white', padding: '14px', borderRadius: '10px', boxShadow: '0 1px 3px rgba(0,0,0,0.1)' }}>
             {!isMobile && <h3 style={{ margin: '0 0 10px 0', fontSize: '1rem' }}>{editingTxId ? 'Edit Transaction' : '+ Add Transaction'}</h3>}
             {isMobile && (
               <div role="tablist" aria-label="Transaction type" style={{ display: 'flex', backgroundColor: '#f3f4f6', borderRadius: '10px', padding: '3px', marginBottom: '12px' }}>
@@ -4278,7 +4367,7 @@ export default function BudgetApp() {
                   {txSplitLines ? 'Keep it all in Ready to Assign' : 'Send some to envelopes'}
                 </button>
               )}
-              {!isMobile && txType === 'expense' && editingTxId && isSplitTx(transactions.find(t => t.id === editingTxId)) && (
+              {false && txType === 'expense' && editingTxId && isSplitTx(transactions.find(t => t.id === editingTxId)) && (
                 <div style={{ gridColumn: 'span 2', fontSize: '0.8rem', color: '#6b7280', padding: '6px 0' }}>
                   Split across several envelopes. Use the Split button in the list to change it. Changing the amount clears the split.
                 </div>
@@ -4308,7 +4397,7 @@ export default function BudgetApp() {
                   ))}
                 </select>
               )}
-              {isMobile && editingTxId && (() => {
+              {editingTxId && (() => {
                 const et = transactions.find(t => t.id === editingTxId);
                 if (!et || et.isTransfer || (et.type === 'income' && !countsTowardRTA(et))) return null;
                 const inc = et.type === 'income';
@@ -4485,7 +4574,7 @@ export default function BudgetApp() {
 
       {/* Notification Toast */}
       {notification && (
-        <div style={{ backgroundColor: '#10b981', color: 'white', padding: '10px 14px', borderRadius: '8px', marginBottom: '16px', fontSize: '0.9rem' }}>
+        <div role="status" style={{ position: 'fixed', top: isMobile ? '10px' : '16px', left: '50%', transform: 'translateX(-50%)', zIndex: 80, maxWidth: '92vw', backgroundColor: '#10b981', color: 'white', padding: '10px 16px', borderRadius: '10px', fontSize: '0.9rem', boxShadow: '0 6px 20px rgba(0,0,0,0.25)' }}>
           {notification}
         </div>
       )}
@@ -4948,7 +5037,7 @@ export default function BudgetApp() {
 
           {/* Credit card payments */}
           {(() => {
-            const cards = activeAccounts.filter(a => isCreditCard(a) && !a.isHidden);
+            const cards = SHOW_CC_GROUP ? activeAccounts.filter(a => isCreditCard(a) && !a.isHidden) : [];
             if (!cards.length) return null;
             const cols = isMobile ? 'minmax(0,1fr) auto' : 'minmax(0,1fr) 118px 104px 124px';
             const info = cards.map(acc => {
@@ -5307,7 +5396,7 @@ export default function BudgetApp() {
                     <span>{x.acc.name}</span>
                     <span style={{ fontWeight: 600, fontVariantNumeric: 'tabular-nums', color: x.bal < -0.004 ? '#b42318' : '#111827' }}>{formatMoney(x.bal)}</span>
                   </button>
-                  <button onClick={() => { setManageAccounts(true); startReconcile(x.acc.id); }} aria-label={`Reconcile ${x.acc.name}`} style={{ margin: '0 10px', padding: '8px 10px', borderRadius: '8px', border: '1px solid #bbf7d0', backgroundColor: '#f0fdf4', color: '#166534', fontWeight: 700, fontSize: '0.78rem', cursor: 'pointer' }}>Reconcile</button>
+                  <button onClick={() => { openAccountRegister(x.acc.id); startReconcile(x.acc.id); }} aria-label={`Reconcile ${x.acc.name}`} style={{ margin: '0 10px', padding: '8px 10px', borderRadius: '8px', border: '1px solid #bbf7d0', backgroundColor: '#f0fdf4', color: '#166534', fontWeight: 700, fontSize: '0.78rem', cursor: 'pointer' }}>Reconcile</button>
                 </div>
               ))}
             </div>
@@ -6070,7 +6159,12 @@ export default function BudgetApp() {
       {/* TRANSACTIONS TAB */}
       {activeTab === 'transactions' && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
-          {!isMobile && txFormCard}
+          {txFilterAccount && (() => { const hdrAcc = accounts.find(a => a.id === txFilterAccount && !a.isDeleted); return hdrAcc ? renderAccountHeader(hdrAcc) : null; })()}
+          {!isMobile && (
+            <div ref={addCardRef} style={editingTxId ? { height: addCardH.current || undefined, flexShrink: 0 } : undefined}>
+              {!editingTxId && txFormCard}
+            </div>
+          )}
 
           {transferMatches.length > 0 && (
             <div data-testid="transfer-matches" style={{ backgroundColor: '#eef2ff', border: '1px solid #c7d2fe', padding: '12px 14px', borderRadius: '10px' }}>
@@ -6522,7 +6616,7 @@ export default function BudgetApp() {
                                 Remove split
                               </button>
                             )}
-                            {splitTxId === tx.id && !(isMobile && txSheetOpen) && renderSplitEditor(tx)}
+                            {splitTxId === tx.id && editingTxId !== tx.id && renderSplitEditor(tx)}
                           </div>
                         </div>
                         <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexShrink: 0 }}>
@@ -6537,6 +6631,16 @@ export default function BudgetApp() {
                               style={{ background: 'none', border: 'none', cursor: 'pointer', padding: '2px', fontSize: '0.9rem' }}
                             >
                               {locked ? '🔒' : '🔓'}
+                            </button>
+                          )}
+                          {!isMobile && txFilterAccount && !locked && (
+                            <button
+                              onClick={() => handleToggleCleared(tx.id)}
+                              title="Toggle cleared"
+                              aria-label={`${(tx.cleared || tx.reconciled) ? 'Cleared' : 'Uncleared'}: ${tx.payee}`}
+                              style={{ backgroundColor: (tx.cleared || tx.reconciled) ? '#10b981' : '#e5e7eb', color: (tx.cleared || tx.reconciled) ? 'white' : '#6b7280', border: 'none', borderRadius: '4px', padding: '2px 7px', fontWeight: 'bold', cursor: 'pointer', fontSize: '0.7rem' }}
+                            >
+                              C
                             </button>
                           )}
                           {!isMobile && <button
@@ -6965,6 +7069,15 @@ export default function BudgetApp() {
         </div>
       </div>
 
+      {/* Desktop: editing a transaction opens in a floating panel so the page stays where it is */}
+      {!isMobile && editingTxId && (
+        <>
+          <div onClick={cancelEditTx} style={{ position: 'fixed', inset: 0, backgroundColor: 'rgba(17,24,39,0.35)', zIndex: 59 }} />
+          <div role="dialog" aria-label="Edit transaction" data-testid="edit-modal" style={{ position: 'fixed', top: '50%', left: '50%', transform: 'translate(-50%, -50%)', width: 'min(600px, 94vw)', maxHeight: '90vh', overflowY: 'auto', backgroundColor: 'white', borderRadius: '14px', padding: '20px', boxShadow: '0 20px 50px rgba(0,0,0,0.3)', zIndex: 60, boxSizing: 'border-box' }}>
+            {txFormCard}
+          </div>
+        </>
+      )}
       {/* Phone layout: global touch tweaks, transaction sheet, floating add button and bottom tab bar */}
       {isMobile && <style>{`input,select,textarea{font-size:16px !important} input[aria-label="Amount"]{font-size:1.5rem !important;font-weight:700 !important;padding:10px !important} [role=dialog] input,[role=dialog] select{min-width:0 !important;max-width:100% !important;box-sizing:border-box !important} button{touch-action:manipulation}`}</style>}
       {isMobile && txSheetOpen && (
