@@ -1253,10 +1253,10 @@ const getScheduleText = (env) => {
   return `Every ${cadence}`;
 };
 
-const BottomSheet = ({ title, onClose, children, testId }) => (
+const BottomSheet = ({ title, onClose, children, testId, inset = { bottom: 0, height: 0 } }) => (
   <>
     <div onClick={onClose} style={{ position: 'fixed', inset: 0, backgroundColor: 'rgba(17,24,39,0.45)', zIndex: 59 }} />
-    <div data-testid={testId} role="dialog" aria-label={title} style={{ position: 'fixed', left: 0, right: 0, bottom: 0, zIndex: 60, backgroundColor: 'white', borderRadius: '18px 18px 0 0', maxHeight: '92vh', overflowY: 'auto', boxShadow: '0 -8px 28px rgba(0,0,0,0.25)', padding: '8px 16px calc(18px + env(safe-area-inset-bottom))' }}>
+    <div data-testid={testId} role="dialog" aria-label={title} style={{ position: 'fixed', left: 0, right: 0, bottom: inset.bottom, zIndex: 60, backgroundColor: 'white', borderRadius: '18px 18px 0 0', maxHeight: inset.height ? `${Math.round(inset.height * 0.94)}px` : '92vh', overflowY: 'auto', boxShadow: '0 -8px 28px rgba(0,0,0,0.25)', padding: inset.bottom ? '8px 16px 18px' : '8px 16px calc(18px + env(safe-area-inset-bottom))' }}>
       <div style={{ width: '40px', height: '4px', borderRadius: '2px', backgroundColor: '#d1d5db', margin: '0 auto 8px' }} />
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px' }}>
         <div style={{ fontWeight: 700, fontSize: '1.05rem', color: '#111827', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{title}</div>
@@ -1339,6 +1339,16 @@ export default function BudgetApp() {
   const [showRtaInfo, setShowRtaInfo] = useState(false); // phone: Ready to Assign breakdown
   useEffect(() => { setTxSheetOpen(false); }, [transactions]);
   useEffect(() => { setSelectedEnvId(null); setSelectMode(false); setSwipe(null); }, [activeTab]);
+  useEffect(() => { setAdjustAmt(''); }, [selectedEnvId]);
+  // Keep bottom sheets above the on-screen keyboard
+  useEffect(() => {
+    const vv = typeof window !== 'undefined' ? window.visualViewport : null;
+    if (!vv) return undefined;
+    const update = () => setKbInset({ bottom: Math.max(0, Math.round(window.innerHeight - vv.height - vv.offsetTop)), height: Math.round(vv.height) });
+    update();
+    vv.addEventListener('resize', update); vv.addEventListener('scroll', update);
+    return () => { vv.removeEventListener('resize', update); vv.removeEventListener('scroll', update); };
+  }, []);
   const [envFilter, setEnvFilter] = useState('all'); // 'all' | 'underfunded' | 'overspent' | 'available'
   const [autoMenuOpen, setAutoMenuOpen] = useState(false);
   const [reportView, setReportView] = useState('spending'); // 'spending' | 'incexp' | 'networth' | 'age'
@@ -1381,6 +1391,8 @@ export default function BudgetApp() {
   // Investments (tracked separately from the budget)
   const [investments, setInvestments] = useState([]);
   const [scheduled, setScheduled] = useState([]);
+  const [adjustAmt, setAdjustAmt] = useState(''); // phone envelope sheet: exact amount to add or subtract
+  const [kbInset, setKbInset] = useState({ bottom: 0, height: 0 }); // on-screen keyboard space (phones)
   const [sideMoreOpen, setSideMoreOpen] = useState(false); // sidebar "More" section
   const [sideCollapsed, setSideCollapsed] = useState({}); // sidebar account groups folded away
   const [selectMode, setSelectMode] = useState(false); // phone: checkboxes shown for bulk actions
@@ -4736,7 +4748,7 @@ export default function BudgetApp() {
                               <AvailPill value={remaining} row={row} label={`Available ${env.name}`} onClick={() => setSelectedEnvId(selected ? null : env.id)} />
                             </div>
                             {selected && isMobile && <div onClick={() => { setSelectedEnvId(null); closeMove(); setHideEnvUi(null); }} style={{ position: 'fixed', inset: 0, backgroundColor: 'rgba(17,24,39,0.45)', zIndex: 59 }} />}
-                            <div data-testid={selected && isMobile ? 'env-sheet' : undefined} style={selected && isMobile ? { position: 'fixed', left: 0, right: 0, bottom: 0, zIndex: 60, backgroundColor: 'white', borderRadius: '18px 18px 0 0', maxHeight: '88vh', overflowY: 'auto', boxShadow: '0 -8px 28px rgba(0,0,0,0.25)', padding: '14px 16px calc(18px + env(safe-area-inset-bottom))', display: 'flex', flexDirection: 'column', gap: '12px' } : { display: 'contents' }}>
+                            <div data-testid={selected && isMobile ? 'env-sheet' : undefined} style={selected && isMobile ? { position: 'fixed', left: 0, right: 0, bottom: kbInset.bottom, zIndex: 60, backgroundColor: 'white', borderRadius: '18px 18px 0 0', maxHeight: kbInset.height ? `${Math.round(kbInset.height * 0.92)}px` : '88vh', overflowY: 'auto', boxShadow: '0 -8px 28px rgba(0,0,0,0.25)', padding: kbInset.bottom ? '14px 16px 18px' : '14px 16px calc(18px + env(safe-area-inset-bottom))', display: 'flex', flexDirection: 'column', gap: '12px' } : { display: 'contents' }}>
                             {selected && isMobile && (
                               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '10px' }}>
                                 <div style={{ fontWeight: 700, fontSize: '1.1rem', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis' }}>{env.name}</div>
@@ -4768,15 +4780,23 @@ export default function BudgetApp() {
                                         <span>Assigned this month</span>
                                         <span>Ready to Assign <strong style={{ color: rtaShown < -0.004 ? '#b42318' : '#17603a' }}>{formatMoney(rtaShown)}</strong></span>
                                       </div>
-                                      <div style={{ display: 'flex', gap: isMobile ? '10px' : '6px', alignItems: 'center' }}>
-                                        <button type="button" aria-label={`Assign $10 less to ${env.name}`} onClick={() => setTo(cur - 10)} style={stepBtn}>{isMobile ? '−' : '− $10'}</button>
-                                        {isMobile && (
-                                          <div style={{ flex: 1, minWidth: 0 }}>
-                                            <AssignedInput value={row.budgeted} ariaLabel={`Assigned ${env.name}`} onCommit={n => handleAssignMonth(env.id, n)} width="100%" big />
+                                      {isMobile ? (
+                                        <>
+                                          <AssignedInput value={row.budgeted} ariaLabel={`Assigned ${env.name}`} onCommit={n => handleAssignMonth(env.id, n)} width="100%" big />
+                                          <div style={{ display: 'flex', gap: '8px', alignItems: 'stretch' }}>
+                                            <button type="button" aria-label={`Subtract from ${env.name}`} onClick={() => { const v = evalAmount(adjustAmt); if (!(v > 0)) return; setTo(cur - v); setAdjustAmt(''); }} style={{ width: '56px', flexShrink: 0, borderRadius: '12px', border: '1px solid #fecaca', backgroundColor: '#fef2f2', color: '#b91c1c', fontSize: '1.6rem', lineHeight: 1, cursor: 'pointer' }}>−</button>
+                                            <div style={{ flex: 1, minWidth: 0 }}>
+                                              <SplitAmountInput value={adjustAmt} onChange={setAdjustAmt} ariaLabel="Amount to add or subtract" placeholder="Amount to add or subtract" width="100%" wrapStyle={{ alignItems: 'stretch' }} inputStyle={{ textAlign: 'center', fontSize: '1.1rem', padding: '12px', boxSizing: 'border-box', width: '100%', minWidth: 0 }} />
+                                            </div>
+                                            <button type="button" aria-label={`Add to ${env.name}`} onClick={() => { const v = evalAmount(adjustAmt); if (!(v > 0)) return; setTo(cur + v); setAdjustAmt(''); }} style={{ width: '56px', flexShrink: 0, borderRadius: '12px', border: '1px solid #bbf7d0', backgroundColor: '#f0fdf4', color: '#166534', fontSize: '1.6rem', lineHeight: 1, cursor: 'pointer' }}>+</button>
                                           </div>
-                                        )}
-                                        <button type="button" aria-label={`Assign $10 more to ${env.name}`} onClick={() => setTo(cur + 10)} style={stepBtn}>{isMobile ? '+' : '+ $10'}</button>
+                                        </>
+                                      ) : (
+                                      <div style={{ display: 'flex', gap: '6px', alignItems: 'center' }}>
+                                        <button type="button" aria-label={`Assign $10 less to ${env.name}`} onClick={() => setTo(cur - 10)} style={stepBtn}>− $10</button>
+                                        <button type="button" aria-label={`Assign $10 more to ${env.name}`} onClick={() => setTo(cur + 10)} style={stepBtn}>+ $10</button>
                                       </div>
+                                      )}
                                       {chips.length > 0 && (
                                         <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
                                           {chips.map(([label, val]) => (
@@ -6948,7 +6968,7 @@ export default function BudgetApp() {
       {/* Phone layout: global touch tweaks, transaction sheet, floating add button and bottom tab bar */}
       {isMobile && <style>{`input,select,textarea{font-size:16px !important} input[aria-label="Amount"]{font-size:1.5rem !important;font-weight:700 !important;padding:10px !important} [role=dialog] input,[role=dialog] select{min-width:0 !important;max-width:100% !important;box-sizing:border-box !important} button{touch-action:manipulation}`}</style>}
       {isMobile && txSheetOpen && (
-        <BottomSheet title={editingTxId ? 'Edit transaction' : 'Add transaction'} testId="tx-sheet" onClose={() => { setTxSheetOpen(false); cancelEditTx(); }}>
+        <BottomSheet inset={kbInset} title={editingTxId ? 'Edit transaction' : 'Add transaction'} testId="tx-sheet" onClose={() => { setTxSheetOpen(false); cancelEditTx(); }}>
           {txFormCard}
         </BottomSheet>
       )}
