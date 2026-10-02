@@ -1557,8 +1557,21 @@ const getOrdinalSuffix = (num) => {
   }
 };
 
+// Due month [year, month] of a dated target. A repeating custom target rolls forward by its step once the month has passed.
+const effectiveDue = (env, monthKey) => {
+  let [y, m] = String(env.targetDate).slice(0, 7).split('-').map(Number);
+  if (env.goalRepeat) {
+    const step = Math.max(1, Number(env.repeatEvery) || 1);
+    const [by, bm] = monthKey.split('-').map(Number);
+    let guard = 0;
+    while ((y * 12 + m) < (by * 12 + bm) && guard++ < 600) { const t = y * 12 + (m - 1) + step; y = Math.floor(t / 12); m = (t % 12) + 1; }
+  }
+  return [y, m];
+};
+const REPEAT_EVERY = [[1, 'Every month'], [2, 'Every 2 months'], [3, 'Every 3 months'], [6, 'Every 6 months'], [12, 'Every year']];
 const getScheduleText = (env) => {
   if (env.goalType === 'savings_balance') return 'Save up to a balance';
+  if (env.goalType === 'target_by_date' && env.goalRepeat) return (REPEAT_EVERY.find(r => r[0] === Number(env.repeatEvery)) || REPEAT_EVERY[0])[1];
   if (env.goalType !== 'repeating') return '';
   const { cadence, repeatDayOfWeek, repeatDayOfMonth, repeatMonth, repeatYear } = env;
   if (cadence === 'weekly') return `Every week on ${repeatDayOfWeek || 'Monday'}`;
@@ -1669,6 +1682,8 @@ export default function BudgetApp() {
   const [kpDraft, setKpDraft] = useState(null); // keypad text for the selected envelope's assigned amount
   const [kpAuto, setKpAuto] = useState(false);
   const [pickYear, setPickYear] = useState(null);
+  const [tgt, setTgt] = useState(null); // phone target editor draft
+  const [tgtSub, setTgtSub] = useState(null); // 'each' | 'by' | 'iwant' | 'every'
   const [ctxMenu, setCtxMenu] = useState(null); // desktop right-click menu: { kind: 'env'|'group', id, name, x, y }
   const [assignOpen, setAssignOpen] = useState(false);
   const [mTxId, setMTxId] = useState(null);
@@ -2484,7 +2499,7 @@ export default function BudgetApp() {
     if (!env.goalType || env.goalType === 'none') return null;
     const target = Number(env.targetAmount);
     if (!(target > 0)) return null;
-    const funded = (env.goalType === 'target_by_date' || env.goalType === 'savings_balance') ? row.end : row.start + row.budgeted + row.income;
+    const funded = (env.goalType === 'target_by_date' || env.goalType === 'savings_balance') ? row.end : (env.goalMode === 'setaside' ? row.budgeted + row.income : row.start + row.budgeted + row.income);
     const left = Math.max(0, target - funded);
     const pct = Math.min(100, Math.max(0, (funded / target) * 100));
     return { target, funded, left, pct };
@@ -2776,7 +2791,7 @@ export default function BudgetApp() {
     const prog = getTargetProgress(env, row);
     if (!prog || prog.left <= 0.004) return 0;
     if (env.goalType === 'target_by_date' && /^\d{4}-\d{2}/.test(env.targetDate || '')) {
-      const [ty, tm] = env.targetDate.slice(0, 7).split('-').map(Number);
+      const [ty, tm] = effectiveDue(env, budgetMonth);
       const [by, bm] = budgetMonth.split('-').map(Number);
       const monthsLeft = Math.max(1, (ty - by) * 12 + (tm - bm) + 1);
       const perMonth = (prog.target - row.start) / monthsLeft;
@@ -5731,6 +5746,233 @@ export default function BudgetApp() {
       </div>
     );
   };
+
+  // ----- Phone: dark target editor (Weekly / Monthly / Yearly / Custom) -----
+  const TGT_MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+  const TGT_DOW = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
+  const openTargetEditor = (env) => {
+    const has = !!env.goalType && env.goalType !== 'none';
+    const now = new Date();
+    const next1 = new Date(now.getFullYear(), now.getMonth() + 1, 1);
+    const nextKey = `${next1.getFullYear()}-${String(next1.getMonth() + 1).padStart(2, '0')}-01`;
+    let freq = env.goalFreq || 'monthly';
+    if (env.goalType === 'repeating') freq = env.cadence === 'weekly' || env.cadence === 'biweekly' ? 'weekly' : env.cadence === 'yearly' ? 'yearly' : 'monthly';
+    else if (env.goalType === 'target_by_date' || env.goalType === 'savings_balance') freq = 'custom';
+    setTgt({
+      envId: env.id, existing: has, freq,
+      amt: Number(env.targetAmount) > 0 ? String(env.targetAmount) : '',
+      mode: env.goalMode === 'refill' ? 'refill' : (has && env.goalType === 'repeating' && !env.goalMode ? 'refill' : 'setaside'),
+      bi: env.cadence === 'biweekly',
+      dow: env.repeatDayOfWeek || 'Monday',
+      dom: String(env.repeatDayOfMonth || 'last'),
+      month: env.repeatMonth || TGT_MONTHS[now.getMonth()],
+      day: String(env.cadence === 'yearly' ? (env.repeatDayOfMonth || '1') : '1'),
+      due: env.goalType === 'target_by_date' ? (env.targetDate || nextKey) : (env.goalType === 'savings_balance' ? '' : nextKey),
+      repeat: !!env.goalRepeat, every: Number(env.repeatEvery) || 1,
+      custKind: env.goalType === 'savings_balance' || (env.goalType === 'target_by_date' && env.goalMode !== 'setaside') ? 'balance' : 'setaside'
+    });
+    setTgtSub(null);
+  };
+  const closeTargetEditor = () => { setTgt(null); setTgtSub(null); };
+  const saveTarget = () => {
+    if (!tgt) return;
+    const amount = round2(parseFloat(tgt.amt) || 0);
+    if (!(amount > 0)) return;
+    const base = { targetAmount: amount, goalFreq: tgt.freq, goalRepeat: false, repeatEvery: 1 };
+    let f;
+    if (tgt.freq === 'weekly') f = { ...base, goalType: 'repeating', cadence: tgt.bi ? 'biweekly' : 'weekly', repeatDayOfWeek: tgt.dow, goalMode: tgt.mode, targetDate: '' };
+    else if (tgt.freq === 'monthly') f = { ...base, goalType: 'repeating', cadence: 'monthly', repeatDayOfMonth: tgt.dom, goalMode: tgt.mode, targetDate: '' };
+    else if (tgt.freq === 'yearly') {
+      const now = new Date(); const mi = TGT_MONTHS.indexOf(tgt.month); const d = Number(tgt.day) || 1;
+      const passed = new Date(now.getFullYear(), mi, d) < new Date(now.getFullYear(), now.getMonth(), now.getDate());
+      f = { ...base, goalType: 'repeating', cadence: 'yearly', repeatMonth: tgt.month, repeatDayOfMonth: String(d), repeatYear: String(now.getFullYear() + (passed ? 1 : 0)), goalMode: tgt.mode, targetDate: '' };
+    } else {
+      f = tgt.due
+        ? { ...base, goalType: 'target_by_date', targetDate: tgt.due, goalMode: tgt.custKind, goalRepeat: !!tgt.repeat, repeatEvery: tgt.every }
+        : { ...base, goalType: 'savings_balance', targetDate: '', goalMode: 'balance' };
+    }
+    setEnvelopes(envelopes.map(e => (e.id === tgt.envId ? { ...e, ...f } : e)));
+    showNotification('Target saved.');
+    closeTargetEditor();
+  };
+  const deleteTarget = () => {
+    if (!tgt) return;
+    setEnvelopes(envelopes.map(e => (e.id === tgt.envId ? { ...e, goalType: 'none', targetAmount: 0, targetDate: '', goalRepeat: false } : e)));
+    showNotification('Target removed.');
+    closeTargetEditor();
+  };
+  const renderMobileTarget = () => {
+    const env = envelopes.find(e => e.id === tgt.envId);
+    if (!env) return null;
+    const amountN = parseFloat(tgt.amt) || 0;
+    const money = formatMoney(amountN);
+    const set = (patch) => setTgt(prev => ({ ...prev, ...patch }));
+    const spentIn = (key) => activeTransactions.reduce((sum, t) => (t.date && String(t.date).slice(0, 7) === key ? sum + txParts(t).filter(p => p.envelopeId === env.id).reduce((a, p) => a + p.amount, 0) : sum), 0);
+    const lastKey = addMonthKey(budgetMonth, -1);
+    const spentLast = spentIn(lastKey);
+    const avg = [1, 2, 3].reduce((a, i) => a + spentIn(addMonthKey(budgetMonth, -i)), 0) / 3;
+    const period = { weekly: 'week', monthly: 'month', yearly: 'year' }[tgt.freq];
+    const shell = { position: 'fixed', inset: 0, zIndex: 58, backgroundColor: MD.bg, color: MD.text, overflowY: 'auto', boxSizing: 'border-box' };
+    const header = (title, onBack, right) => (
+      <div style={{ display: 'flex', alignItems: 'center', gap: '14px', padding: '16px 16px 10px' }}>
+        <button onClick={onBack} aria-label="Back" style={{ background: 'none', border: 'none', color: MD.text, fontSize: '1.6rem', cursor: 'pointer', padding: '0 4px', lineHeight: 1 }}>←</button>
+        <div style={{ fontWeight: 600, fontSize: '1.25rem', flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{title}</div>
+        {right}
+      </div>
+    );
+    const pickItem = (key, active, title, lines, onPick, badge) => (
+      <div key={key} role="button" onClick={onPick} style={{ display: 'flex', alignItems: 'center', gap: '12px', padding: '16px 18px', borderBottom: '1px solid ' + MD.line, cursor: 'pointer' }}>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ fontSize: '1.05rem' }}>{title}</div>
+          {lines}
+          {badge && <span style={{ display: 'inline-block', marginTop: '8px', backgroundColor: '#2a2d6e', color: '#d6d8ff', borderRadius: '8px', padding: '5px 10px', fontSize: '0.8rem' }}>{badge}</span>}
+        </div>
+        {active && <span style={{ color: MD.accent, fontSize: '1.2rem' }}>✓</span>}
+      </div>
+    );
+    const sub = (text) => <div style={{ color: '#d0d0e6', fontSize: '0.85rem', marginTop: '4px' }}>{text}</div>;
+
+    // ----- sub screens -----
+    if (tgtSub === 'each') {
+      const nm = { weekly: 'Week', monthly: 'Month', yearly: 'Year' }[tgt.freq];
+      return (
+        <div data-testid="target-sub" style={shell}>
+          {header('Each ' + nm, () => setTgtSub(null))}
+          <div style={{ margin: '12px 16px', backgroundColor: MD.card, borderRadius: '28px', overflow: 'hidden' }}>
+            {pickItem('s', tgt.mode === 'setaside', `Set aside another ${money}`, sub('Use for: bills, subscriptions, saving over time'), () => { set({ mode: 'setaside' }); setTgtSub(null); }, 'Most people choose this')}
+            {pickItem('r', tgt.mode === 'refill', `Refill up to ${money}`, (<><div style={{ color: '#d0d0e6', fontSize: '0.85rem', marginTop: '4px' }}>Use for: groceries, fun money, dining out</div><div style={{ color: '#d0d0e6', fontSize: '0.85rem', marginTop: '10px', lineHeight: 1.35 }}>Sets a target to have {money} on hand each {period}. Whatever you don’t spend will get applied toward next {period}’s {money}</div></>), () => { set({ mode: 'refill' }); setTgtSub(null); })}
+          </div>
+        </div>
+      );
+    }
+    if (tgtSub === 'iwant') {
+      return (
+        <div data-testid="target-sub" style={shell}>
+          {header('I Want To', () => setTgtSub(null))}
+          <div style={{ margin: '12px 16px', backgroundColor: MD.card, borderRadius: '28px', overflow: 'hidden' }}>
+            {pickItem('s', tgt.custKind === 'setaside', `Set aside ${money}`, sub('Assign this much before the due date'), () => { set({ custKind: 'setaside' }); setTgtSub(null); })}
+            {pickItem('b', tgt.custKind === 'balance', `Have a balance of ${money}`, sub('Reach this balance by the due date'), () => { set({ custKind: 'balance' }); setTgtSub(null); })}
+          </div>
+        </div>
+      );
+    }
+    if (tgtSub === 'every') {
+      return (
+        <div data-testid="target-sub" style={shell}>
+          {header('Repeat', () => setTgtSub(null))}
+          <div style={{ margin: '12px 16px', backgroundColor: MD.card, borderRadius: '28px', overflow: 'hidden' }}>
+            {REPEAT_EVERY.map(([n, label]) => pickItem(String(n), tgt.every === n, label, null, () => { set({ every: n }); setTgtSub(null); }))}
+          </div>
+        </div>
+      );
+    }
+    if (tgtSub === 'by') {
+      const selStyle = { width: '100%', backgroundColor: MD.card, color: MD.text, border: '1px solid ' + MD.line, borderRadius: '16px', padding: '16px', fontSize: '1.05rem' };
+      return (
+        <div data-testid="target-sub" style={shell}>
+          {header('By', () => setTgtSub(null))}
+          {tgt.freq === 'weekly' && (
+            <div style={{ margin: '12px 16px', backgroundColor: MD.card, borderRadius: '28px', overflow: 'hidden' }}>
+              {TGT_DOW.map(d => pickItem(d, tgt.dow === d, d, null, () => set({ dow: d })))}
+              <div role="button" onClick={() => set({ bi: !tgt.bi })} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '16px 18px', cursor: 'pointer' }}>
+                <span style={{ fontSize: '1.05rem' }}>Every 2 weeks</span>
+                <span style={{ width: '52px', height: '30px', borderRadius: '15px', backgroundColor: tgt.bi ? MD.btn : '#2a2a55', border: '1px solid ' + MD.line, position: 'relative', flexShrink: 0 }}><span style={{ position: 'absolute', top: '3px', left: tgt.bi ? '26px' : '3px', width: '22px', height: '22px', borderRadius: '50%', backgroundColor: '#d8d8ec' }} /></span>
+              </div>
+            </div>
+          )}
+          {tgt.freq === 'monthly' && (
+            <div style={{ margin: '12px 16px', backgroundColor: MD.card, borderRadius: '28px', overflow: 'hidden' }}>
+              {pickItem('last', tgt.dom === 'last', 'Last Day of the Month', null, () => set({ dom: 'last' }))}
+              {Array.from({ length: 31 }, (_, i) => String(i + 1)).map(d => pickItem(d, tgt.dom === d, `The ${d}${getOrdinalSuffix(d)}`, null, () => set({ dom: d })))}
+            </div>
+          )}
+          {tgt.freq === 'yearly' && (
+            <div style={{ margin: '12px 16px', display: 'flex', flexDirection: 'column', gap: '12px' }}>
+              <select aria-label="Month" value={tgt.month} onChange={e => set({ month: e.target.value })} style={selStyle}>{TGT_MONTHS.map(m => <option key={m} value={m}>{m}</option>)}</select>
+              <select aria-label="Day" value={tgt.day} onChange={e => set({ day: e.target.value })} style={selStyle}>{Array.from({ length: 31 }, (_, i) => String(i + 1)).map(d => <option key={d} value={d}>{d}</option>)}</select>
+            </div>
+          )}
+        </div>
+      );
+    }
+
+    // ----- main screen -----
+    const byText = tgt.freq === 'weekly' ? (tgt.bi ? `Every 2 weeks on ${tgt.dow}` : tgt.dow) : tgt.freq === 'monthly' ? (tgt.dom === 'last' ? 'Last Day of the Month' : `The ${tgt.dom}${getOrdinalSuffix(tgt.dom)}`) : `${tgt.month} ${tgt.day}`;
+    const nextText = `${tgt.mode === 'refill' ? 'Refill up to' : 'Set aside another'} ${money}`;
+    const ico = (g) => <div style={{ width: '28px', textAlign: 'center', color: MD.btn, fontSize: '1.15rem', flexShrink: 0 }}>{g}</div>;
+    const rowBase = { display: 'flex', alignItems: 'center', gap: '16px', padding: '14px 20px', borderBottom: '1px solid ' + MD.line, cursor: 'pointer' };
+    const lab = (t) => <div style={{ color: MD.muted, fontSize: '0.88rem' }}>{t}</div>;
+    const val = (t) => <div style={{ fontSize: '1.1rem', marginTop: '2px' }}>{t}</div>;
+    const amountRow = (label) => (
+      <label style={{ ...rowBase, cursor: 'text' }}>
+        {ico('▭')}
+        <div style={{ flex: 1, minWidth: 0 }}>
+          {lab(label)}
+          <div style={{ display: 'flex', alignItems: 'center', fontSize: '1.1rem', marginTop: '2px' }}>
+            <span>$</span>
+            <input aria-label="Target amount" inputMode="decimal" value={tgt.amt} placeholder="0.00" onChange={e => { const v = e.target.value.replace(/[^0-9.]/g, ''); set({ amt: v }); }} onBlur={() => { if (amountN > 0) set({ amt: amountN.toFixed(2) }); }} style={{ flex: 1, minWidth: 0, background: 'none', border: 'none', outline: 'none', color: MD.text, fontSize: '1.1rem', padding: 0, fontFamily: 'inherit' }} />
+          </div>
+        </div>
+      </label>
+    );
+    const tab = (k, l) => (
+      <button key={k} role="tab" aria-selected={tgt.freq === k} onClick={() => set({ freq: k })} style={{ flex: 1, padding: '13px 4px', border: tgt.freq === k ? '1.5px solid ' + MD.btn : '1.5px solid transparent', borderRadius: '999px', backgroundColor: tgt.freq === k ? '#1d1d44' : 'transparent', color: MD.text, fontSize: '1rem', cursor: 'pointer' }}>{l}</button>
+    );
+    const canSave = amountN > 0;
+    const dueLabel = tgt.due ? formatDate(tgt.due, 'us') : 'No date';
+    const dueShort = tgt.due ? new Date(tgt.due + 'T00:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : 'No date';
+    return (
+      <div data-testid="target-editor" style={{ ...shell, padding: '0 0 calc(110px + env(safe-area-inset-bottom))' }}>
+        {header(env.name, closeTargetEditor, tgt.existing ? <button onClick={deleteTarget} data-testid="delete-target" style={{ background: 'none', border: 'none', color: '#ff7b7f', fontSize: '0.95rem', cursor: 'pointer' }}>Delete</button> : null)}
+        <div style={{ margin: '12px 16px', backgroundColor: MD.card, borderRadius: '28px', overflow: 'hidden' }}>
+          <div role="tablist" style={{ display: 'flex', margin: '10px 10px 4px', border: '1px solid #3a3a5c', borderRadius: '999px', overflow: 'hidden', backgroundColor: MD.row }}>
+            {[['weekly', 'Weekly'], ['monthly', 'Monthly'], ['yearly', 'Yearly'], ['custom', 'Custom']].map(([k, l]) => tab(k, l))}
+          </div>
+          {tgt.freq !== 'custom' ? (<>
+            {amountRow('I need')}
+            <div role="button" data-testid="by-row" onClick={() => setTgtSub('by')} style={rowBase}>{ico('▦')}<div style={{ flex: 1 }}>{lab('By')}{val(byText)}</div></div>
+            <div role="button" data-testid="next-row" onClick={() => setTgtSub('each')} style={{ ...rowBase, borderBottom: 'none' }}>{ico('⟳')}<div style={{ flex: 1 }}>{lab(`Next ${period} I want to`)}{val(nextText)}</div></div>
+          </>) : (<>
+            {amountRow('Amount')}
+            <div role="button" data-testid="iwant-row" onClick={() => setTgtSub('iwant')} style={{ ...rowBase, borderBottom: 'none' }}>{ico('◎')}<div style={{ flex: 1 }}>{lab('I want to')}{val(tgt.custKind === 'balance' ? `Have a balance of ${money}` : `Set aside ${money}`)}</div></div>
+          </>)}
+        </div>
+        {tgt.freq === 'custom' && (
+          <div style={{ margin: '12px 16px', backgroundColor: MD.card, borderRadius: '28px', overflow: 'hidden' }}>
+            <label style={{ ...rowBase, position: 'relative', borderBottom: tgt.due ? '1px solid ' + MD.line : 'none' }}>
+              {ico('▦')}<div style={{ flex: 1 }}>{lab('Due on')}{val(dueShort)}</div>
+              <input type="date" aria-label="Due on" value={tgt.due} onChange={e => set({ due: e.target.value, repeat: e.target.value ? tgt.repeat : false })} style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', opacity: 0, cursor: 'pointer' }} />
+            </label>
+            {tgt.due && (
+              <div role="switch" aria-checked={tgt.repeat} aria-label="Repeat" data-testid="repeat-toggle" onClick={() => set({ repeat: !tgt.repeat })} style={{ ...rowBase, borderBottom: tgt.repeat ? '1px solid ' + MD.line : 'none' }}>
+                {ico('⟳')}<div style={{ flex: 1, fontSize: '1.1rem' }}>Repeat</div>
+                <span style={{ width: '52px', height: '30px', borderRadius: '15px', backgroundColor: tgt.repeat ? MD.btn : '#2a2a55', border: '1px solid ' + MD.line, position: 'relative', flexShrink: 0 }}><span style={{ position: 'absolute', top: '3px', left: tgt.repeat ? '26px' : '3px', width: '22px', height: '22px', borderRadius: '50%', backgroundColor: '#d8d8ec' }} /></span>
+              </div>
+            )}
+            {tgt.due && tgt.repeat && (
+              <div role="button" data-testid="every-row" onClick={() => setTgtSub('every')} style={{ ...rowBase, borderBottom: 'none' }}>{ico(' ')}<div style={{ flex: 1 }}>{lab('Repeat every')}{val((REPEAT_EVERY.find(r => r[0] === tgt.every) || REPEAT_EVERY[0])[1])}</div></div>
+            )}
+          </div>
+        )}
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', margin: '26px 20px 10px' }}>
+          <div style={{ fontWeight: 700, fontSize: '1rem' }}>Spending Trends</div>
+          {tgt.freq !== 'custom' && <div style={{ fontSize: '0.95rem', color: MD.text }}>Set target to</div>}
+        </div>
+        <div data-testid="spending-trends" style={{ margin: '0 16px', backgroundColor: MD.card, borderRadius: '28px', overflow: 'hidden' }}>
+          <div role={avg > 0.004 ? 'button' : undefined} onClick={() => { if (avg > 0.004) set({ amt: avg.toFixed(2) }); }} style={{ display: 'flex', justifyContent: 'space-between', padding: '18px 20px', borderBottom: '1px solid ' + MD.line, fontSize: '1rem', cursor: avg > 0.004 ? 'pointer' : 'default' }}>
+            <span>Average Monthly Spending</span><span style={{ color: tgt.freq === 'custom' ? MD.text : MD.accent, fontWeight: 500 }}>{formatMoney(avg)}</span>
+          </div>
+          <div role={spentLast > 0.004 ? 'button' : undefined} onClick={() => { if (spentLast > 0.004) set({ amt: spentLast.toFixed(2) }); }} style={{ display: 'flex', justifyContent: 'space-between', padding: '18px 20px', fontSize: '1rem', cursor: spentLast > 0.004 ? 'pointer' : 'default' }}>
+            <span>Spent Last Month</span><span style={{ fontWeight: 600 }}>{formatMoney(spentLast)}</span>
+          </div>
+        </div>
+        <div style={{ position: 'fixed', left: 0, right: 0, bottom: 0, padding: '12px 16px calc(14px + env(safe-area-inset-bottom))', background: 'linear-gradient(180deg, rgba(10,10,20,0), ' + MD.bg + ' 30%)' }}>
+          <button data-testid="save-target" disabled={!canSave} onClick={saveTarget} style={{ width: '100%', padding: '16px', borderRadius: '999px', border: 'none', backgroundColor: canSave ? MD.btn : '#2b2b45', color: canSave ? 'white' : '#7b7b99', fontWeight: 700, fontSize: '1.05rem', cursor: canSave ? 'pointer' : 'default' }}>Save Target</button>
+        </div>
+      </div>
+    );
+  };
+
   const renderMobileEnvDetails = () => {
     const env = selectedEnvId ? envelopes.find(e => e.id === selectedEnvId && !e.isDeleted) : null;
     if (!env) return null;
@@ -5823,14 +6065,14 @@ export default function BudgetApp() {
             <div style={{ borderTop: '1px solid ' + MD.line, marginTop: '14px', paddingTop: '12px', fontSize: '0.92rem' }}>
               {[['Total Needed', progress.target], ['Funded', Math.min(progress.target, Math.max(0, progress.funded))], ['To Go', progress.left]].map(([l, v]) => (<div key={l} style={{ display: 'flex', justifyContent: 'space-between', padding: '3px 0' }}><span>{l}</span><span>{formatMoney(v)}</span></div>))}
             </div>
-            <button onClick={() => startEditEnv(env)} style={{ ...actBtn, marginTop: '14px', marginBottom: 0, backgroundColor: '#25254a' }}>Edit Target</button>
+            <button data-testid="edit-target" onClick={() => openTargetEditor(env)} style={{ ...actBtn, marginTop: '14px', marginBottom: 0, backgroundColor: '#25254a' }}>Edit Target</button>
           </div>
         </>)}
         {!progress && (<>
           {secTitle('Target')}
           <div style={{ backgroundColor: MD.card, borderRadius: '22px', padding: '16px' }}>
             <div style={{ color: MD.muted, fontSize: '0.92rem', marginBottom: '12px' }}>No target set for this category.</div>
-            <button onClick={() => startEditEnv(env)} style={{ ...actBtn, marginBottom: 0, backgroundColor: '#25254a' }}>Create Target</button>
+            <button data-testid="create-target" onClick={() => openTargetEditor(env)} style={{ ...actBtn, marginBottom: 0, backgroundColor: '#25254a' }}>Create Target</button>
           </div>
         </>)}
         {secTitle('Notes')}
@@ -6526,6 +6768,7 @@ export default function BudgetApp() {
       {/* BUDGET TAB */}
       {isMobile && activeTab === 'budget' && renderMobilePlan()}
       {isMobile && activeTab === 'budget' && renderMobileEnvDetails()}
+      {isMobile && activeTab === 'budget' && tgt && renderMobileTarget()}
       {activeTab === 'budget' && !isMobile && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
           {/* Month summary */}
