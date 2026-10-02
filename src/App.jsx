@@ -106,13 +106,14 @@ const snapshot = (d = {}) => stable({
   envelopes: d.envelopes ?? [],
   transactions: d.transactions ?? [],
   debts: d.debts ?? [],
-  investments: d.investments ?? []
+  investments: d.investments ?? [],
+  scheduled: d.scheduled ?? []
 });
 
-const DATA_LISTS = ['accounts', 'envelopes', 'transactions', 'debts', 'investments'];
+const DATA_LISTS = ['accounts', 'envelopes', 'transactions', 'debts', 'investments', 'scheduled'];
 const normData = (d = {}) => ({
   accounts: d.accounts ?? [], groups: d.groups ?? [], collapsedGroups: d.collapsedGroups ?? {}, collapsedAccountTx: d.collapsedAccountTx ?? {},
-  envelopes: d.envelopes ?? [], transactions: d.transactions ?? [], debts: d.debts ?? [], investments: d.investments ?? []
+  envelopes: d.envelopes ?? [], transactions: d.transactions ?? [], debts: d.debts ?? [], investments: d.investments ?? [], scheduled: d.scheduled ?? []
 });
 // Three-way merge of two edited copies of the budget, using the last copy both sides agreed on as the base.
 // Whatever only one side changed is kept; if both changed the same item, "mine" wins.
@@ -146,6 +147,44 @@ const mergeBudgetData = (baseIn, mineIn, theirsIn) => {
   return out;
 };
 
+// Months to pay off a loan, and the interest paid along the way
+const loanPayoff = (balance, apr, payment) => {
+  const bal = Number(balance) || 0;
+  if (bal <= 0.004) return { done: true, months: 0, interest: 0 };
+  const r = (Number(apr) || 0) / 1200;
+  const pay = Number(payment) || 0;
+  if (pay <= 0 || pay <= bal * r + 0.004) return { never: true };
+  let b = bal, months = 0, interest = 0;
+  while (b > 0.004 && months < 1200) {
+    const i = b * r;
+    interest += i;
+    b = b + i - pay;
+    months += 1;
+  }
+  return { months, interest: Math.round(interest * 100) / 100 };
+};
+
+// ----- Scheduled (recurring) transactions -----
+const SCHED_FREQS = [['weekly', 'Every week'], ['biweekly', 'Every 2 weeks'], ['monthly', 'Every month'], ['yearly', 'Every year']];
+const isoToDate = (iso) => { const [y, m, d] = iso.split('-').map(Number); return new Date(y, m - 1, d); };
+const dateToIso = (dt) => `${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, '0')}-${String(dt.getDate()).padStart(2, '0')}`;
+// The date after `iso` for a schedule. Monthly/yearly keep the original day of the month (clamped for short months).
+const nextOccurrence = (iso, freq, anchorDay) => {
+  const dt = isoToDate(iso);
+  if (freq === 'weekly') dt.setDate(dt.getDate() + 7);
+  else if (freq === 'biweekly') dt.setDate(dt.getDate() + 14);
+  else {
+    const day = anchorDay || dt.getDate();
+    const months = freq === 'yearly' ? 12 : 1;
+    const first = new Date(dt.getFullYear(), dt.getMonth() + months, 1);
+    const last = new Date(first.getFullYear(), first.getMonth() + 1, 0).getDate();
+    first.setDate(Math.min(day, last));
+    return dateToIso(first);
+  }
+  return dateToIso(dt);
+};
+const schedTxId = (schedId, date) => `sch-${schedId}-${date}`;
+
 const MOBILE_QUERY = '(max-width: 720px)';
 const isMobileNow = () => typeof window !== 'undefined' && !!window.matchMedia && window.matchMedia(MOBILE_QUERY).matches;
 
@@ -154,6 +193,8 @@ const TAB_LABELS = {
   new: 'Add New',
   accounts: 'Accounts',
   investments: 'Investments',
+  scheduled: 'Scheduled',
+  payees: 'Payees',
   transactions: 'Transactions',
   reports: 'Reports',
   debts: 'Debts',
@@ -1297,10 +1338,10 @@ export default function BudgetApp() {
   const [manageAccounts, setManageAccounts] = useState(false); // phone: Accounts tab shows overview unless true
   const [showRtaInfo, setShowRtaInfo] = useState(false); // phone: Ready to Assign breakdown
   useEffect(() => { setTxSheetOpen(false); }, [transactions]);
-  useEffect(() => { setSelectedEnvId(null); }, [activeTab]);
+  useEffect(() => { setSelectedEnvId(null); setSelectMode(false); setSwipe(null); }, [activeTab]);
   const [envFilter, setEnvFilter] = useState('all'); // 'all' | 'underfunded' | 'overspent' | 'available'
   const [autoMenuOpen, setAutoMenuOpen] = useState(false);
-  const [reportView, setReportView] = useState('spending'); // 'spending' | 'networth' | 'age'
+  const [reportView, setReportView] = useState('spending'); // 'spending' | 'incexp' | 'networth' | 'age'
   const autoPayeeEnvRef = useRef('');
   const [unlockAskId, setUnlockAskId] = useState(null); // row showing the "unlock?" question
   const [splitTxId, setSplitTxId] = useState(null); // transaction whose split editor is open
@@ -1339,6 +1380,15 @@ export default function BudgetApp() {
 
   // Investments (tracked separately from the budget)
   const [investments, setInvestments] = useState([]);
+  const [scheduled, setScheduled] = useState([]);
+  const [selectMode, setSelectMode] = useState(false); // phone: checkboxes shown for bulk actions
+  const [swipe, setSwipe] = useState(null); // { id, dx } while a row is being swiped
+  const touchRef = useRef(null);
+  const [installEvt, setInstallEvt] = useState(null); // browser's "install app" prompt, when it offers one
+  const [debtPay, setDebtPay] = useState({}); // payment amounts typed on the Debts tab
+  const [payeeEdit, setPayeeEdit] = useState(null); // { name, value } while renaming a payee
+  const [payeeSearch, setPayeeSearch] = useState('');
+  const [schedForm, setSchedForm] = useState(null); // form for adding/editing a scheduled transaction
   const [invFormOpen, setInvFormOpen] = useState(false);
   const [editingInvId, setEditingInvId] = useState(null);
   const [newInvName, setNewInvName] = useState('');
@@ -1382,7 +1432,39 @@ export default function BudgetApp() {
   const histRef = useRef({ undo: [], redo: [], prev: null, prevKey: '', lastPush: 0, skip: false, reset: false, resetUntil: 0 });
   const [, setHistTick] = useState(0);
   const [syncTick, setSyncTick] = useState(0); // bumps once the first load finishes
-  localRef.current = normData({ accounts, groups, collapsedGroups, collapsedAccountTx, envelopes, transactions, debts, investments });
+  localRef.current = normData({ accounts, groups, collapsedGroups, collapsedAccountTx, envelopes, transactions, debts, investments, scheduled });
+
+  // Make the app installable (home-screen icon, full-screen window)
+  useEffect(() => {
+    try {
+      const makeIcon = (size) => {
+        const c = document.createElement('canvas'); c.width = c.height = size;
+        const g = c.getContext('2d');
+        if (!g) return '';
+        g.fillStyle = '#1f2f4f'; g.fillRect(0, 0, size, size);
+        g.fillStyle = '#cdeed6'; g.beginPath(); g.arc(size / 2, size / 2, size * 0.32, 0, Math.PI * 2); g.fill();
+        g.fillStyle = '#1f2f4f'; g.font = `bold ${Math.round(size * 0.42)}px system-ui, sans-serif`; g.textAlign = 'center'; g.textBaseline = 'middle'; g.fillText('$', size / 2, size / 2 + size * 0.02);
+        return c.toDataURL('image/png');
+      };
+      const icon192 = makeIcon(192), icon512 = makeIcon(512);
+      const head = document.head;
+      const put = (tag, attrs) => { const sel = tag === 'link' ? `link[rel="${attrs.rel}"]` : `meta[name="${attrs.name}"]`; let el = head.querySelector(sel); if (!el) { el = document.createElement(tag); head.appendChild(el); } Object.entries(attrs).forEach(([k, v]) => el.setAttribute(k, v)); };
+      put('meta', { name: 'theme-color', content: '#1f2f4f' });
+      put('meta', { name: 'apple-mobile-web-app-capable', content: 'yes' });
+      put('meta', { name: 'mobile-web-app-capable', content: 'yes' });
+      put('meta', { name: 'apple-mobile-web-app-title', content: 'Budget' });
+      if (icon192) put('link', { rel: 'apple-touch-icon', href: icon192 });
+      if (icon192 && !head.querySelector('link[rel="manifest"]')) {
+        const manifest = { name: 'Envelope Budgeting', short_name: 'Budget', start_url: window.location.href.split('#')[0], scope: window.location.href.split('#')[0].replace(/[^/]*$/, ''), display: 'standalone', background_color: '#f4f5f7', theme_color: '#1f2f4f', icons: [{ src: icon192, sizes: '192x192', type: 'image/png' }, { src: icon512, sizes: '512x512', type: 'image/png' }] };
+        put('link', { rel: 'manifest', href: URL.createObjectURL(new Blob([JSON.stringify(manifest)], { type: 'application/manifest+json' })) });
+      }
+    } catch (err) { /* installability is a nice-to-have */ }
+    const onPrompt = (e) => { e.preventDefault(); setInstallEvt(e); };
+    const onInstalled = () => setInstallEvt(null);
+    window.addEventListener('beforeinstallprompt', onPrompt);
+    window.addEventListener('appinstalled', onInstalled);
+    return () => { window.removeEventListener('beforeinstallprompt', onPrompt); window.removeEventListener('appinstalled', onInstalled); };
+  }, []);
 
   // Who is signed in
   useEffect(() => {
@@ -1402,7 +1484,7 @@ export default function BudgetApp() {
       revRef.current = 0; baseRef.current = null; rowExistsRef.current = false;
       histRef.current.reset = true;
       setAccounts([]); setGroups([]); setCollapsedGroups({}); setCollapsedAccountTx({});
-      setEnvelopes([]); setTransactions([]); setDebts([]); setInvestments([]);
+      setEnvelopes([]); setTransactions([]); setDebts([]); setInvestments([]); setScheduled([]);
       return;
     }
     let cancelled = false;
@@ -1427,6 +1509,7 @@ export default function BudgetApp() {
       setTransactions(d.transactions ?? []);
       setDebts(d.debts ?? []);
       setInvestments(d.investments ?? []);
+      setScheduled(d.scheduled ?? []);
     };
 
     applyRemoteRef.current = applyRemote;
@@ -1496,7 +1579,7 @@ export default function BudgetApp() {
   // Save budget changes to Supabase (debounced, skipped when nothing actually changed)
   useEffect(() => {
     if (!userId || !loadedRef.current) return;
-    const dataToSave = { accounts, groups, collapsedGroups, collapsedAccountTx, envelopes, transactions, debts, investments };
+    const dataToSave = { accounts, groups, collapsedGroups, collapsedAccountTx, envelopes, transactions, debts, investments, scheduled };
     const json = snapshot(dataToSave);
     if (json === lastJsonRef.current) return;
 
@@ -1546,14 +1629,14 @@ export default function BudgetApp() {
     }, 400);
 
     return () => clearTimeout(timer);
-  }, [userId, syncTick, accounts, groups, collapsedGroups, collapsedAccountTx, envelopes, transactions, debts, investments]);
+  }, [userId, syncTick, accounts, groups, collapsedGroups, collapsedAccountTx, envelopes, transactions, debts, investments, scheduled]);
 
   // ----- Undo / redo -----
   // Every change to the budget data is remembered. Edits made within ~1.2 s of each other (typing in a box) count as one step.
-  const histKey = (d) => stable({ accounts: d.accounts, groups: d.groups, envelopes: d.envelopes, transactions: d.transactions, debts: d.debts, investments: d.investments });
+  const histKey = (d) => stable({ accounts: d.accounts, groups: d.groups, envelopes: d.envelopes, transactions: d.transactions, debts: d.debts, investments: d.investments, scheduled: d.scheduled });
   useEffect(() => {
     const h = histRef.current;
-    const cur = { accounts, groups, envelopes, transactions, debts, investments };
+    const cur = { accounts, groups, envelopes, transactions, debts, investments, scheduled };
     const key = histKey(cur);
     const now = Date.now();
     if (h.prev === null || h.reset || now < h.resetUntil) {
@@ -1572,13 +1655,13 @@ export default function BudgetApp() {
     h.prev = cur;
     h.prevKey = key;
     setHistTick(t => t + 1);
-  }, [accounts, groups, envelopes, transactions, debts, investments]);
+  }, [accounts, groups, envelopes, transactions, debts, investments, scheduled]);
 
   const applySnapshot = (snap) => {
     const h = histRef.current;
     if (histKey(snap) !== h.prevKey) h.skip = true;
     setAccounts(snap.accounts); setGroups(snap.groups); setEnvelopes(snap.envelopes);
-    setTransactions(snap.transactions); setDebts(snap.debts); setInvestments(snap.investments);
+    setTransactions(snap.transactions); setDebts(snap.debts); setInvestments(snap.investments); setScheduled(snap.scheduled || []);
   };
   const undo = () => {
     const h = histRef.current;
@@ -2376,7 +2459,7 @@ export default function BudgetApp() {
 
   const downloadBudgetBackup = () => {
     try {
-      const data = { accounts, groups, collapsedGroups, collapsedAccountTx, envelopes, transactions, debts, investments };
+      const data = { accounts, groups, collapsedGroups, collapsedAccountTx, envelopes, transactions, debts, investments, scheduled };
       const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
@@ -2697,6 +2780,130 @@ export default function BudgetApp() {
       return { error: `Split lines must add up to $${Number(total).toFixed(2)}.` };
     }
     return { lines: merged };
+  };
+
+  // ----- Phone gestures on transaction rows: swipe left = delete, swipe right = cleared, long-press = select -----
+  const SWIPE_AT = 90;
+  const rowTouch = (tx, locked) => ({
+    onTouchStart: (e) => {
+      const t = e.touches[0];
+      const timer = setTimeout(() => {
+        if (touchRef.current && touchRef.current.id === tx.id && !touchRef.current.moved) {
+          touchRef.current.pressed = true;
+          setSelectMode(true);
+          setSelectedTxIds(prev => (prev.includes(tx.id) ? prev : [...prev, tx.id]));
+        }
+      }, 520);
+      touchRef.current = { id: tx.id, x: t.clientX, y: t.clientY, dx: 0, moved: false, horizontal: false, timer };
+    },
+    onTouchMove: (e) => {
+      const r = touchRef.current;
+      if (!r || r.id !== tx.id) return;
+      const t = e.touches[0];
+      const dx = t.clientX - r.x, dy = t.clientY - r.y;
+      if (!r.horizontal && (Math.abs(dx) > 8 || Math.abs(dy) > 8)) {
+        r.moved = true; clearTimeout(r.timer);
+        r.horizontal = Math.abs(dx) > Math.abs(dy) * 1.5;
+      }
+      if (r.horizontal && !selectMode) { r.dx = dx; setSwipe({ id: tx.id, dx: Math.max(-140, Math.min(140, dx)) }); }
+    },
+    onTouchEnd: () => {
+      const r = touchRef.current;
+      touchRef.current = null;
+      if (!r) return;
+      clearTimeout(r.timer);
+      if (r.pressed) { setSwipe(null); return; }
+      if (r.horizontal && !selectMode) {
+        if (r.dx <= -SWIPE_AT) { if (locked) showNotification(LOCKED_MSG); else handleSoftDeleteTransaction(tx.id); }
+        else if (r.dx >= SWIPE_AT) handleToggleCleared(tx.id);
+      }
+      setSwipe(null);
+    },
+    onTouchCancel: () => { if (touchRef.current) clearTimeout(touchRef.current.timer); touchRef.current = null; setSwipe(null); }
+  });
+
+  // ----- Payees: list, rename, merge -----
+  const payeeList = useMemo(() => {
+    const m = new Map();
+    transactions.forEach(t => {
+      if (t.isDeleted || t.isTransfer || !t.payee || t.payee === 'Reconciliation Adjustment') return;
+      const e = m.get(t.payee) || { name: t.payee, count: 0, total: 0 };
+      e.count += 1;
+      e.total += (t.type === 'income' ? 1 : -1) * Math.abs(Number(t.amount) || 0);
+      m.set(t.payee, e);
+    });
+    return [...m.values()].sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }));
+  }, [transactions]);
+  const renamePayee = (from, toRaw) => {
+    const to = (toRaw || '').trim();
+    if (!to || to === from) { setPayeeEdit(null); return; }
+    const merging = payeeList.some(p => p.name === to);
+    let n = 0;
+    setTransactions(prev => prev.map(t => { if (t.payee === from) { n += 1; return { ...t, payee: to }; } return t; }));
+    setPayeeEdit(null);
+    showNotification(merging ? `Merged "${from}" into "${to}".` : `Renamed "${from}" to "${to}".`);
+  };
+
+  // ----- Scheduled transactions: logic -----
+  const activeScheduled = scheduled.filter(x => !x.isDeleted);
+  const buildSchedTx = (sc, date) => ({
+    id: schedTxId(sc.id, date), date, payee: sc.payee, amount: sc.amount, type: sc.type, accountId: sc.accountId,
+    envelopeId: sc.type === 'expense' ? (sc.envelopeId || '') : '', notes: sc.notes || '', isDeleted: false, cleared: false, reconciled: false
+  });
+  // Due occurrences of one schedule (up to today), oldest first
+  const dueDates = (sc, limit = 120) => {
+    const out = [];
+    let d = sc.nextDate;
+    const today = getTodayISO();
+    while (d && d <= today && out.length < limit && (!sc.endDate || d <= sc.endDate)) { out.push(d); d = nextOccurrence(d, sc.frequency, sc.anchorDay); }
+    return { dates: out, next: d };
+  };
+  const dueSchedules = activeScheduled.filter(sc => !sc.autoPost && dueDates(sc, 1).dates.length > 0);
+  const postDue = (list) => {
+    const newTx = [];
+    const updates = new Map();
+    list.forEach(sc => {
+      const { dates, next } = dueDates(sc);
+      dates.forEach(dt => newTx.push(buildSchedTx(sc, dt)));
+      updates.set(sc.id, next);
+    });
+    if (!newTx.length) return 0;
+    setTransactions(prev => {
+      const have = new Set(prev.map(t => t.id));
+      return [...newTx.filter(t => !have.has(t.id)), ...prev];
+    });
+    setScheduled(prev => prev.map(sc => (updates.has(sc.id) ? { ...sc, nextDate: updates.get(sc.id) } : sc)));
+    return newTx.length;
+  };
+  const skipDue = (sc) => {
+    const { dates, next } = dueDates(sc);
+    if (!dates.length) return;
+    setScheduled(prev => prev.map(x => (x.id === sc.id ? { ...x, nextDate: next } : x)));
+    showNotification(`Skipped ${dates.length} ${dates.length === 1 ? 'occurrence' : 'occurrences'} of ${sc.payee}.`);
+  };
+  // Automatic ones post themselves when the budget loads
+  useEffect(() => {
+    if (!syncTick || !loadedRef.current) return;
+    const auto = scheduled.filter(x => !x.isDeleted && x.autoPost && dueDates(x, 1).dates.length > 0);
+    if (!auto.length) return;
+    const n = postDue(auto);
+    if (n) showNotification(`Posted ${n} scheduled ${n === 1 ? 'transaction' : 'transactions'}.`);
+  }, [syncTick]);
+
+  const emptySched = () => ({ id: '', payee: '', amount: '', type: 'expense', accountId: '', envelopeId: '', notes: '', frequency: 'monthly', nextDate: getTodayISO(), autoPost: false });
+  const saveSched = (e) => {
+    e.preventDefault();
+    const f = schedForm;
+    const amt = evalAmount(f.amount);
+    if (!f.payee.trim() || !f.accountId || isNaN(amt) || amt <= 0 || !/^\d{4}-\d{2}-\d{2}$/.test(f.nextDate)) {
+      showNotification('Enter a payee, an amount above $0, an account and a start date.');
+      return;
+    }
+    const item = { ...f, payee: f.payee.trim(), amount: amt, anchorDay: isoToDate(f.nextDate).getDate(), isDeleted: false };
+    if (f.id) setScheduled(prev => prev.map(x => (x.id === f.id ? item : x)));
+    else setScheduled(prev => [...prev, { ...item, id: 'sch-' + Date.now() }]);
+    setSchedForm(null);
+    showNotification(f.id ? 'Schedule updated.' : 'Schedule added.');
   };
 
   const handleAddTransaction = (e) => {
@@ -3088,6 +3295,86 @@ export default function BudgetApp() {
     const others = splitDraft.reduce((s, l, idx) => (idx === i ? s : s + (evalAmount(l.amount) || 0)), 0);
     const rest = round2(Number(total) - others);
     if (rest !== 0) updateSplitLine(i, { amount: String(rest) });
+  };
+
+  // The split / send-to-envelopes editor (used under a list row and inside the phone edit sheet)
+  const renderSplitEditor = (tx) => {
+                              const left = splitRemaining(tx.amount);
+                              const inc = tx.type === 'income';
+                              return (
+                                <div data-testid="split-editor" style={{ marginTop: '8px', padding: '10px', backgroundColor: '#f9fafb', border: '1px solid #e5e7eb', borderRadius: '8px' }}>
+                                  <div style={{ fontSize: '0.8rem', fontWeight: 'bold', marginBottom: '6px' }}>
+                                    {inc ? `Send part of $${Number(tx.amount).toFixed(2)} straight to envelopes` : `Split $${Number(tx.amount).toFixed(2)} across envelopes`}
+                                  </div>
+                                  {splitDraft.map((line, i) => (
+                                    <div key={i} style={{ display: 'flex', gap: '6px', marginBottom: isMobile ? '12px' : '6px', alignItems: 'center', flexWrap: isMobile ? 'wrap' : 'nowrap' }}>
+                                      <select
+                                        value={line.envelopeId}
+                                        onChange={e => updateSplitLine(i, { envelopeId: e.target.value })}
+                                        aria-label={`Split line ${i + 1} envelope`}
+                                        style={{ flex: isMobile ? '1 1 100%' : '1 1 auto', minWidth: 0, padding: isMobile ? '10px' : '5px', border: '1px solid #d1d5db', borderRadius: '6px', fontSize: '0.8rem' }}
+                                      >
+                                        <option value="">{inc ? 'Choose envelope' : 'No envelope'}</option>
+                                        {line.envelopeId && envelopes.find(e => e.id === line.envelopeId && (e.isDeleted || e.isHidden)) && (
+                                          <option value={line.envelopeId}>{envelopes.find(e => e.id === line.envelopeId).name} ({envelopes.find(e => e.id === line.envelopeId).isDeleted ? 'deleted' : 'hidden'})</option>
+                                        )}
+                                        {envelopeChoices.map(c => (
+                                          <optgroup key={c.label} label={c.label}>
+                                            {c.list.map(e => (
+                                              <option key={e.id} value={e.id}>{e.name}</option>
+                                            ))}
+                                          </optgroup>
+                                        ))}
+                                      </select>
+                                      <SplitAmountInput value={line.amount} onChange={v => updateSplitLine(i, { amount: v })} ariaLabel={`Split line ${i + 1} amount`} width="110px" />
+                                      <button
+                                        type="button"
+                                        onClick={() => fillSplitRemainder(i, tx.amount)}
+                                        title="Put the remaining amount on this line"
+                                        aria-label={`Fill remainder on line ${i + 1}`}
+                                        style={{ background: 'none', border: '1px solid #d1d5db', borderRadius: '6px', cursor: 'pointer', padding: '4px 6px', fontSize: '0.7rem', color: '#374151' }}
+                                      >
+                                        Rest
+                                      </button>
+                                      {splitDraft.length > (inc ? 1 : 2) && (
+                                        <button
+                                          type="button"
+                                          onClick={() => removeSplitLine(i)}
+                                          aria-label={`Remove split line ${i + 1}`}
+                                          style={{ background: 'none', border: 'none', color: '#dc2626', cursor: 'pointer', padding: '2px 4px' }}
+                                        >
+                                          ✕
+                                        </button>
+                                      )}
+                                    </div>
+                                  ))}
+                                  <div style={{ fontSize: '0.8rem', marginBottom: '8px', color: inc ? (left < -0.005 ? '#b45309' : '#059669') : Math.abs(left) < 0.005 ? '#059669' : '#b45309' }}>
+                                    {inc
+                                      ? (left < -0.005 ? `$${Math.abs(left).toFixed(2)} over` : Math.abs(left) < 0.005 ? 'All of it goes to envelopes' : `$${left.toFixed(2)} stays in Ready to Assign`)
+                                      : Math.abs(left) < 0.005
+                                      ? 'Fully assigned'
+                                      : left > 0
+                                        ? `$${left.toFixed(2)} left to assign`
+                                        : `$${Math.abs(left).toFixed(2)} over`}
+                                  </div>
+                                  <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+                                    <button type="button" onClick={addSplitLine} style={{ background: 'white', border: '1px solid #d1d5db', borderRadius: '6px', padding: '5px 10px', cursor: 'pointer', fontSize: '0.8rem' }}>
+                                      + Add line
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={handleSaveSplit}
+                                      disabled={inc ? left < -0.005 : Math.abs(left) >= 0.005}
+                                      style={{ backgroundColor: (inc ? left < -0.005 : Math.abs(left) >= 0.005) ? '#9ca3af' : '#2563eb', color: 'white', border: 'none', borderRadius: '6px', padding: '5px 12px', cursor: (inc ? left < -0.005 : Math.abs(left) >= 0.005) ? 'not-allowed' : 'pointer', fontSize: '0.8rem', fontWeight: 'bold' }}
+                                    >
+                                      {inc ? 'Save' : 'Save split'}
+                                    </button>
+                                    <button type="button" onClick={closeSplit} style={{ background: 'none', border: 'none', color: '#6b7280', cursor: 'pointer', fontSize: '0.8rem' }}>
+                                      Cancel
+                                    </button>
+                                  </div>
+                                </div>
+                              );
   };
 
   // Lines editor used by the Add Transaction form (the list's own editor keeps its state in splitDraft)
@@ -3646,6 +3933,66 @@ export default function BudgetApp() {
     for (let k = firstMonth; k <= lastMonth && monthKeys.length < 600; k = addMonthKey(k, 1)) monthKeys.push(k);
     const shortLabel = (k) => `${monthLabel(k, true).slice(0, 3)} ${k.slice(2, 4)}`;
 
+    if (view === 'incexp') {
+      const real = dated.filter(t => !t.isTransfer && t.payee !== 'Reconciliation Adjustment');
+      const months = monthKeys.slice(-12).map(k => {
+        let inc = 0, exp = 0;
+        real.forEach(t => { if (t.date.slice(0, 7) !== k) return; const a = Number(t.amount) || 0; if (t.type === 'income') inc += a; else exp += a; });
+        return { k, label: shortLabel(k), inc: round2(inc), exp: round2(exp), net: round2(inc - exp) };
+      });
+      const totInc = round2(months.reduce((t, m) => t + m.inc, 0));
+      const totExp = round2(months.reduce((t, m) => t + m.exp, 0));
+      const net = round2(totInc - totExp);
+      const rate = totInc > 0 ? Math.round((net / totInc) * 100) : null;
+      const maxV = Math.max(1, ...months.flatMap(m => [m.inc, m.exp]));
+      const W = 640, H = 220, padL = 8, padB = 28, bw = Math.max(6, Math.min(22, (W - padL) / Math.max(1, months.length) / 2.6));
+      const slot = (W - padL) / Math.max(1, months.length);
+      const y = (v) => H - padB - (v / maxV) * (H - padB - 14);
+      return (
+        <div data-testid="incexp-report" style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+          {viewPills}
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: '10px' }}>
+            {statBox('Income', formatMoney(totInc), '#059669', `last ${months.length} month${months.length === 1 ? '' : 's'}`)}
+            {statBox('Spending', formatMoney(totExp), '#b45309')}
+            {statBox(net >= 0 ? 'Saved' : 'Overspent', formatMoney(Math.abs(net)), net >= 0 ? '#059669' : '#dc2626', rate === null ? null : `${rate}% of income`)}
+          </div>
+          <div style={card}>
+            <div style={{ display: 'flex', gap: '14px', fontSize: '0.75rem', color: '#6b7280', marginBottom: '6px' }}>
+              <span><span style={{ display: 'inline-block', width: '10px', height: '10px', backgroundColor: '#2f9e6e', borderRadius: '2px', marginRight: '4px' }} />Income</span>
+              <span><span style={{ display: 'inline-block', width: '10px', height: '10px', backgroundColor: '#e08a3c', borderRadius: '2px', marginRight: '4px' }} />Spending</span>
+            </div>
+            <svg role="img" aria-label="Income and spending by month" viewBox={`0 0 ${W} ${H}`} style={{ width: '100%', height: 'auto' }}>
+              <line x1={padL} x2={W} y1={H - padB} y2={H - padB} stroke="#e5e7eb" />
+              {months.map((m, i) => {
+                const cx = padL + slot * i + slot / 2;
+                return (
+                  <g key={m.k}>
+                    <rect x={cx - bw - 1} y={y(m.inc)} width={bw} height={H - padB - y(m.inc)} fill="#2f9e6e" rx="2"><title>{`${m.label} income ${formatMoney(m.inc)}`}</title></rect>
+                    <rect x={cx + 1} y={y(m.exp)} width={bw} height={H - padB - y(m.exp)} fill="#e08a3c" rx="2"><title>{`${m.label} spending ${formatMoney(m.exp)}`}</title></rect>
+                    {(months.length <= 8 || i % 2 === 0) && <text x={cx} y={H - 10} textAnchor="middle" fontSize="11" fill="#6b7280">{m.label}</text>}
+                  </g>
+                );
+              })}
+            </svg>
+          </div>
+          <div style={{ ...card, overflowX: 'auto' }}>
+            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.85rem' }}>
+              <thead><tr style={{ textAlign: 'right', color: '#6b7280', fontSize: '0.72rem', textTransform: 'uppercase' }}><th style={{ textAlign: 'left', padding: '4px 0' }}>Month</th><th>Income</th><th>Spending</th><th>Net</th></tr></thead>
+              <tbody>
+                {[...months].reverse().map(m => (
+                  <tr key={m.k} style={{ textAlign: 'right', borderTop: '1px solid #f3f4f6' }}>
+                    <td style={{ textAlign: 'left', padding: '8px 0' }}>{monthLabel(m.k)}</td>
+                    <td>{formatMoney(m.inc)}</td><td>{formatMoney(m.exp)}</td>
+                    <td style={{ fontWeight: 600, color: m.net >= 0 ? '#059669' : '#dc2626' }}>{formatMoney(m.net)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      );
+    }
+
     if (view === 'networth') {
       const accs = activeAccounts;
       const monthSums = new Map(); // accountId -> Map(month -> net change)
@@ -3911,7 +4258,7 @@ export default function BudgetApp() {
                   {txSplitLines ? 'Keep it all in Ready to Assign' : 'Send some to envelopes'}
                 </button>
               )}
-              {txType === 'expense' && editingTxId && isSplitTx(transactions.find(t => t.id === editingTxId)) && (
+              {!isMobile && txType === 'expense' && editingTxId && isSplitTx(transactions.find(t => t.id === editingTxId)) && (
                 <div style={{ gridColumn: 'span 2', fontSize: '0.8rem', color: '#6b7280', padding: '6px 0' }}>
                   Split across several envelopes. Use the Split button in the list to change it. Changing the amount clears the split.
                 </div>
@@ -3941,6 +4288,26 @@ export default function BudgetApp() {
                   ))}
                 </select>
               )}
+              {isMobile && editingTxId && (() => {
+                const et = transactions.find(t => t.id === editingTxId);
+                if (!et || et.isTransfer || (et.type === 'income' && !countsTowardRTA(et))) return null;
+                const inc = et.type === 'income';
+                const open = splitTxId === et.id;
+                const label = inc ? (incomeAllocs(et).length ? 'Edit envelope split' : 'Send some to envelopes') : (isSplitTx(et) ? 'Edit split' : 'Split across envelopes');
+                return (
+                  <div data-testid="sheet-split" style={{ gridColumn: '1 / -1' }}>
+                    {!open && (
+                      <>
+                        <div style={{ fontSize: '0.78rem', color: '#6b7280', marginBottom: '6px' }}>
+                          The amount above is the whole {inc ? 'deposit' : 'purchase'}. To divide it between envelopes, use this button instead of changing the amount.
+                        </div>
+                        <button type="button" onClick={() => openSplit(et)} style={{ width: '100%', padding: '12px', borderRadius: '10px', border: '1px solid #bfdbfe', backgroundColor: '#eff6ff', color: '#1d4ed8', fontWeight: 700, fontSize: '0.95rem', cursor: 'pointer' }}>{label}</button>
+                      </>
+                    )}
+                    {open && renderSplitEditor(et)}
+                  </div>
+                );
+              })()}
               <input
                 type="date"
                 value={txDate}
@@ -4038,13 +4405,24 @@ export default function BudgetApp() {
 
         <div style={{ height: '1px', backgroundColor: 'rgba(255,255,255,0.12)', margin: '14px 0 8px' }} />
         <nav style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
-          {['new', 'accounts', 'investments', 'debts', 'import', 'trash'].filter(tab => tab !== 'investments' || activeInvestments.length === 0).map(tab =>
+          {['new', 'accounts', 'scheduled', 'payees', 'investments', 'debts', 'import', 'trash'].filter(tab => tab !== 'investments' || activeInvestments.length === 0).map(tab =>
             sideItem(tab, activeTab === tab, () => { if (tab === 'accounts') setManageAccounts(true); openTab(tab); }, tab === 'accounts' && isMobile ? 'Manage Accounts' : NAV_LABELS[tab],
-              tab === 'trash' && totalTrashCount > 0
+              tab === 'scheduled' && dueSchedules.length > 0
+                ? <span style={{ fontSize: '0.7rem', backgroundColor: '#d97706', color: 'white', borderRadius: '10px', padding: '1px 7px' }}>{dueSchedules.length} due</span>
+                : tab === 'trash' && totalTrashCount > 0
                 ? <span style={{ fontSize: '0.7rem', backgroundColor: 'rgba(255,255,255,0.18)', color: 'white', borderRadius: '10px', padding: '1px 7px' }}>{totalTrashCount}</span>
                 : null,
               { small: true })
           )}
+          {(() => {
+            const standalone = (window.matchMedia && window.matchMedia('(display-mode: standalone)').matches) || window.navigator.standalone;
+            const ios = /iphone|ipad|ipod/i.test(window.navigator.userAgent || '');
+            if (standalone || (!installEvt && !ios)) return null;
+            return sideItem('install', false, async () => {
+              if (installEvt) { try { installEvt.prompt(); await installEvt.userChoice; } catch (err) { /* ignore */ } setInstallEvt(null); }
+              else showNotification('On iPhone: tap the Share button, then "Add to Home Screen".');
+            }, 'Install app', null, { small: true });
+          })()}
         </nav>
 
         <div style={{ marginTop: 'auto', padding: '16px 10px 0 10px', borderTop: '1px solid rgba(255,255,255,0.12)' }}>
@@ -4724,6 +5102,136 @@ export default function BudgetApp() {
         </div>
       )}
 
+      {/* PAYEES TAB */}
+      {activeTab === 'payees' && (
+        <div data-testid="payees-tab" style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+          <div style={{ backgroundColor: 'white', padding: '14px', borderRadius: '10px', boxShadow: '0 1px 3px rgba(0,0,0,0.1)' }}>
+            <div style={{ fontSize: '0.8rem', color: '#6b7280', marginBottom: '8px' }}>Rename a payee to fix a spelling, or merge duplicates (like "Kroger" and "KROGER #123") into one. Every transaction with that payee changes.</div>
+            <input type="search" placeholder="Search payees…" aria-label="Search payees" value={payeeSearch} onChange={e => setPayeeSearch(e.target.value)} style={{ width: '100%', boxSizing: 'border-box', padding: '9px', border: '1px solid #d1d5db', borderRadius: '8px', marginBottom: '6px' }} />
+            {payeeList.filter(p => p.name.toLowerCase().includes(payeeSearch.trim().toLowerCase())).map(p => (
+              <div key={p.name} data-testid="payee-row" style={{ padding: '10px 0', borderTop: '1px solid #f3f4f6' }}>
+                {payeeEdit && payeeEdit.name === p.name ? (
+                  <form onSubmit={e => { e.preventDefault(); renamePayee(p.name, payeeEdit.value); }} style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
+                    <input autoFocus aria-label={`New name for ${p.name}`} value={payeeEdit.value} onChange={e => setPayeeEdit({ ...payeeEdit, value: e.target.value })} style={{ flex: '1 1 160px', padding: '8px', border: '1px solid #d1d5db', borderRadius: '6px' }} />
+                    <button type="submit" style={{ backgroundColor: '#2563eb', color: 'white', border: 'none', borderRadius: '6px', padding: '8px 14px', fontWeight: 'bold', cursor: 'pointer' }}>Save</button>
+                    <button type="button" onClick={() => setPayeeEdit(null)} style={{ background: 'none', border: 'none', color: '#6b7280', cursor: 'pointer' }}>Cancel</button>
+                  </form>
+                ) : (
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
+                    <div style={{ minWidth: 0 }}>
+                      <div style={{ fontWeight: 600, wordBreak: 'break-word' }}>{p.name}</div>
+                      <div style={{ fontSize: '0.75rem', color: '#6b7280' }}>{p.count} transaction{p.count === 1 ? '' : 's'}</div>
+                    </div>
+                    <div style={{ display: 'flex', gap: '6px', alignItems: 'center' }}>
+                      <button onClick={() => setPayeeEdit({ name: p.name, value: p.name })} aria-label={`Rename ${p.name}`} style={{ background: 'white', color: '#2563eb', border: '1px solid #bfdbfe', borderRadius: '6px', padding: isMobile ? '9px 12px' : '4px 10px', cursor: 'pointer', fontSize: '0.8rem', fontWeight: 600 }}>Rename</button>
+                      <select value="" onChange={e => { if (e.target.value) renamePayee(p.name, e.target.value); }} aria-label={`Merge ${p.name} into`} style={{ padding: isMobile ? '9px' : '4px', border: '1px solid #d1d5db', borderRadius: '6px', fontSize: '0.8rem', maxWidth: '140px' }}>
+                        <option value="">Merge into…</option>
+                        {payeeList.filter(o => o.name !== p.name).map(o => <option key={o.name} value={o.name}>{o.name}</option>)}
+                      </select>
+                    </div>
+                  </div>
+                )}
+              </div>
+            ))}
+            {payeeList.length === 0 && <p style={{ color: '#6b7280' }}>No payees yet.</p>}
+          </div>
+        </div>
+      )}
+
+      {/* SCHEDULED TAB */}
+      {activeTab === 'scheduled' && (
+        <div data-testid="scheduled-tab" style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
+          {dueSchedules.length > 0 && (
+            <div data-testid="sched-due" style={{ backgroundColor: '#fffbeb', border: '1px solid #fcd34d', borderRadius: '10px', padding: '12px 14px' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '8px', flexWrap: 'wrap', marginBottom: '8px' }}>
+                <strong style={{ color: '#92400e' }}>Due now</strong>
+                <button onClick={() => { const n = postDue(dueSchedules); showNotification(`Posted ${n} scheduled ${n === 1 ? 'transaction' : 'transactions'}.`); }} style={{ backgroundColor: '#d97706', color: 'white', border: 'none', borderRadius: '6px', padding: '6px 12px', fontWeight: 'bold', cursor: 'pointer', fontSize: '0.85rem' }}>Post all</button>
+              </div>
+              {dueSchedules.map(sc => {
+                const n = dueDates(sc).dates.length;
+                return (
+                  <div key={sc.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '8px', padding: '8px 0', borderTop: '1px solid #fde68a', flexWrap: 'wrap' }}>
+                    <div style={{ minWidth: 0 }}>
+                      <div style={{ fontWeight: 600 }}>{sc.payee} · {plainMoney(sc.amount)}</div>
+                      <div style={{ fontSize: '0.75rem', color: '#92400e' }}>{n > 1 ? `${n} occurrences due, since ` : 'Due '}{formatDate(sc.nextDate, 'readable')}</div>
+                    </div>
+                    <div style={{ display: 'flex', gap: '6px' }}>
+                      <button onClick={() => { postDue([sc]); showNotification(`Posted ${sc.payee}.`); }} aria-label={`Post ${sc.payee}`} style={{ backgroundColor: '#2563eb', color: 'white', border: 'none', borderRadius: '6px', padding: isMobile ? '10px 14px' : '5px 12px', cursor: 'pointer', fontWeight: 'bold', fontSize: '0.85rem' }}>Post</button>
+                      <button onClick={() => skipDue(sc)} aria-label={`Skip ${sc.payee}`} style={{ backgroundColor: 'white', color: '#374151', border: '1px solid #d1d5db', borderRadius: '6px', padding: isMobile ? '10px 14px' : '5px 12px', cursor: 'pointer', fontSize: '0.85rem' }}>Skip</button>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+
+          {schedForm ? (
+            <form onSubmit={saveSched} style={{ backgroundColor: 'white', padding: '14px', borderRadius: '10px', boxShadow: '0 1px 3px rgba(0,0,0,0.1)', display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: '10px' }}>
+              <h3 style={{ margin: 0, fontSize: '1rem', gridColumn: '1 / -1' }}>{schedForm.id ? 'Edit schedule' : 'New scheduled transaction'}</h3>
+              <input type="text" placeholder="Payee" aria-label="Scheduled payee" list="payee-suggestions" value={schedForm.payee} onChange={e => setSchedForm({ ...schedForm, payee: e.target.value })} style={{ padding: '8px', border: '1px solid #d1d5db', borderRadius: '6px', gridColumn: 'span 2' }} />
+              <input type="text" inputMode="decimal" placeholder="Amount ($)" aria-label="Scheduled amount" value={schedForm.amount} onChange={e => setSchedForm({ ...schedForm, amount: e.target.value })} style={{ padding: '8px', border: '1px solid #d1d5db', borderRadius: '6px' }} />
+              <select aria-label="Scheduled type" value={schedForm.type} onChange={e => setSchedForm({ ...schedForm, type: e.target.value })} style={{ padding: '8px', border: '1px solid #d1d5db', borderRadius: '6px' }}>
+                <option value="expense">Expense</option>
+                <option value="income">Income</option>
+              </select>
+              <select aria-label="Scheduled account" value={schedForm.accountId} onChange={e => setSchedForm({ ...schedForm, accountId: e.target.value })} style={{ padding: '8px', border: '1px solid #d1d5db', borderRadius: '6px' }}>
+                <option value="">Select account</option>
+                {accountChoices(schedForm.accountId).map(a => <option key={a.id} value={a.id}>{a.name}</option>)}
+              </select>
+              {schedForm.type === 'expense' && (
+                <select aria-label="Scheduled envelope" value={schedForm.envelopeId} onChange={e => setSchedForm({ ...schedForm, envelopeId: e.target.value })} style={{ padding: '8px', border: '1px solid #d1d5db', borderRadius: '6px' }}>
+                  <option value="">Envelope (optional)</option>
+                  {envelopeChoices.map(c => (
+                    <optgroup key={c.label} label={c.label}>{c.list.map(e => <option key={e.id} value={e.id}>{e.name}</option>)}</optgroup>
+                  ))}
+                </select>
+              )}
+              <select aria-label="Repeats" value={schedForm.frequency} onChange={e => setSchedForm({ ...schedForm, frequency: e.target.value })} style={{ padding: '8px', border: '1px solid #d1d5db', borderRadius: '6px' }}>
+                {SCHED_FREQS.map(([k, l]) => <option key={k} value={k}>{l}</option>)}
+              </select>
+              <div>
+                <label style={{ display: 'block', fontSize: '0.72rem', color: '#6b7280' }}>Next date</label>
+                <input type="date" aria-label="Next date" value={schedForm.nextDate} onChange={e => setSchedForm({ ...schedForm, nextDate: e.target.value })} style={{ width: '100%', padding: '8px', border: '1px solid #d1d5db', borderRadius: '6px', boxSizing: 'border-box' }} />
+              </div>
+              <input type="text" placeholder="Notes" value={schedForm.notes} onChange={e => setSchedForm({ ...schedForm, notes: e.target.value })} style={{ padding: '8px', border: '1px solid #d1d5db', borderRadius: '6px' }} />
+              <label style={{ gridColumn: '1 / -1', display: 'flex', alignItems: 'center', gap: '8px', fontSize: '0.88rem' }}>
+                <input type="checkbox" checked={!!schedForm.autoPost} onChange={e => setSchedForm({ ...schedForm, autoPost: e.target.checked })} />
+                Post automatically when it comes due (otherwise it waits for you to approve it)
+              </label>
+              <div style={{ gridColumn: '1 / -1', display: 'flex', gap: '8px' }}>
+                <button type="submit" style={{ flex: 1, backgroundColor: '#2563eb', color: 'white', border: 'none', padding: '10px', borderRadius: '6px', fontWeight: 'bold', cursor: 'pointer' }}>{schedForm.id ? 'Save changes' : 'Add schedule'}</button>
+                <button type="button" onClick={() => setSchedForm(null)} style={{ backgroundColor: '#e5e7eb', color: '#374151', border: 'none', padding: '10px 16px', borderRadius: '6px', fontWeight: 'bold', cursor: 'pointer' }}>Cancel</button>
+              </div>
+            </form>
+          ) : (
+            <button onClick={() => setSchedForm({ ...emptySched(), accountId: (activeAccounts.find(a => !a.isHidden) || {}).id || '' })} style={{ alignSelf: 'flex-start', backgroundColor: '#2563eb', color: 'white', border: 'none', padding: '10px 16px', borderRadius: '8px', fontWeight: 'bold', cursor: 'pointer', fontSize: '0.9rem' }}>+ New scheduled transaction</button>
+          )}
+
+          <div style={{ backgroundColor: 'white', padding: '6px 14px', borderRadius: '10px', boxShadow: '0 1px 3px rgba(0,0,0,0.1)' }}>
+            {activeScheduled.length === 0 && <p style={{ color: '#6b7280', fontSize: '0.9rem' }}>Nothing scheduled yet. Add rent, paychecks or subscriptions and they will post on their own or wait for your OK.</p>}
+            {[...activeScheduled].sort((a, b) => a.nextDate.localeCompare(b.nextDate)).map(sc => {
+              const acc = accounts.find(a => a.id === sc.accountId);
+              const env = envelopes.find(e => e.id === sc.envelopeId);
+              return (
+                <div key={sc.id} data-testid="sched-row" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '8px', padding: '12px 0', borderBottom: '1px solid #f3f4f6' }}>
+                  <div style={{ minWidth: 0 }}>
+                    <div style={{ fontWeight: 600 }}>{sc.payee}</div>
+                    <div style={{ fontSize: '0.75rem', color: '#6b7280' }}>
+                      {(SCHED_FREQS.find(f => f[0] === sc.frequency) || [])[1]} · next {formatDate(sc.nextDate, 'readable')} · {acc ? acc.name : 'no account'}{env ? ` · ${env.name}` : ''} · {sc.autoPost ? 'posts automatically' : 'asks first'}
+                    </div>
+                  </div>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexShrink: 0 }}>
+                    <strong style={{ color: sc.type === 'income' ? '#059669' : '#1f2937' }}>{sc.type === 'income' ? '+' : '-'}{plainMoney(sc.amount).replace('-', '')}</strong>
+                    <button onClick={() => setSchedForm({ ...sc, amount: String(sc.amount) })} aria-label={`Edit schedule ${sc.payee}`} style={{ background: 'none', border: 'none', color: '#2563eb', cursor: 'pointer', padding: '6px' }}>Edit</button>
+                    <button onClick={() => { setScheduled(prev => prev.filter(x => x.id !== sc.id)); showNotification('Schedule removed. Transactions already posted stay.'); }} aria-label={`Remove schedule ${sc.payee}`} style={{ background: 'none', border: 'none', color: '#dc2626', cursor: 'pointer', padding: '6px' }}>Remove</button>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
       {/* ACCOUNTS TAB */}
       {activeTab === 'accounts' && isMobile && !manageAccounts && (
         <div data-testid="accounts-overview" style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
@@ -5171,7 +5679,7 @@ export default function BudgetApp() {
       {activeTab === 'reports' && (() => {
         const viewPills = (
           <div style={{ backgroundColor: 'white', padding: '10px 14px', borderRadius: '10px', boxShadow: '0 1px 3px rgba(0,0,0,0.1)', display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
-            {[['spending', 'Spending'], ['networth', 'Net Worth'], ['age', 'Age of Money']].map(([key, label]) => (
+            {[['spending', 'Spending'], ['incexp', 'Income vs Expense'], ['networth', 'Net Worth'], ['age', 'Age of Money']].map(([key, label]) => (
               <button
                 key={key}
                 onClick={() => setReportView(key)}
@@ -5183,7 +5691,7 @@ export default function BudgetApp() {
             ))}
           </div>
         );
-        if (reportView === 'networth' || reportView === 'age') return renderOtherReport(reportView, viewPills);
+        if (reportView === 'networth' || reportView === 'age' || reportView === 'incexp') return renderOtherReport(reportView, viewPills);
         const ADJ = 'Reconciliation Adjustment'; // bookkeeping entries, not real spending
         const reportTx = activeTransactions.filter(t => t.payee !== ADJ && !t.isTransfer && /^\d{4}-\d{2}-\d{2}$/.test(t.date || ''));
         const isMonth = reportMode === 'month';
@@ -5710,7 +6218,8 @@ export default function BudgetApp() {
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px', flexWrap: 'wrap', gap: '8px' }}>
               <h3 style={{ margin: 0, fontSize: '1rem' }}>All Transactions</h3>
               {selectedTxIds.length > 0 && (
-                <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap', alignItems: 'center' }}>
+                <div data-testid="bulk-bar" style={isMobile ? { position: 'fixed', left: 0, right: 0, bottom: 'calc(58px + env(safe-area-inset-bottom))', zIndex: 45, backgroundColor: 'white', borderTop: '1px solid #e3e6eb', boxShadow: '0 -4px 14px rgba(0,0,0,0.12)', padding: '10px 12px', display: 'flex', gap: '8px', flexWrap: 'wrap', alignItems: 'center' } : { display: 'flex', gap: '6px', flexWrap: 'wrap', alignItems: 'center' }}>
+                {isMobile && <strong style={{ fontSize: '0.9rem' }}>{selectedTxIds.length} selected</strong>}
                 {selectedTxIds.length === 2 && (
                   <button
                     onClick={handleLinkSelected}
@@ -5753,6 +6262,7 @@ export default function BudgetApp() {
                 aria-label="Search transactions"
                 style={{ flex: '2 1 180px', padding: '7px', border: '1px solid #d1d5db', borderRadius: '6px', fontSize: '0.85rem' }}
               />
+              {isMobile && <button type="button" onClick={() => { setSelectMode(v => !v); setSelectedTxIds([]); }} aria-pressed={selectMode} style={{ padding: '8px 12px', border: '1px solid #d1d5db', borderRadius: '8px', backgroundColor: selectMode ? '#2f6fb3' : 'white', color: selectMode ? 'white' : '#2f6fb3', fontWeight: 600, fontSize: '0.85rem', cursor: 'pointer' }}>{selectMode ? 'Done' : 'Select'}</button>}
               {isMobile && <button type="button" onClick={() => setTxFiltersOpen(v => !v)} aria-expanded={txFiltersOpen} style={{ padding: '8px 12px', border: '1px solid #d1d5db', borderRadius: '8px', backgroundColor: txFiltersActive ? '#e8f0fa' : 'white', color: '#2f6fb3', fontWeight: 600, fontSize: '0.85rem', cursor: 'pointer' }}>Filters{txFiltersActive ? ' •' : ''}</button>}
               {(!isMobile || txFiltersOpen) && <>
               <select value={txFilterAccount} onChange={e => setTxFilterAccount(e.target.value)} aria-label="Filter by account" style={{ flex: '1 1 110px', padding: '7px', border: '1px solid #d1d5db', borderRadius: '6px', fontSize: '0.85rem' }}>
@@ -5793,7 +6303,7 @@ export default function BudgetApp() {
               )}
             </div>
 
-            {!isMobile && visibleTransactions.length > 0 && (
+            {(!isMobile || selectMode) && visibleTransactions.length > 0 && (
               <label style={{ display: 'flex', alignItems: 'center', gap: '8px', paddingBottom: '8px', borderBottom: '1px solid #e5e7eb', fontSize: '0.85rem', color: '#6b7280', cursor: 'pointer' }}>
                 <input
                   type="checkbox"
@@ -5824,15 +6334,21 @@ export default function BudgetApp() {
 
                     return (
                       <React.Fragment key={tx.id}>
-                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: isMobile ? '12px 0' : '8px 0', borderBottom: unlockAskId === tx.id ? 'none' : '1px solid #f3f4f6', gap: '8px' }}>
+                      <div style={{ position: 'relative', overflow: isMobile ? 'hidden' : 'visible' }}>
+                      {isMobile && swipe && swipe.id === tx.id && (
+                        <div aria-hidden="true" style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: swipe.dx > 0 ? 'flex-start' : 'flex-end', padding: '0 18px', backgroundColor: swipe.dx > 0 ? '#2f9e6e' : '#dc2626', color: 'white', fontWeight: 700 }}>
+                          {swipe.dx > 0 ? ((tx.cleared || tx.reconciled) ? 'Uncleared' : 'Cleared ✓') : 'Delete'}
+                        </div>
+                      )}
+                      <div {...(isMobile ? rowTouch(tx, locked) : {})} style={{ position: 'relative', backgroundColor: 'white', transform: isMobile && swipe && swipe.id === tx.id ? `translateX(${swipe.dx}px)` : 'none', transition: swipe && swipe.id === tx.id ? 'none' : 'transform 0.15s', display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: isMobile ? '12px 0' : '8px 0', borderBottom: unlockAskId === tx.id ? 'none' : '1px solid #f3f4f6', gap: '8px' }}>
                         <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flex: 1, minWidth: 0 }}>
-                          {!isMobile && <input
+                          {(!isMobile || selectMode) && <input
                             type="checkbox"
                             checked={isSelected}
                             onChange={() => handleToggleSelectTx(tx.id)}
                             style={{ cursor: 'pointer', flexShrink: 0 }}
                           />}
-                          <div onClick={isMobile ? () => (locked ? setUnlockAskId(tx.id) : startEditTx(tx)) : undefined} style={{ minWidth: 0, flex: 1, cursor: isMobile ? 'pointer' : 'default' }}>
+                          <div onClick={isMobile ? () => (selectMode ? handleToggleSelectTx(tx.id) : locked ? setUnlockAskId(tx.id) : startEditTx(tx)) : undefined} style={{ minWidth: 0, flex: 1, cursor: isMobile ? 'pointer' : 'default' }}>
                             <div style={{ fontWeight: '600', fontSize: '0.9rem', wordBreak: 'break-word' }}>{tx.payee}</div>
                             <div style={{ fontSize: '0.75rem', color: '#6b7280', wordBreak: 'break-word' }}>
                               {acc?.name} {tx.notes ? `• ${tx.notes}` : ''}
@@ -5942,84 +6458,7 @@ export default function BudgetApp() {
                                 Remove split
                               </button>
                             )}
-                            {splitTxId === tx.id && (() => {
-                              const left = splitRemaining(tx.amount);
-                              const inc = tx.type === 'income';
-                              return (
-                                <div data-testid="split-editor" style={{ marginTop: '8px', padding: '10px', backgroundColor: '#f9fafb', border: '1px solid #e5e7eb', borderRadius: '8px' }}>
-                                  <div style={{ fontSize: '0.8rem', fontWeight: 'bold', marginBottom: '6px' }}>
-                                    {inc ? `Send part of $${Number(tx.amount).toFixed(2)} straight to envelopes` : `Split $${Number(tx.amount).toFixed(2)} across envelopes`}
-                                  </div>
-                                  {splitDraft.map((line, i) => (
-                                    <div key={i} style={{ display: 'flex', gap: '6px', marginBottom: '6px', alignItems: 'center' }}>
-                                      <select
-                                        value={line.envelopeId}
-                                        onChange={e => updateSplitLine(i, { envelopeId: e.target.value })}
-                                        aria-label={`Split line ${i + 1} envelope`}
-                                        style={{ flex: '1 1 auto', minWidth: 0, padding: '5px', border: '1px solid #d1d5db', borderRadius: '6px', fontSize: '0.8rem' }}
-                                      >
-                                        <option value="">{inc ? 'Choose envelope' : 'No envelope'}</option>
-                                        {line.envelopeId && envelopes.find(e => e.id === line.envelopeId && (e.isDeleted || e.isHidden)) && (
-                                          <option value={line.envelopeId}>{envelopes.find(e => e.id === line.envelopeId).name} ({envelopes.find(e => e.id === line.envelopeId).isDeleted ? 'deleted' : 'hidden'})</option>
-                                        )}
-                                        {envelopeChoices.map(c => (
-                                          <optgroup key={c.label} label={c.label}>
-                                            {c.list.map(e => (
-                                              <option key={e.id} value={e.id}>{e.name}</option>
-                                            ))}
-                                          </optgroup>
-                                        ))}
-                                      </select>
-                                      <SplitAmountInput value={line.amount} onChange={v => updateSplitLine(i, { amount: v })} ariaLabel={`Split line ${i + 1} amount`} width="110px" />
-                                      <button
-                                        type="button"
-                                        onClick={() => fillSplitRemainder(i, tx.amount)}
-                                        title="Put the remaining amount on this line"
-                                        aria-label={`Fill remainder on line ${i + 1}`}
-                                        style={{ background: 'none', border: '1px solid #d1d5db', borderRadius: '6px', cursor: 'pointer', padding: '4px 6px', fontSize: '0.7rem', color: '#374151' }}
-                                      >
-                                        Rest
-                                      </button>
-                                      {splitDraft.length > (inc ? 1 : 2) && (
-                                        <button
-                                          type="button"
-                                          onClick={() => removeSplitLine(i)}
-                                          aria-label={`Remove split line ${i + 1}`}
-                                          style={{ background: 'none', border: 'none', color: '#dc2626', cursor: 'pointer', padding: '2px 4px' }}
-                                        >
-                                          ✕
-                                        </button>
-                                      )}
-                                    </div>
-                                  ))}
-                                  <div style={{ fontSize: '0.8rem', marginBottom: '8px', color: inc ? (left < -0.005 ? '#b45309' : '#059669') : Math.abs(left) < 0.005 ? '#059669' : '#b45309' }}>
-                                    {inc
-                                      ? (left < -0.005 ? `$${Math.abs(left).toFixed(2)} over` : Math.abs(left) < 0.005 ? 'All of it goes to envelopes' : `$${left.toFixed(2)} stays in Ready to Assign`)
-                                      : Math.abs(left) < 0.005
-                                      ? 'Fully assigned'
-                                      : left > 0
-                                        ? `$${left.toFixed(2)} left to assign`
-                                        : `$${Math.abs(left).toFixed(2)} over`}
-                                  </div>
-                                  <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
-                                    <button type="button" onClick={addSplitLine} style={{ background: 'white', border: '1px solid #d1d5db', borderRadius: '6px', padding: '5px 10px', cursor: 'pointer', fontSize: '0.8rem' }}>
-                                      + Add line
-                                    </button>
-                                    <button
-                                      type="button"
-                                      onClick={handleSaveSplit}
-                                      disabled={inc ? left < -0.005 : Math.abs(left) >= 0.005}
-                                      style={{ backgroundColor: (inc ? left < -0.005 : Math.abs(left) >= 0.005) ? '#9ca3af' : '#2563eb', color: 'white', border: 'none', borderRadius: '6px', padding: '5px 12px', cursor: (inc ? left < -0.005 : Math.abs(left) >= 0.005) ? 'not-allowed' : 'pointer', fontSize: '0.8rem', fontWeight: 'bold' }}
-                                    >
-                                      {inc ? 'Save' : 'Save split'}
-                                    </button>
-                                    <button type="button" onClick={closeSplit} style={{ background: 'none', border: 'none', color: '#6b7280', cursor: 'pointer', fontSize: '0.8rem' }}>
-                                      Cancel
-                                    </button>
-                                  </div>
-                                </div>
-                              );
-                            })()}
+                            {splitTxId === tx.id && !(isMobile && txSheetOpen) && renderSplitEditor(tx)}
                           </div>
                         </div>
                         <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexShrink: 0 }}>
@@ -6055,6 +6494,7 @@ export default function BudgetApp() {
                             ✕
                           </button>}
                         </div>
+                      </div>
                       </div>
                       {unlockAskId === tx.id && locked && (
                         <div data-testid="unlock-ask" style={{ backgroundColor: '#fffbeb', border: '1px solid #fcd34d', color: '#92400e', borderRadius: '8px', padding: '8px 10px', margin: '0 0 6px', fontSize: '0.8rem', borderBottom: '1px solid #fcd34d' }}>
@@ -6154,6 +6594,46 @@ export default function BudgetApp() {
                 >
                   Delete
                 </button>
+                {(() => {
+                  const extra = Number(debt.extraPayment) || 0;
+                  const base = loanPayoff(debt.balance, debt.APR, Number(debt.minimumPayment) || 0);
+                  const plan = loanPayoff(debt.balance, debt.APR, (Number(debt.minimumPayment) || 0) + extra);
+                  const when = (months) => { const dt = new Date(); dt.setMonth(dt.getMonth() + months); return `${REPORT_MONTHS[dt.getMonth()]} ${dt.getFullYear()}`; };
+                  const line = (r) => r.done ? 'Paid off' : r.never ? 'The payment does not cover the interest, so the balance never shrinks.' : `Paid off ${when(r.months)} (${r.months} ${r.months === 1 ? 'month' : 'months'}), ${formatMoney(r.interest)} total interest`;
+                  return (
+                    <div data-testid="payoff" style={{ flexBasis: '100%', borderTop: '1px solid #f3f4f6', paddingTop: '10px', display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                      <div style={{ fontSize: '0.85rem', color: '#374151' }}>{line(plan)}</div>
+                      {extra > 0 && !base.never && !base.done && !plan.never && (
+                        <div style={{ fontSize: '0.78rem', color: '#059669' }}>
+                          Paying {formatMoney(extra)} extra saves {formatMoney(base.interest - plan.interest)} in interest and {base.months - plan.months} {base.months - plan.months === 1 ? 'month' : 'months'}.
+                        </div>
+                      )}
+                      <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap', alignItems: 'center' }}>
+                        <label style={{ fontSize: '0.78rem', color: '#6b7280', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                          Extra per month $
+                          <input type="number" min="0" step="0.01" aria-label={`Extra payment ${debt.name}`} value={debt.extraPayment || ''} onChange={e => setDebts(prev => prev.map(d => (d.id === debt.id ? { ...d, extraPayment: e.target.value === '' ? 0 : Number(e.target.value) } : d)))} style={{ width: '90px', padding: '6px', border: '1px solid #d1d5db', borderRadius: '6px' }} />
+                        </label>
+                        <label style={{ fontSize: '0.78rem', color: '#6b7280', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                          Record a payment $
+                          <input type="number" min="0" step="0.01" aria-label={`Payment amount ${debt.name}`} value={debtPay[debt.id] || ''} onChange={e => setDebtPay(prev => ({ ...prev, [debt.id]: e.target.value }))} style={{ width: '90px', padding: '6px', border: '1px solid #d1d5db', borderRadius: '6px' }} />
+                        </label>
+                        <button
+                          aria-label={`Record payment ${debt.name}`}
+                          onClick={() => {
+                            const amt = Number(debtPay[debt.id]);
+                            if (!(amt > 0)) return;
+                            setDebts(prev => prev.map(d => (d.id === debt.id ? { ...d, balance: Math.max(0, Math.round((Number(d.balance) - amt) * 100) / 100) } : d)));
+                            setDebtPay(prev => ({ ...prev, [debt.id]: '' }));
+                            showNotification(`Recorded a ${formatMoney(amt)} payment on ${debt.name}.`);
+                          }}
+                          style={{ backgroundColor: '#2563eb', color: 'white', border: 'none', borderRadius: '6px', padding: '7px 12px', cursor: 'pointer', fontWeight: 'bold', fontSize: '0.8rem' }}
+                        >
+                          Record
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })()}
               </div>
             ))}
           </div>
@@ -6429,7 +6909,7 @@ export default function BudgetApp() {
         </BottomSheet>
       )}
       {/* Phone layout: floating add button and bottom tab bar */}
-      {isMobile && ['budget', 'accounts', 'transactions'].includes(activeTab) && (
+      {isMobile && ['budget', 'accounts', 'transactions'].includes(activeTab) && !selectMode && (
         <button
           onClick={() => { cancelEditTx(); if (txFilterAccount) setTxAccountId(txFilterAccount); setTxSheetOpen(true); }}
           aria-label="Add transaction"
