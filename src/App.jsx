@@ -1669,6 +1669,7 @@ export default function BudgetApp() {
   const [kpDraft, setKpDraft] = useState(null); // keypad text for the selected envelope's assigned amount
   const [kpAuto, setKpAuto] = useState(false);
   const [pickYear, setPickYear] = useState(null);
+  const [ctxMenu, setCtxMenu] = useState(null); // desktop right-click menu: { kind: 'env'|'group', id, name, x, y }
   const [assignOpen, setAssignOpen] = useState(false);
   const [mTxId, setMTxId] = useState(null);
   const [mTxMenu, setMTxMenu] = useState(null); // 'type' | 'cat' | 'flag' | null
@@ -6202,6 +6203,55 @@ export default function BudgetApp() {
       <div className="m-dark">{node}</div>
     </div>
   ));
+
+  const submitCtxMenu = () => {
+    if (!ctxMenu) return;
+    const name = ctxMenu.name.trim();
+    if (ctxMenu.kind === 'env') {
+      const env = envelopes.find(e => e.id === ctxMenu.id);
+      if (!env) { setCtxMenu(null); return; }
+      if (!name) return;
+      if (name !== env.name) {
+        if (envelopes.some(e => !e.isDeleted && e.id !== env.id && e.group === env.group && e.name.trim().toLowerCase() === name.toLowerCase())) { showNotification(`'${env.group}' already has an envelope named '${name}'.`); return; }
+        setEnvelopes(envelopes.map(e => (e.id === env.id ? { ...e, name } : e)));
+        showNotification(`Renamed to '${name}'.`);
+      }
+    } else {
+      const old = ctxMenu.id;
+      if (!name) return;
+      if (name !== old) {
+        if (groups.some(g => g !== old && g.toLowerCase() === name.toLowerCase())) { showNotification(`A group named '${name}' already exists.`); return; }
+        setGroups(groups.map(g => (g === old ? name : g)));
+        setEnvelopes(envelopes.map(e => (e.group === old ? { ...e, group: name } : e)));
+        setCollapsedGroups(c => { if (!(old in c)) return c; const n = { ...c }; n[name] = n[old]; delete n[old]; return n; });
+        showNotification(`Group renamed to '${name}'.`);
+      }
+    }
+    setCtxMenu(null);
+  };
+  const renderCtxMenu = () => {
+    if (!ctxMenu) return null;
+    const env = ctxMenu.kind === 'env' ? envelopes.find(e => e.id === ctxMenu.id) : null;
+    const pill = (bg, fg) => ({ backgroundColor: bg, color: fg, border: 'none', borderRadius: '10px', padding: '9px 18px', fontWeight: 600, cursor: 'pointer', fontSize: '0.92rem' });
+    return (
+      <>
+        <div onClick={() => setCtxMenu(null)} onContextMenu={(e) => { e.preventDefault(); setCtxMenu(null); }} style={{ position: 'fixed', inset: 0, zIndex: 70 }} />
+        <form role="dialog" aria-label={ctxMenu.kind === 'env' ? 'Edit category' : 'Edit category group'} data-testid="ctx-menu" onSubmit={e => { e.preventDefault(); submitCtxMenu(); }} onKeyDown={e => { if (e.key === 'Escape') setCtxMenu(null); }} style={{ position: 'fixed', top: `${ctxMenu.y + 10}px`, left: `${ctxMenu.x}px`, zIndex: 71, width: '390px', backgroundColor: 'white', borderRadius: '14px', boxShadow: '0 12px 36px rgba(0,0,0,0.25)', padding: '14px', boxSizing: 'border-box' }}>
+          <span aria-hidden="true" style={{ position: 'absolute', top: '-6px', left: '60px', width: '12px', height: '12px', backgroundColor: 'white', transform: 'rotate(45deg)' }} />
+          <input autoFocus onFocus={e => e.target.select()} value={ctxMenu.name} onChange={e => setCtxMenu({ ...ctxMenu, name: e.target.value })} aria-label={ctxMenu.kind === 'env' ? 'Category name' : 'Group name'} style={{ width: '100%', boxSizing: 'border-box', padding: '10px', border: '2px solid #5b2bf0', borderRadius: '8px', fontSize: '1rem' }} />
+          <div style={{ display: 'flex', gap: '8px', marginTop: '14px', alignItems: 'center' }}>
+            {ctxMenu.kind === 'env' && env && !env.isHidden && <button type="button" onClick={() => { const e0 = env; setCtxMenu(null); requestHideEnvelope(e0); }} style={pill('#ece8ff', '#4b32c3')}>Hide</button>}
+            {ctxMenu.kind === 'env' && env && env.isHidden && <button type="button" onClick={() => { const e0 = env; setCtxMenu(null); handleUnhideEnvelope(e0); }} style={pill('#ece8ff', '#4b32c3')}>Unhide</button>}
+            <button type="button" onClick={() => { const k = ctxMenu; setCtxMenu(null); if (k.kind === 'env') handleSoftDeleteEnvelope(k.id); else if (window.confirm(`Delete group '${k.id}' and its envelopes?`)) handleRemoveGroup(k.id); }} style={pill('#fde8e8', '#c81e1e')}>Delete</button>
+            <div style={{ flex: 1 }} />
+            <button type="button" onClick={() => setCtxMenu(null)} style={pill('#ece8ff', '#4b32c3')}>Cancel</button>
+            <button type="submit" style={{ ...pill('#5b2bf0', 'white'), padding: '9px 24px', fontWeight: 700 }}>OK</button>
+          </div>
+        </form>
+      </>
+    );
+  };
+
   const MOBILE_TABS = [['budget', 'Plan', '◔'], ['transactions', 'Spending', '$'], ['accounts', 'Accounts', '▦'], ['reports', 'Reflect', '◭']];
 
   if (session === undefined) {
@@ -6222,6 +6272,7 @@ export default function BudgetApp() {
 
       {/* Side menu */}
       {!isMobile && (sidebarOpen ? deskSidebar : deskRail)}
+      {!isMobile && renderCtxMenu()}
       {isMobile && <aside
         style={{
           width: '240px',
@@ -6621,7 +6672,7 @@ export default function BudgetApp() {
                 ref={el => { groupRefs.current[groupName] = el; }}
                 style={{ backgroundColor: 'white', borderRadius: '8px', padding: 0, border: '1px solid #e3e6eb', overflow: 'hidden', ...dragStyle }}
               >
-                <div style={{ display: 'grid', gridTemplateColumns: isMobile ? 'minmax(0,1fr) auto' : '22px minmax(0,1fr) 118px 104px 124px', alignItems: 'center', columnGap: '10px', backgroundColor: isMobile ? '#f1f3f6' : '#f9f6f2', padding: isMobile ? '8px 12px' : '9px 14px', borderBottom: '1px solid #ece8e0' }}>
+                <div onContextMenu={isMobile ? undefined : (e) => { e.preventDefault(); const r = e.currentTarget.getBoundingClientRect(); setCtxMenu({ kind: 'group', id: groupName, name: groupName, x: Math.min(Math.max(8, e.clientX - 40), window.innerWidth - 400), y: r.bottom }); }} style={{ display: 'grid', gridTemplateColumns: isMobile ? 'minmax(0,1fr) auto' : '22px minmax(0,1fr) 118px 104px 124px', alignItems: 'center', columnGap: '10px', backgroundColor: isMobile ? '#f1f3f6' : '#f9f6f2', padding: isMobile ? '8px 12px' : '9px 14px', borderBottom: '1px solid #ece8e0' }}>
                   {!isMobile && <input type="checkbox" aria-label={`Select group ${groupName}`} style={{ accentColor: '#4b32c3', cursor: 'pointer' }} readOnly />}
                   <div style={{ display: 'flex', alignItems: 'center', minWidth: 0, gap: '4px' }}>
                   {groups.length > 1 && (
@@ -6693,7 +6744,7 @@ export default function BudgetApp() {
 
                         const selected = selectedEnvId === env.id;
                         return (
-                          <div key={env.id} data-testid="env-row" style={{ display: 'grid', gridTemplateColumns: isMobile ? 'minmax(0,1fr) auto' : '22px minmax(0,1fr) 118px 104px 124px', alignItems: 'center', columnGap: '10px', rowGap: '8px', padding: isMobile ? '10px 12px' : '8px 14px', backgroundColor: selected ? (isMobile ? '#eef4fb' : '#e2e0ff') : env.isHidden ? '#f3f4f6' : 'white', opacity: env.isHidden ? 0.75 : 1, borderBottom: isMobile ? '1px solid #eef0f3' : '1px solid #f0ece4' }}>
+                          <div key={env.id} data-testid="env-row" onContextMenu={isMobile ? undefined : (e) => { e.preventDefault(); const r = e.currentTarget.getBoundingClientRect(); setSelectedEnvId(env.id); setCtxMenu({ kind: 'env', id: env.id, name: env.name, x: Math.min(Math.max(8, e.clientX - 40), window.innerWidth - 400), y: r.bottom }); }} style={{ display: 'grid', gridTemplateColumns: isMobile ? 'minmax(0,1fr) auto' : '22px minmax(0,1fr) 118px 104px 124px', alignItems: 'center', columnGap: '10px', rowGap: '8px', padding: isMobile ? '10px 12px' : '8px 14px', backgroundColor: selected ? (isMobile ? '#eef4fb' : '#e2e0ff') : env.isHidden ? '#f3f4f6' : 'white', opacity: env.isHidden ? 0.75 : 1, borderBottom: isMobile ? '1px solid #eef0f3' : '1px solid #f0ece4' }}>
                             {!isMobile && <input type="checkbox" checked={selected} onChange={() => setSelectedEnvId(selected ? null : env.id)} aria-label={`Select ${env.name}`} style={{ accentColor: '#4b32c3', cursor: 'pointer' }} />}
                             <div onClick={() => setSelectedEnvId(selected ? null : env.id)} style={{ minWidth: 0, cursor: 'pointer' }}>
                               <div style={{ fontWeight: isMobile ? '600' : '500', fontSize: '0.95rem', display: isMobile ? 'block' : 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: '10px' }}>
