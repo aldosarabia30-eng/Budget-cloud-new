@@ -1659,6 +1659,10 @@ export default function BudgetApp() {
   const [txFiltersOpen, setTxFiltersOpen] = useState(false); // phone: filters collapsed by default
   const [showAddForm, setShowAddForm] = useState(false); // desktop register: Add Transaction form toggled from the toolbar
   const [acctMenuOpen, setAcctMenuOpen] = useState(false);
+  const [catMenu, setCatMenu] = useState(null); // { txId|null, x, y, up, hover }
+  const [barMenu, setBarMenu] = useState(null); // 'flag' | 'more' | null
+  const [collapsedSplits, setCollapsedSplits] = useState([]);
+  const [moveHover, setMoveHover] = useState(false);
   const [showCsv, setShowCsv] = useState(false); // phone: CSV import collapsed by default
   const [manageAccounts, setManageAccounts] = useState(false); // phone: Accounts tab shows overview unless true
   const [showRtaInfo, setShowRtaInfo] = useState(false); // phone: Ready to Assign breakdown
@@ -4808,6 +4812,17 @@ export default function BudgetApp() {
       <button onClick={redo} disabled={!histRef.current.redo.length} aria-label="Redo" title="Redo (Ctrl+Shift+Z)" style={undoBtnStyle(!!histRef.current.redo.length)}>↷</button>
     </div>
   );
+  const reconciledAgo = (d) => {
+    const dt = new Date(String(d).slice(0, 10) + 'T00:00:00');
+    if (isNaN(dt)) return formatDate(d, 'us');
+    const days = Math.floor((Date.now() - dt.getTime()) / 86400000);
+    if (days < 1) return 'today';
+    if (days < 30) return days === 1 ? 'yesterday' : days + ' days ago';
+    const m = Math.floor(days / 30.44);
+    if (m < 12) return m + (m === 1 ? ' month ago' : ' months ago');
+    const y = Math.floor(m / 12);
+    return y + (y === 1 ? ' year ago' : ' years ago');
+  };
   const balanceTriple = (cleared, working) => (
     <div data-testid="balance-triple" style={{ display: 'flex', alignItems: 'center', gap: '14px', flexWrap: 'wrap' }}>
       {[[cleared, '© Cleared Balance'], [round2(working - cleared), '© Uncleared Balance']].map(([v, l], i) => (
@@ -4828,27 +4843,29 @@ export default function BudgetApp() {
     return (
       <div data-testid="account-header" style={{ backgroundColor: acc.isHidden ? '#f9fafb' : 'white', borderRadius: isMobile ? '10px' : 0, padding: isMobile ? '14px' : '14px 4px', boxShadow: isMobile ? '0 1px 3px rgba(0,0,0,0.1)' : 'none', borderBottom: isMobile ? 'none' : '1px solid #e8e5de', position: 'relative', zIndex: 5 }}>
                 {!isMobile ? (
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '10px' }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '22px', flexWrap: 'wrap' }}>
-                      <div style={{ fontWeight: 800, fontSize: '1.3rem', color: '#111827' }}>
-                        {acc.name}
-                        {acc.isHidden && <span data-testid="hidden-account-badge" style={{ marginLeft: '8px', fontSize: '0.7rem', fontWeight: 600, color: '#6b7280', backgroundColor: '#e5e7eb', borderRadius: '999px', padding: '1px 8px' }}>hidden</span>}
+                  <div>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: '10px' }}>
+                      <div>
+                        <div style={{ fontWeight: 800, fontSize: '1.5rem', color: '#111827', lineHeight: 1.2 }}>
+                          {acc.name}
+                          {acc.isHidden && <span data-testid="hidden-account-badge" style={{ marginLeft: '8px', fontSize: '0.7rem', fontWeight: 600, color: '#6b7280', backgroundColor: '#e5e7eb', borderRadius: '999px', padding: '1px 8px', verticalAlign: 'middle' }}>hidden</span>}
+                        </div>
+                        <div data-testid="account-subline" style={{ fontSize: '0.82rem', color: '#4b5563', marginTop: '2px' }} title={acc.lastReconciledDate ? `Reconciled ${formatDate(acc.lastReconciledDate, 'us')} ($${Number(acc.lastReconciledBalance).toFixed(2)})` : ''}>
+                          {String(acc.type || 'Account').charAt(0).toUpperCase() + String(acc.type || 'account').slice(1)} · {acc.lastReconciledDate ? <span>🔒 Reconciled {reconciledAgo(acc.lastReconciledDate)}</span> : <span>Not yet reconciled</span>}
+                        </div>
                       </div>
-                      {balanceTriple(clearedBal, workingBal)}
-                    </div>
-                    <div style={{ display: 'flex', gap: '8px', alignItems: 'center', position: 'relative' }}>
-                      <div style={{ textAlign: 'right' }}>
-                        <button onClick={() => (isReconciling ? setReconcilingAccId(null) : startReconcile(acc.id))} style={{ backgroundColor: 'white', color: '#1f2937', border: '1px solid #9ca3af', padding: '8px 18px', borderRadius: '8px', fontWeight: 600, cursor: 'pointer', fontSize: '0.9rem' }}>Reconcile</button>
-                        {acc.lastReconciledDate && <div style={{ fontSize: '0.7rem', color: '#059669', fontWeight: 600, marginTop: '2px' }}>✓ Reconciled {formatDate(acc.lastReconciledDate, 'us')} (${Number(acc.lastReconciledBalance).toFixed(2)})</div>}
-                      </div>
-                      <button onClick={() => setAcctMenuOpen(o => !o)} aria-label="Account options" aria-expanded={acctMenuOpen} style={{ background: 'white', border: '1px solid #d1d5db', borderRadius: '8px', padding: '8px 10px', cursor: 'pointer', fontWeight: 700 }}>⋯</button>
+                      <div style={{ display: 'flex', gap: '10px', alignItems: 'center', position: 'relative' }}>
+                        <button onClick={() => setAcctMenuOpen(o => !o)} aria-label="Account options" aria-expanded={acctMenuOpen} title="Account options" style={{ background: '#f1effb', border: 'none', borderRadius: '8px', width: '38px', height: '38px', cursor: 'pointer', fontSize: '1rem', color: '#3b22a7' }}>✎</button>
+                        <button onClick={() => (isReconciling ? setReconcilingAccId(null) : startReconcile(acc.id))} style={{ backgroundColor: '#5b3fd6', color: 'white', border: 'none', padding: '0 22px', height: '38px', borderRadius: '999px', fontWeight: 700, cursor: 'pointer', fontSize: '0.92rem' }}>Reconcile</button>
                       {acctMenuOpen && (
                         <div style={{ position: 'absolute', right: 0, top: '100%', marginTop: '4px', backgroundColor: 'white', border: '1px solid #e3e6eb', borderRadius: '8px', boxShadow: '0 8px 20px rgba(0,0,0,0.15)', zIndex: 40, minWidth: '160px', overflow: 'hidden' }}>
                           <button onClick={() => { setAcctMenuOpen(false); (acc.isHidden ? handleUnhideAccount(acc) : handleHideAccount(acc)); }} aria-label={`${acc.isHidden ? 'Unhide' : 'Hide'} account ${acc.name.trim()}`} style={{ display: 'block', width: '100%', textAlign: 'left', padding: '10px 14px', background: 'white', border: 'none', cursor: 'pointer', fontSize: '0.9rem' }}>{acc.isHidden ? 'Unhide account' : 'Hide account'}</button>
                           <button onClick={() => { setAcctMenuOpen(false); handleSoftDeleteAccount(acc.id); }} style={{ display: 'block', width: '100%', textAlign: 'left', padding: '10px 14px', background: 'white', border: 'none', cursor: 'pointer', fontSize: '0.9rem', color: '#dc2626' }}>Delete account</button>
                         </div>
                       )}
+                      </div>
                     </div>
+                    <div style={{ marginTop: '12px', paddingTop: '10px', borderTop: '1px solid #e8e5de' }}>{balanceTriple(clearedBal, workingBal)}</div>
                   </div>
                 ) : (
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexWrap: 'wrap', gap: '10px' }}>
@@ -4930,35 +4947,110 @@ export default function BudgetApp() {
   };
 
   // Desktop register: YNAB-style table (date, payee, category, memo, outflow, inflow, cleared)
+  const selTxs = () => transactions.filter(t => selectedTxIds.includes(t.id) && !t.isDeleted);
+  const bulkSetCleared = (val) => {
+    const ids = new Set(selTxs().filter(t => !isTxLocked(t)).map(t => t.id));
+    if (!ids.size) { showNotification(LOCKED_MSG); return; }
+    setTransactions(prev => prev.map(t => (ids.has(t.id) ? { ...t, cleared: val, reconciled: val ? t.reconciled : false } : t)));
+  };
+  const bulkDuplicate = () => {
+    const stamp = Date.now();
+    const copies = selTxs().filter(t => !t.isTransfer).map((t, i) => { const { reconciled, transferId, ...rest } = t; return { ...rest, id: `tx-${stamp}-d${i}`, cleared: false, reconciled: false }; });
+    if (!copies.length) { showNotification('Transfers cannot be duplicated.'); return; }
+    setTransactions(prev => [...copies, ...prev]);
+    showNotification(`Duplicated ${copies.length} transaction${copies.length === 1 ? '' : 's'}.`);
+  };
+  const bulkMemo = () => {
+    const list = selTxs().filter(t => !isTxLocked(t));
+    if (!list.length) { showNotification(LOCKED_MSG); return; }
+    const v = window.prompt('Memo for ' + list.length + ' transaction' + (list.length === 1 ? '' : 's') + ':', list.length === 1 ? (list[0].notes || '') : '');
+    if (v === null) return;
+    const ids = new Set(list.map(t => t.id));
+    setTransactions(prev => prev.map(t => (ids.has(t.id) ? { ...t, notes: v } : t)));
+  };
+  const bulkMove = (accId) => {
+    const list = selTxs().filter(t => !isTxLocked(t) && !t.isTransfer);
+    if (!list.length) { showNotification('Only unlocked, non-transfer transactions can be moved.'); return; }
+    const ids = new Set(list.map(t => t.id));
+    setTransactions(prev => prev.map(t => (ids.has(t.id) ? { ...t, accountId: accId } : t)));
+    showNotification(`Moved ${list.length} transaction${list.length === 1 ? '' : 's'}.`);
+  };
+  const bulkExport = () => {
+    const q = (x) => '"' + String(x == null ? '' : x).replace(/"/g, '""') + '"';
+    const rows = selTxs().map(t => { const a = accounts.find(x => x.id === t.accountId); const e = envelopes.find(x => x.id === t.envelopeId); return [t.date, a ? a.name : '', t.payee, isSplitTx(t) ? 'Split' : (e ? e.name : ''), t.notes || '', t.type === 'expense' ? t.amount : '', t.type === 'income' ? t.amount : ''].map(q).join(','); });
+    downloadText('transactions.csv', ['Date,Account,Payee,Category,Memo,Outflow,Inflow', ...rows].join('\n'), 'text/csv');
+  };
+  const FLAG_COLORS = ['#ef4444', '#f97316', '#eab308', '#22c55e', '#3b82f6', '#8b5cf6'];
+  const setFlag = (ids, color) => {
+    const set = new Set(ids);
+    setTransactions(prev => prev.map(t => (set.has(t.id) ? { ...t, flag: color || null } : t)));
+  };
+  const envFullName = (e) => (e ? (e.group && e.group !== 'Other' ? e.group + ': ' : '') + e.name + (e.isDeleted ? ' (deleted)' : '') : '');
+  const openCatMenu = (ev, txId) => {
+    const r = ev.currentTarget.getBoundingClientRect();
+    const up = r.bottom > window.innerHeight - 320;
+    setCatMenu({ txId, x: Math.max(8, Math.min(r.left, window.innerWidth - 480)), y: up ? window.innerHeight - r.top + 6 : r.bottom + 4, up, hover: null });
+    setBarMenu(null);
+  };
+  const renderCatMenu = () => {
+    if (!catMenu) return null;
+    const choose = (envId) => { if (catMenu.txId) handleAssignTxEnvelope(catMenu.txId, envId); else handleAssignSelectedEnvelope(envId); setCatMenu(null); };
+    const itemStyle = (on) => ({ display: 'flex', justifyContent: 'space-between', alignItems: 'center', width: '100%', textAlign: 'left', border: 'none', background: on ? '#f4f2ee' : 'white', padding: '8px 14px', fontSize: '0.88rem', cursor: 'pointer', color: '#1f2937' });
+    return (
+      <>
+        <div onClick={() => setCatMenu(null)} style={{ position: 'fixed', inset: 0, zIndex: 58 }} />
+        <div data-testid="cat-menu" role="menu" style={{ position: 'fixed', left: catMenu.x, ...(catMenu.up ? { bottom: catMenu.y } : { top: catMenu.y }), zIndex: 59, backgroundColor: 'white', borderRadius: '8px', boxShadow: '0 8px 28px rgba(0,0,0,0.22)', width: '230px', maxHeight: '60vh', overflowY: 'auto', padding: '4px 0' }}>
+          {envelopeChoices.map(c => (
+            <div key={c.label} style={{ position: 'relative' }} onMouseEnter={() => setCatMenu(m => m && { ...m, hover: c.label })}>
+              <button role="menuitem" onClick={() => setCatMenu(m => m && { ...m, hover: c.label })} style={itemStyle(catMenu.hover === c.label)}>{c.label}<span style={{ color: '#6b7280' }}>›</span></button>
+              {catMenu.hover === c.label && (
+                <div data-testid="cat-submenu" style={{ position: 'fixed', left: catMenu.x + 232, ...(catMenu.up ? { bottom: catMenu.y } : { top: catMenu.y }), width: '250px', maxHeight: '60vh', overflowY: 'auto', backgroundColor: 'white', borderRadius: '8px', boxShadow: '0 8px 28px rgba(0,0,0,0.22)', padding: '4px 0' }}>
+                  {c.list.map(e => (<button key={e.id} role="menuitem" onClick={() => choose(e.id)} style={itemStyle(false)}>{e.name}</button>))}
+                </div>
+              )}
+            </div>
+          ))}
+          {envelopeChoices.length === 0 && <div style={{ padding: '10px 14px', color: '#6b7280', fontSize: '0.85rem' }}>No envelopes yet.</div>}
+        </div>
+      </>
+    );
+  };
   const renderDesktopRegister = () => {
     const allMode = !txFilterAccount;
-    const cols = `30px ${allMode ? '150px ' : ''}100px minmax(0,1fr) minmax(0,2fr) minmax(0,0.9fr) 96px 96px 34px 60px`;
+    const cols = `38px 34px ${allMode ? '150px ' : ''}110px minmax(0,1.1fr) minmax(0,2.2fr) minmax(0,1.2fr) 104px 104px 40px 58px`;
     const flat = sortedTransactionDates.flatMap(d => groupedTransactions[d]);
     const inp = { padding: '7px 9px', border: '1px solid #d1d5db', borderRadius: '8px', fontSize: '0.85rem', backgroundColor: 'white' };
-    const tbtn = { background: 'none', border: 'none', color: '#2f6fb3', fontWeight: 600, fontSize: '0.9rem', cursor: 'pointer', padding: '6px 4px', display: 'inline-flex', alignItems: 'center', gap: '6px' };
-    const linkBtn = (extra) => ({ background: 'none', border: 'none', color: '#2563eb', cursor: 'pointer', padding: 0, fontSize: '0.72rem', fontWeight: 600, ...extra });
+    const tbtn = { background: 'none', border: 'none', color: '#3b22a7', fontWeight: 600, fontSize: '0.9rem', cursor: 'pointer', padding: '6px 4px', display: 'inline-flex', alignItems: 'center', gap: '6px' };
+    const linkBtn = (extra) => ({ background: 'none', border: 'none', color: '#3b22a7', cursor: 'pointer', padding: 0, fontSize: '0.72rem', fontWeight: 600, ...extra });
     const accList = activeAccounts.filter(a => !a.isHidden);
     const totCleared = round2(accList.reduce((t, a) => t + getClearedBalance(a.id), 0));
     const totWork = round2(accList.reduce((t, a) => t + getAccountBalance(a.id), 0));
+    const curAcc = accounts.find(a => a.id === txFilterAccount && !a.isDeleted);
+    const DIV = '1px solid #ece9f6';
+    const cell = (extra) => ({ padding: '0 8px', minWidth: 0, borderLeft: DIV, alignSelf: 'stretch', display: 'flex', alignItems: 'center', ...extra });
+    const hcell = (extra) => cell({ fontSize: '0.7rem', fontWeight: 700, letterSpacing: '0.05em', color: '#4b5563', ...extra });
+    const catBtn = (tx, label, color) => (
+      <button type="button" onClick={(ev) => openCatMenu(ev, tx.id)} disabled={isTxLocked(tx)} aria-label="Assign envelope" title="Click to change category" style={{ background: 'none', border: 'none', padding: 0, cursor: isTxLocked(tx) ? 'default' : 'pointer', fontSize: '0.9rem', color: color || '#1f2937', textAlign: 'left', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: '100%' }}>{label}</button>
+    );
     return (
       <div data-testid="desktop-register" style={{ display: 'flex', flexDirection: 'column', gap: 0 }}>
         <div data-testid="register-sticky" style={{ position: 'sticky', top: 0, zIndex: 20, backgroundColor: '#ffffff', paddingTop: '8px', margin: '0 -24px', padding: '8px 24px 0', boxSizing: 'border-box' }}>
         {allMode ? (
           <div style={{ backgroundColor: 'white', borderBottom: '1px solid #e8e5de', padding: '14px 4px', display: 'flex', alignItems: 'center', gap: '28px', flexWrap: 'wrap' }}>
-            <div style={{ fontWeight: 800, fontSize: '1.3rem', color: '#111827' }}>All Accounts</div>
+            <div style={{ fontWeight: 800, fontSize: '1.5rem', color: '#111827' }}>All Accounts</div>
             {balanceTriple(totCleared, totWork)}
           </div>
-        ) : (() => { const hdrAcc = accounts.find(a => a.id === txFilterAccount && !a.isDeleted); return hdrAcc ? renderAccountHeader(hdrAcc) : null; })()}
+        ) : (curAcc ? renderAccountHeader(curAcc) : null)}
         <div style={{ backgroundColor: 'white', marginTop: 0 }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '14px', padding: '8px 14px', flexWrap: 'wrap', borderBottom: '1px solid #eef0f3' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '14px', padding: '8px 4px', flexWrap: 'wrap', borderBottom: '1px solid #eef0f3' }}>
             <button onClick={() => setShowAddForm(v => !v)} aria-expanded={showAddForm} style={tbtn}>⊕ Add Transaction</button>
             <button onClick={() => setShowCsv(v => !v)} aria-expanded={showCsv} style={tbtn}>⬆ File Import</button>
             <span style={{ width: '1px', height: '20px', backgroundColor: '#e3e6eb' }} />
-            <button onClick={undo} disabled={!histRef.current.undo.length} aria-label="Undo" style={{ ...tbtn, color: histRef.current.undo.length ? '#2f6fb3' : '#b6c2d1', cursor: histRef.current.undo.length ? 'pointer' : 'not-allowed' }}>↶ Undo</button>
-            <button onClick={redo} disabled={!histRef.current.redo.length} aria-label="Redo" style={{ ...tbtn, color: histRef.current.redo.length ? '#2f6fb3' : '#b6c2d1', cursor: histRef.current.redo.length ? 'pointer' : 'not-allowed' }}>↷ Redo</button>
+            <button onClick={undo} disabled={!histRef.current.undo.length} aria-label="Undo" style={{ ...tbtn, color: histRef.current.undo.length ? '#3b22a7' : '#b6bdd1', cursor: histRef.current.undo.length ? 'pointer' : 'not-allowed' }}>↶ Undo</button>
+            <button onClick={redo} disabled={!histRef.current.redo.length} aria-label="Redo" style={{ ...tbtn, color: histRef.current.redo.length ? '#3b22a7' : '#b6bdd1', cursor: histRef.current.redo.length ? 'pointer' : 'not-allowed' }}>↷ Redo</button>
             <div style={{ flex: 1 }} />
-            <button onClick={() => setTxFiltersOpen(v => !v)} aria-expanded={txFiltersOpen} style={{ ...tbtn, color: txFiltersActive ? '#1d4ed8' : '#2f6fb3' }}>View ▾</button>
-            <input type="search" placeholder={allMode ? 'Search All Accounts' : 'Search this account'} value={txSearch} onChange={e => setTxSearch(e.target.value)} aria-label="Search transactions" style={{ ...inp, width: '230px', borderColor: '#9bbbe0' }} />
+            <button onClick={() => setTxFiltersOpen(v => !v)} aria-expanded={txFiltersOpen} style={{ ...tbtn, color: txFiltersActive ? '#1d4ed8' : '#3b22a7' }}>View ▾</button>
+            <input type="search" placeholder={curAcc ? `Search ${curAcc.name.trim()}` : 'Search All Accounts'} value={txSearch} onChange={e => setTxSearch(e.target.value)} aria-label="Search transactions" style={{ ...inp, width: '240px', borderColor: '#d8d3f3' }} />
           </div>
           {txFiltersOpen && (
             <div data-testid="tx-filters" style={{ display: 'flex', gap: '6px', flexWrap: 'wrap', alignItems: 'center', padding: '8px 14px', backgroundColor: '#f9fafb', borderBottom: '1px solid #eef0f3' }}>
@@ -4987,9 +5079,13 @@ export default function BudgetApp() {
             </div>
           )}
           {/* column headings */}
-          <div style={{ display: 'grid', gridTemplateColumns: cols, columnGap: '10px', alignItems: 'center', padding: '8px 14px', fontSize: '0.7rem', fontWeight: 700, letterSpacing: '0.05em', color: '#6b7280', borderBottom: '1px solid #e3e6eb', backgroundColor: '#fafbfc', borderRadius: '0' }}>
-            <input type="checkbox" aria-label="Select all transactions" checked={selectedTxIds.length === visibleTransactions.length && visibleTransactions.length > 0} onChange={handleSelectAllTx} style={{ cursor: 'pointer' }} />
-            {allMode && <div>ACCOUNT</div>}<div>DATE ▾</div><div>PAYEE</div><div>CATEGORY</div><div>MEMO</div><div style={{ textAlign: 'right' }}>OUTFLOW</div><div style={{ textAlign: 'right' }}>INFLOW</div><div style={{ textAlign: 'center' }}>©</div><div />
+          <div style={{ display: 'grid', gridTemplateColumns: cols, columnGap: 0, alignItems: 'stretch', height: '34px', borderTop: DIV, borderBottom: '1px solid #d9d5ec', backgroundColor: 'white' }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center' }}><input type="checkbox" aria-label="Select all transactions" checked={selectedTxIds.length === visibleTransactions.length && visibleTransactions.length > 0} onChange={handleSelectAllTx} style={{ cursor: 'pointer' }} /></div>
+            <div style={hcell({ justifyContent: 'center', padding: 0 })} title="Flag">⚑</div>
+            {allMode && <div style={hcell()}>ACCOUNT</div>}
+            <div style={hcell()}>DATE&nbsp;▾</div><div style={hcell()}>PAYEE</div><div style={hcell()}>CATEGORY</div><div style={hcell()}>MEMO</div>
+            <div style={hcell({ justifyContent: 'flex-end' })}>OUTFLOW</div><div style={hcell({ justifyContent: 'flex-end' })}>INFLOW</div>
+            <div style={hcell({ justifyContent: 'center', padding: 0 })}>©</div><div style={hcell()} />
           </div>
         </div>
         </div>
@@ -5006,63 +5102,73 @@ export default function BudgetApp() {
             const hasLock = locked || tx.reconciled || unlockedTxIds.includes(tx.id);
             const cleared = !!(tx.cleared || tx.reconciled);
             const v = (tx.type === 'income' ? 1 : -1) * (Number(tx.amount) || 0);
-            const amtCell = (show, txt) => <div style={{ textAlign: 'right', fontSize: '0.9rem', fontVariantNumeric: 'tabular-nums', color: tx.isTransfer ? '#6b7280' : '#1f2937' }}>{show ? txt : ''}</div>;
+            const split = isSplitTx(tx);
+            const splitOpen = split && !collapsedSplits.includes(tx.id);
+            const amt = (show, txt) => <div style={cell({ justifyContent: 'flex-end', fontSize: '0.9rem', fontVariantNumeric: 'tabular-nums', color: tx.isTransfer ? '#4b5563' : '#1f2937' })}>{show ? txt : ''}</div>;
             return (
               <React.Fragment key={tx.id}>
-                <div data-testid="reg-row" style={{ display: 'grid', gridTemplateColumns: cols, columnGap: '10px', alignItems: 'center', padding: '7px 14px', borderBottom: '1px solid #f0f2f5', backgroundColor: isSelected ? '#e8f0fe' : 'white' }}>
-                  <input type="checkbox" checked={isSelected} onChange={() => handleToggleSelectTx(tx.id)} aria-label={`Select ${tx.payee}`} style={{ cursor: 'pointer' }} />
-                  {allMode && <div style={{ fontSize: '0.85rem', color: '#374151', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{acc?.name}</div>}
-                  <div style={{ fontSize: '0.88rem' }}>{formatDate(tx.date, 'us')}</div>
-                  <div style={{ minWidth: 0, fontSize: '0.9rem', fontWeight: 500 }}>
-                    <div style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{tx.payee}</div>
+                <div data-testid="reg-row" style={{ display: 'grid', gridTemplateColumns: cols, columnGap: 0, alignItems: 'center', minHeight: '36px', borderBottom: '1px solid #ece9f6', backgroundColor: isSelected ? '#dedbff' : 'white' }}>
+                  <div style={{ display: 'flex', justifyContent: 'center' }}><input type="checkbox" checked={isSelected} onChange={() => handleToggleSelectTx(tx.id)} aria-label={`Select ${tx.payee}`} style={{ cursor: 'pointer' }} /></div>
+                  <div style={{ display: 'flex', justifyContent: 'center' }}>
+                    <button type="button" onClick={() => setFlag([tx.id], tx.flag ? (FLAG_COLORS[FLAG_COLORS.indexOf(tx.flag) + 1] || null) : FLAG_COLORS[0])} aria-label={tx.flag ? 'Change flag' : 'Flag transaction'} title="Flag" style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 0, fontSize: '1rem', color: tx.flag || '#d4d0e6' }}>⚑</button>
+                  </div>
+                  {allMode && <div style={cell({ fontSize: '0.85rem', color: '#374151', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', display: 'block', lineHeight: '36px' })}>{acc?.name}</div>}
+                  <div style={cell({ fontSize: '0.9rem' })}>{formatDate(tx.date, 'us')}</div>
+                  <div style={cell({ fontSize: '0.9rem', justifyContent: 'space-between', gap: '6px' })}>
+                    <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', minWidth: 0 }}>{tx.payee}</span>
                     {tx.isTransfer && (
-                      <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
-                        <span data-testid="transfer-badge" style={{ fontSize: '0.68rem', fontWeight: 600, color: '#4f46e5', backgroundColor: '#eef2ff', padding: '1px 6px', borderRadius: '999px' }}>Transfer {tx.type === 'expense' ? 'out' : 'in'}</span>
+                      <span style={{ display: 'inline-flex', alignItems: 'center', gap: '6px', flexShrink: 0 }}>
+                        <span data-testid="transfer-badge" title={`Transfer ${tx.type === 'expense' ? 'out' : 'in'}`} style={{ color: '#4b5563', fontSize: '0.95rem' }}>⇄</span>
                         <button type="button" onClick={() => handleUnlinkTransfer(tx)} disabled={locked} style={linkBtn({ color: '#6b7280', opacity: locked ? 0.4 : 1 })}>Unlink</button>
-                      </div>
+                      </span>
                     )}
                   </div>
-                  <div style={{ minWidth: 0, fontSize: '0.85rem' }}>
-                    {tx.isTransfer ? <span style={{ color: '#6b7280' }}>Transfer</span>
-                      : isSplitTx(tx) ? (
-                        <span>Split ({tx.splits.length}){' '}
-                          <button type="button" onClick={() => (splitTxId === tx.id ? closeSplit() : openSplit(tx))} disabled={locked} style={linkBtn({ opacity: locked ? 0.4 : 1 })}>{splitTxId === tx.id ? 'Close split' : 'Edit split'}</button>{' '}
-                          <button type="button" onClick={() => handleRemoveSplit(tx.id)} disabled={locked} style={linkBtn({ color: '#6b7280', opacity: locked ? 0.4 : 1 })}>Remove split</button>
-                        </span>
-                      ) : tx.type === 'expense' ? (
-                        <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                          <select value={tx.envelopeId || ''} onChange={e => handleAssignTxEnvelope(tx.id, e.target.value)} disabled={locked} aria-label="Assign envelope" style={{ minWidth: 0, flex: 1, maxWidth: '100%', padding: '4px 6px', border: '1px solid ' + (tx.envelopeId ? '#e5e7eb' : '#fbbf24'), borderRadius: '6px', fontSize: '0.82rem', color: tx.envelopeId ? '#374151' : '#b45309', backgroundColor: tx.envelopeId ? 'white' : '#fffbeb' }}>
-                            <option value="">Uncategorized</option>
-                            {tx.envelopeId && env && (env.isDeleted || env.isHidden) && (<option value={tx.envelopeId}>{env.name} ({env.isDeleted ? 'deleted' : 'hidden'})</option>)}
-                            {envelopeChoices.map(c => (<optgroup key={c.label} label={c.label}>{c.list.map(e => (<option key={e.id} value={e.id}>{e.name}</option>))}</optgroup>))}
-                          </select>
-                          <button type="button" onClick={() => (splitTxId === tx.id ? closeSplit() : openSplit(tx))} disabled={locked} style={linkBtn({ opacity: locked ? 0.4 : 1 })}>{splitTxId === tx.id ? 'Close split' : 'Split'}</button>
-                        </div>
-                      ) : (
-                        <span style={{ color: '#374151' }}>Inflow: Ready to Assign{countsTowardRTA(tx) ? <>{' '}<button type="button" onClick={() => (splitTxId === tx.id ? closeSplit() : openSplit(tx))} disabled={locked} style={linkBtn({ opacity: locked ? 0.4 : 1 })}>{splitTxId === tx.id ? 'Close' : incomeAllocs(tx).length ? 'Edit envelopes' : 'Send to envelopes'}</button></> : null}</span>
+                  <div style={cell({ fontSize: '0.9rem', gap: '8px' })}>
+                    {tx.isTransfer ? <span style={{ color: '#6b7280' }}>Category not needed</span>
+                      : split ? (<>
+                        <button type="button" onClick={() => setCollapsedSplits(c => (c.includes(tx.id) ? c.filter(x => x !== tx.id) : [...c, tx.id]))} aria-label={splitOpen ? 'Collapse split' : 'Expand split'} style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 0, color: '#4b5563', fontSize: '0.8rem' }}>{splitOpen ? '⌄' : '›'}</button>
+                        <span>Split (Multiple Categories)…</span>
+                        <button type="button" onClick={() => (splitTxId === tx.id ? closeSplit() : openSplit(tx))} disabled={locked} style={linkBtn({ opacity: locked ? 0.4 : 1 })}>{splitTxId === tx.id ? 'Close split' : 'Edit split'}</button>
+                        <button type="button" onClick={() => handleRemoveSplit(tx.id)} disabled={locked} style={linkBtn({ color: '#6b7280', opacity: locked ? 0.4 : 1 })}>Remove split</button>
+                      </>)
+                      : tx.type === 'expense' ? (<>
+                        {catBtn(tx, env ? envFullName(env) : 'Uncategorized', env ? '#1f2937' : '#b45309')}
+                        <button type="button" onClick={() => (splitTxId === tx.id ? closeSplit() : openSplit(tx))} disabled={locked} style={linkBtn({ opacity: locked ? 0.4 : 1, marginLeft: 'auto' })}>{splitTxId === tx.id ? 'Close split' : 'Split'}</button>
+                      </>) : (
+                        <span style={{ color: '#1f2937' }}>Inflow: Ready to Assign{countsTowardRTA(tx) ? <>{' '}<button type="button" onClick={() => (splitTxId === tx.id ? closeSplit() : openSplit(tx))} disabled={locked} style={linkBtn({ opacity: locked ? 0.4 : 1 })}>{splitTxId === tx.id ? 'Close' : incomeAllocs(tx).length ? 'Edit envelopes' : 'Send to envelopes'}</button></> : null}</span>
                       )}
                   </div>
-                  <div style={{ fontSize: '0.82rem', color: '#6b7280', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={tx.notes || ''}>{tx.notes || ''}</div>
-                  {amtCell(v < 0, plainMoney(Math.abs(v)))}
-                  {amtCell(v >= 0, plainMoney(Math.abs(v)))}
-                  <div style={{ textAlign: 'center' }}>
+                  <div style={cell({ fontSize: '0.85rem', color: '#6b7280', display: 'block', lineHeight: '36px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' })} title={tx.notes || ''}>{tx.notes || ''}</div>
+                  {amt(v < 0, plainMoney(Math.abs(v)))}
+                  {amt(v >= 0, plainMoney(Math.abs(v)))}
+                  <div style={cell({ justifyContent: 'center', padding: 0 })}>
                     {hasLock ? (
                       <button onClick={() => (locked ? unlockTx(tx) : relockTx(tx))} title={locked ? 'Reconciled and locked. Click to unlock.' : 'Unlocked. Click to lock again.'} aria-label={locked ? 'Unlock transaction' : 'Lock transaction'} style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 0, fontSize: '0.9rem' }}>{locked ? '🔒' : '🔓'}</button>
                     ) : (
-                      <button onClick={() => handleToggleCleared(tx.id)} title="Toggle cleared" aria-label={`${cleared ? 'Cleared' : 'Uncleared'}: ${tx.payee}`} style={{ width: '18px', height: '18px', borderRadius: '50%', border: '2px solid ' + (cleared ? '#2e9e4f' : '#c4c9d2'), backgroundColor: cleared ? '#2e9e4f' : 'white', color: cleared ? 'white' : '#9ca3af', fontSize: '0.6rem', fontWeight: 800, lineHeight: 1, cursor: 'pointer', padding: 0 }}>C</button>
+                      <button onClick={() => handleToggleCleared(tx.id)} title="Toggle cleared" aria-label={`${cleared ? 'Cleared' : 'Uncleared'}: ${tx.payee}`} style={{ width: '16px', height: '16px', borderRadius: '50%', border: '2px solid ' + (cleared ? '#2e9e4f' : '#c4c9d2'), backgroundColor: cleared ? '#2e9e4f' : 'white', color: cleared ? 'white' : '#9ca3af', fontSize: '0.55rem', fontWeight: 800, lineHeight: 1, cursor: 'pointer', padding: 0 }}>C</button>
                     )}
                   </div>
-                  <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '2px' }}>
-                    <button onClick={() => startEditTx(tx)} disabled={locked} title={locked ? 'Reconciled and locked' : 'Edit transaction'} aria-label="Edit transaction" style={{ background: 'none', border: 'none', color: '#2563eb', cursor: locked ? 'not-allowed' : 'pointer', padding: '4px', opacity: locked ? 0.35 : 1 }}>✎</button>
-                    <button onClick={() => handleSoftDeleteTransaction(tx.id)} disabled={locked} title={locked ? 'Reconciled and locked' : 'Delete transaction'} aria-label="Delete transaction" style={{ background: 'none', border: 'none', color: '#dc2626', cursor: locked ? 'not-allowed' : 'pointer', padding: '4px', opacity: locked ? 0.35 : 1 }}>✕</button>
+                  <div style={cell({ justifyContent: 'flex-end', gap: '0', padding: '0 4px' })}>
+                    <button onClick={() => startEditTx(tx)} disabled={locked} title={locked ? 'Reconciled and locked' : 'Edit transaction'} aria-label="Edit transaction" style={{ background: 'none', border: 'none', color: '#6b7280', cursor: locked ? 'not-allowed' : 'pointer', padding: '4px', opacity: locked ? 0.35 : 1 }}>✎</button>
+                    <button onClick={() => handleSoftDeleteTransaction(tx.id)} disabled={locked} title={locked ? 'Reconciled and locked' : 'Delete transaction'} aria-label="Delete transaction" style={{ background: 'none', border: 'none', color: '#b91c1c', cursor: locked ? 'not-allowed' : 'pointer', padding: '4px', opacity: locked ? 0.35 : 1 }}>✕</button>
                   </div>
                 </div>
-                {(isSplitTx(tx) || (incomeAllocs(tx).length > 0 && countsTowardRTA(tx)) || (splitTxId === tx.id && editingTxId !== tx.id) || (unlockAskId === tx.id && locked)) && (
-                  <div style={{ padding: '4px 14px 8px 54px', borderBottom: '1px solid #f0f2f5', backgroundColor: '#fcfcfd' }}>
-                    {isSplitTx(tx) && tx.splits.map((sp, i) => {
-                      const se = envelopes.find(e => e.id === sp.envelopeId);
-                      return <div key={i} data-testid="split-part" style={{ fontSize: '0.75rem', color: sp.envelopeId ? '#374151' : '#b45309' }}>{se ? se.name + (se.isDeleted ? ' (deleted)' : '') : 'No envelope'}: {plainMoney(sp.amount)}</div>;
-                    })}
+                {splitOpen && tx.splits.map((sp, i) => {
+                  const se = envelopes.find(e => e.id === sp.envelopeId);
+                  return (
+                    <div key={i} data-testid="split-part" style={{ display: 'grid', gridTemplateColumns: cols, columnGap: 0, alignItems: 'center', minHeight: '36px', borderBottom: '1px solid #ece9f6', backgroundColor: isSelected ? '#dedbff' : 'white' }}>
+                      <div /><div />
+                      {allMode && <div />}
+                      <div /><div />
+                      <div style={cell({ fontSize: '0.9rem', paddingLeft: '28px', color: sp.envelopeId ? '#1f2937' : '#b45309' })}>{se ? envFullName(se) : 'No envelope'}</div>
+                      <div style={cell()} />
+                      {tx.type === 'income' ? <><div style={cell()} /><div style={cell({ justifyContent: 'flex-end', fontSize: '0.9rem', fontVariantNumeric: 'tabular-nums' })}>{plainMoney(sp.amount)}</div></> : <><div style={cell({ justifyContent: 'flex-end', fontSize: '0.9rem', fontVariantNumeric: 'tabular-nums' })}>{plainMoney(sp.amount)}</div><div style={cell()} /></>}
+                      <div /><div />
+                    </div>
+                  );
+                })}
+                {((incomeAllocs(tx).length > 0 && countsTowardRTA(tx)) || (splitTxId === tx.id && editingTxId !== tx.id) || (unlockAskId === tx.id && locked)) && (
+                  <div style={{ padding: '4px 14px 8px 80px', borderBottom: '1px solid #f0f2f5', backgroundColor: '#fcfcfd' }}>
                     {incomeAllocs(tx).length > 0 && countsTowardRTA(tx) && (<>
                       {incomeAllocs(tx).map((al, i) => {
                         const ae = envelopes.find(e => e.id === al.envelopeId);
@@ -5088,22 +5194,63 @@ export default function BudgetApp() {
           {visibleTransactions.length > pagedTransactions.length && (
             <div style={{ textAlign: 'center', padding: '14px 0' }}>
               <div style={{ fontSize: '0.8rem', color: '#6b7280', marginBottom: '6px' }}>Showing {pagedTransactions.length} of {visibleTransactions.length}</div>
-              <button onClick={() => setTxLimit(n => n + 200)} style={{ backgroundColor: 'white', color: '#2563eb', border: '1px solid #bfdbfe', padding: '7px 14px', borderRadius: '6px', fontWeight: 'bold', cursor: 'pointer', fontSize: '0.85rem' }}>Show 200 more</button>
+              <button onClick={() => setTxLimit(n => n + 200)} style={{ backgroundColor: 'white', color: '#3b22a7', border: '1px solid #cfc8f5', padding: '7px 14px', borderRadius: '6px', fontWeight: 'bold', cursor: 'pointer', fontSize: '0.85rem' }}>Show 200 more</button>
             </div>
           )}
         </div>
         {selectedTxIds.length > 0 && (
-          <div data-testid="bulk-bar" style={{ position: 'fixed', left: '50%', bottom: '22px', transform: 'translateX(-50%)', zIndex: 45, backgroundColor: '#1f2a44', color: 'white', borderRadius: '10px', padding: '10px 16px', display: 'flex', gap: '14px', alignItems: 'center', boxShadow: '0 8px 24px rgba(0,0,0,0.3)' }}>
-            <button onClick={() => setSelectedTxIds([])} aria-label="Clear selection" style={{ background: 'none', border: 'none', color: '#cbd5e1', cursor: 'pointer' }}>×</button>
-            <strong style={{ fontSize: '0.9rem' }}>{selectedTxIds.length} Transaction{selectedTxIds.length === 1 ? '' : 's'}</strong>
-            {selectedTxIds.length === 2 && <button onClick={handleLinkSelected} style={{ background: 'none', border: 'none', color: 'white', fontWeight: 600, cursor: 'pointer' }}>Link as transfer</button>}
-            <select value="" onChange={e => handleAssignSelectedEnvelope(e.target.value)} aria-label="Assign envelope to selected transactions" style={{ padding: '6px 8px', border: 'none', borderRadius: '6px', fontSize: '0.85rem', backgroundColor: '#2b3a5e', color: 'white' }}>
-              <option value="">Categorize…</option>
-              {envelopeChoices.map(c => (<optgroup key={c.label} label={c.label}>{c.list.map(e => (<option key={e.id} value={e.id}>{e.name}</option>))}</optgroup>))}
-            </select>
-            <button onClick={handleDeleteSelectedTransactions} style={{ background: 'none', border: 'none', color: '#fca5a5', fontWeight: 700, cursor: 'pointer' }}>Delete Selected ({selectedTxIds.length})</button>
+          <div data-testid="bulk-bar" style={{ position: 'fixed', left: '50%', bottom: '22px', transform: 'translateX(-50%)', zIndex: 57, backgroundColor: '#1c1646', color: 'white', borderRadius: '10px', padding: '4px 6px', display: 'flex', gap: '2px', alignItems: 'center', boxShadow: '0 8px 24px rgba(0,0,0,0.3)' }}>
+            <button onClick={() => { setSelectedTxIds([]); setBarMenu(null); }} aria-label="Clear selection" style={{ background: 'none', border: 'none', color: '#cbd5e1', cursor: 'pointer', padding: '8px 8px' }}>×</button>
+            <strong style={{ fontSize: '0.88rem', padding: '0 12px 0 2px', borderRight: '1px solid #4a4380' }}>{selectedTxIds.length} Transaction{selectedTxIds.length === 1 ? '' : 's'}</strong>
+            <button onClick={(ev) => { if (catMenu) setCatMenu(null); else openCatMenu(ev, null); }} aria-label="Categorize" style={{ background: 'none', border: 'none', color: 'white', fontWeight: 700, cursor: 'pointer', padding: '10px 12px', fontSize: '0.88rem' }}>Categorize</button>
+            <div style={{ position: 'relative' }}>
+              <button onClick={() => { setCatMenu(null); setBarMenu(m => (m === 'flag' ? null : 'flag')); }} aria-label="Flag" style={{ background: 'none', border: 'none', color: 'white', fontWeight: 700, cursor: 'pointer', padding: '10px 12px', fontSize: '0.88rem' }}>⚑ Flag</button>
+              {barMenu === 'flag' && (
+                <div data-testid="flag-menu" style={{ position: 'absolute', bottom: '100%', left: 0, marginBottom: '8px', backgroundColor: 'white', borderRadius: '8px', boxShadow: '0 8px 24px rgba(0,0,0,0.25)', padding: '8px', display: 'flex', gap: '6px', alignItems: 'center' }}>
+                  {FLAG_COLORS.map(c => (<button key={c} aria-label={`Flag ${c}`} onClick={() => { setFlag(selectedTxIds, c); setBarMenu(null); }} style={{ width: '22px', height: '22px', borderRadius: '50%', backgroundColor: c, border: 'none', cursor: 'pointer' }} />))}
+                  <button onClick={() => { setFlag(selectedTxIds, null); setBarMenu(null); }} style={{ background: 'none', border: 'none', color: '#4b5563', cursor: 'pointer', fontSize: '0.8rem', whiteSpace: 'nowrap' }}>No flag</button>
+                </div>
+              )}
+            </div>
+            <div style={{ position: 'relative' }}>
+              <button onClick={() => { setCatMenu(null); setBarMenu(m => (m === 'more' ? null : 'more')); }} aria-label="More" aria-expanded={barMenu === 'more'} style={{ background: 'none', border: 'none', color: 'white', fontWeight: 700, cursor: 'pointer', padding: '10px 12px', fontSize: '0.88rem' }}>⋯ More</button>
+              {barMenu === 'more' && (
+                <div data-testid="more-menu" style={{ position: 'absolute', bottom: '100%', right: 0, marginBottom: '8px', backgroundColor: 'white', borderRadius: '8px', boxShadow: '0 8px 24px rgba(0,0,0,0.25)', minWidth: '250px', padding: '4px 0' }}>
+                  {(() => {
+                    const it = (extra) => ({ display: 'flex', justifyContent: 'space-between', alignItems: 'center', width: '100%', textAlign: 'left', padding: '9px 14px', background: 'white', border: 'none', cursor: 'pointer', fontSize: '0.9rem', color: '#1f2937', ...extra });
+                    const sep = <div style={{ borderTop: '1px solid #eceaf5', margin: '4px 0' }} />;
+                    const sel = selTxs();
+                    const allCleared = sel.length > 0 && sel.every(t => t.cleared || t.reconciled);
+                    const go = (fn) => () => { setBarMenu(null); fn(); };
+                    return (<>
+                      <button onClick={go(() => bulkSetCleared(!allCleared))} style={it()}>{allCleared ? 'Mark as Uncleared' : 'Mark as Cleared'}</button>
+                      {sep}
+                      <button onClick={go(handleLinkSelected)} disabled={selectedTxIds.length !== 2} style={it({ color: selectedTxIds.length === 2 ? '#1f2937' : '#9ca3af', cursor: selectedTxIds.length === 2 ? 'pointer' : 'default' })}>Link as transfer</button>
+                      <button onClick={go(() => sel.filter(t => t.isTransfer).forEach(handleUnlinkTransfer))} disabled={!sel.some(t => t.isTransfer)} style={it({ color: sel.some(t => t.isTransfer) ? '#1f2937' : '#9ca3af', cursor: sel.some(t => t.isTransfer) ? 'pointer' : 'default' })}>Unlink transfer</button>
+                      {sep}
+                      <button onClick={go(bulkDuplicate)} style={it()}>Duplicate</button>
+                      {sep}
+                      <button onClick={go(bulkMemo)} style={it()}>Memo…</button>
+                      <div style={{ position: 'relative' }} onMouseEnter={() => setMoveHover(true)} onMouseLeave={() => setMoveHover(false)}>
+                        <button style={it({ backgroundColor: moveHover ? '#f4f2ee' : 'white' })} onClick={() => setMoveHover(h => !h)}>Move to Account<span style={{ color: '#6b7280' }}>›</span></button>
+                        {moveHover && (
+                          <div data-testid="move-submenu" style={{ position: 'absolute', left: '100%', bottom: 0, width: '240px', maxHeight: '50vh', overflowY: 'auto', backgroundColor: 'white', borderRadius: '8px', boxShadow: '0 8px 24px rgba(0,0,0,0.25)', padding: '4px 0' }}>
+                            {activeAccounts.filter(a => !a.isHidden).map(a => (<button key={a.id} onClick={() => { setMoveHover(false); setBarMenu(null); bulkMove(a.id); }} style={it()}>{a.name}</button>))}
+                          </div>
+                        )}
+                      </div>
+                      {sep}
+                      <button onClick={go(bulkExport)} style={it()}>Export {selectedTxIds.length} Transaction{selectedTxIds.length === 1 ? '' : 's'}</button>
+                      {sep}
+                      <button onClick={go(handleDeleteSelectedTransactions)} style={it({ color: '#dc2626', fontWeight: 600 })}>Delete Selected ({selectedTxIds.length})</button>
+                    </>);
+                  })()}
+                </div>
+              )}
+            </div>
           </div>
         )}
+        {renderCatMenu()}
       </div>
     );
   };
