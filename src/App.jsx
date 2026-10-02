@@ -1691,6 +1691,10 @@ export default function BudgetApp() {
   const [collapsedSplits, setCollapsedSplits] = useState([]);
   const [moveHover, setMoveHover] = useState(false);
   const [planEdit, setPlanEdit] = useState(false);
+  const [epMenu, setEpMenu] = useState(false); // phone Edit Plan: top ⋮ menu
+  const [reorderOpen, setReorderOpen] = useState(false); // phone: Reorder Categories screen
+  const [grpSheet, setGrpSheet] = useState(null); // phone Edit Plan: { name, draft } group ⋮ sheet
+  const [reDrag, setReDrag] = useState(null); // phone reorder drag: { kind, id, dy, drop }
   const [planFilterOpen, setPlanFilterOpen] = useState(false);
   const [envMenuId, setEnvMenuId] = useState(null);
   const [kpDraft, setKpDraft] = useState(null); // keypad text for the selected envelope's assigned amount
@@ -2229,7 +2233,7 @@ export default function BudgetApp() {
   const backRef = useRef(null);
   backRef.current = () => {
     const steps = [
-      [envMenuId, () => { setEnvMenuId(null); setKpDraft(null); }], [mTxId, () => setMTxId(null)], [planEdit, () => setPlanEdit(false)],
+      [grpSheet, () => setGrpSheet(null)], [epMenu, () => setEpMenu(false)], [reorderOpen, () => setReorderOpen(false)], [envMenuId, () => { setEnvMenuId(null); setKpDraft(null); }], [mTxId, () => setMTxId(null)], [planEdit, () => setPlanEdit(false)],
       [tgtSub, () => setTgtSub(null)], [tgt, () => setTgt(null)], [ctxMenu, () => setCtxMenu(null)],
       [splitTxId, () => setSplitTxId(null)], [txSheetOpen, () => setTxSheetOpen(false)], [movePick, () => setMovePick(null)], [moveUi, () => setMoveUi(null)],
       [hideEnvUi, () => setHideEnvUi(null)], [selectedEnvId, () => setSelectedEnvId(null)], [showRtaInfo, () => setShowRtaInfo(false)],
@@ -5774,6 +5778,212 @@ export default function BudgetApp() {
     setEnvMenuId(env.id); setKpDraft(null); setKpAuto(false);
     setTimeout(() => { const el = document.getElementById('m-env-' + env.id); if (el && el.scrollIntoView) el.scrollIntoView({ block: 'center', behavior: 'smooth' }); }, 60);
   };
+  // ----- Phone: Edit Plan + Reorder Categories (YNAB style) -----
+  const moveEnvTo = (envId, group, beforeId) => {
+    setEnvelopes(prev => {
+      const mv = prev.find(e => e.id === envId);
+      if (!mv) return prev;
+      const rest = prev.filter(e => e.id !== envId);
+      const item = { ...mv, group };
+      let idx = beforeId ? rest.findIndex(e => e.id === beforeId) : -1;
+      if (idx < 0) { let last = -1; rest.forEach((e, i) => { if (e.group === group) last = i; }); idx = last < 0 ? rest.length : last + 1; }
+      return [...rest.slice(0, idx), item, ...rest.slice(idx)];
+    });
+  };
+  const moveGroupTo = (name, beforeName) => {
+    setGroups(prev => {
+      const rest = prev.filter(g => g !== name);
+      const idx = beforeName ? rest.indexOf(beforeName) : -1;
+      return idx < 0 ? [...rest, name] : [...rest.slice(0, idx), name, ...rest.slice(idx)];
+    });
+  };
+  // Monthly cost of one target (weekly/yearly spread to a month)
+  const monthlyTargetCost = (env) => {
+    const amt = Number(env.targetAmount) || 0;
+    if (!(amt > 0) || !env.goalType || env.goalType === 'none') return 0;
+    if (env.goalType === 'repeating') {
+      if (env.cadence === 'weekly') return amt * 52 / 12;
+      if (env.cadence === 'biweekly') return amt * 26 / 12;
+      if (env.cadence === 'yearly') return amt / 12;
+      return amt;
+    }
+    if (env.goalType === 'target_by_date' && /^\d{4}-\d{2}/.test(env.targetDate || '')) {
+      const [ty, tm] = effectiveDue(env, budgetMonth);
+      const [by, bm] = budgetMonth.split('-').map(Number);
+      return amt / Math.max(1, (ty - by) * 12 + (tm - bm) + 1);
+    }
+    return 0;
+  };
+  const renderEditPlan = () => {
+    const targetLine = (env) => {
+      const amt = Number(env.targetAmount) || 0;
+      if (!env.goalType || env.goalType === 'none' || !(amt > 0)) return null;
+      const sub = env.goalType === 'target_by_date' && env.targetDate ? `${formatMoney(amt)} by ${formatDate(env.targetDate, 'readable')}` : (getScheduleText(env) || (env.goalType === 'savings_balance' ? 'Save up to a balance' : ''));
+      return { amt, sub };
+    };
+    const live = activeEnvelopes.filter(e => !e.isHidden || showHiddenEnvelopes);
+    const cost = live.reduce((t, e) => t + monthlyTargetCost(e), 0);
+    const mon = monthLabel(budgetMonth).split(' ')[0];
+    const menuBtn = (label, fn, danger) => (<button type="button" role="menuitem" onClick={fn} style={{ display: 'block', width: '100%', textAlign: 'left', background: 'none', border: 'none', color: danger ? '#ff7b7f' : MD.text, padding: '15px 22px', fontSize: '1.05rem', cursor: 'pointer', fontFamily: 'inherit' }}>{label}</button>);
+    return (
+      <div data-testid="edit-plan" style={{ position: 'fixed', inset: 0, zIndex: 58, backgroundColor: MD.bg, color: MD.text, overflowY: 'auto' }}>
+        <div style={{ background: 'linear-gradient(180deg,#26267f 0%,#15153f 60%,' + MD.bg + ' 100%)', borderRadius: '0 0 50% 50% / 0 0 26px 26px', padding: '14px 16px 36px' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
+            <button onClick={() => { setPlanEdit(false); setEpMenu(false); }} aria-label="Back" style={{ background: 'none', border: 'none', color: MD.text, fontSize: '1.7rem', cursor: 'pointer' }}>←</button>
+            <span style={{ fontSize: '1.45rem', flex: 1 }}>Edit Plan</span>
+            <button onClick={() => setEpMenu(v => !v)} aria-label="More" aria-haspopup="menu" data-testid="ep-more" style={{ background: 'none', border: 'none', color: MD.text, fontSize: '1.6rem', cursor: 'pointer' }}>⋮</button>
+          </div>
+          <div style={{ textAlign: 'center', marginTop: '10px' }}>
+            <div style={{ fontSize: '2.3rem', fontWeight: 800 }}>{formatMoney(round2(cost))}</div>
+            <div style={{ fontWeight: 600 }}>Cost to Be Me</div>
+          </div>
+        </div>
+        {epMenu && (<>
+          <div onClick={() => setEpMenu(false)} style={{ position: 'fixed', inset: 0, zIndex: 59 }} />
+          <div role="menu" data-testid="ep-menu" style={{ position: 'fixed', right: '12px', top: '56px', zIndex: 60, backgroundColor: '#1a1a30', borderRadius: '14px', boxShadow: '0 10px 30px rgba(0,0,0,0.6)', minWidth: '240px', padding: '6px 0' }}>
+            {menuBtn('New Category Group', () => { setEpMenu(false); setGroupPop(''); })}
+            {menuBtn('Reorder Categories', () => { setEpMenu(false); setReorderOpen(true); })}
+          </div>
+        </>)}
+        <div style={{ padding: '0 16px 40px', marginTop: '-12px' }}>
+          <div style={{ backgroundColor: MD.card, borderRadius: '22px', padding: '16px 18px', display: 'flex', justifyContent: 'space-between', fontSize: '1rem' }}><span>{mon}'s Targets</span><span style={{ fontWeight: 700 }}>{formatMoney(round2(cost))}</span></div>
+          {groups.map(g => {
+            const list = live.filter(e => e.group === g);
+            return (
+              <div key={g} data-testid="ep-group">
+                <div style={{ display: 'flex', alignItems: 'center', gap: '10px', margin: '26px 4px 10px' }}>
+                  <span style={{ flex: 1, fontWeight: 800, fontSize: '1.05rem' }}>{g}</span>
+                  <button onClick={() => setEnvPop({ group: g, name: '', x: 0, y: 0 })} aria-label={`Add category to ${g}`} style={{ width: '30px', height: '30px', borderRadius: '50%', border: 'none', backgroundColor: '#8a8aa5', color: '#0a0a14', fontSize: '1.2rem', fontWeight: 800, cursor: 'pointer', lineHeight: 1 }}>+</button>
+                  <button onClick={() => setGrpSheet({ name: g, draft: g })} aria-label={`${g} options`} style={{ background: 'none', border: 'none', color: MD.text, fontSize: '1.4rem', cursor: 'pointer' }}>⋮</button>
+                </div>
+                <div style={{ backgroundColor: MD.card, borderRadius: '22px', overflow: 'hidden' }}>
+                  {list.length === 0 && <div style={{ padding: '16px 18px', color: MD.muted }}>No categories</div>}
+                  {list.map((env, i) => {
+                    const t = targetLine(env);
+                    return (
+                      <button key={env.id} data-testid="ep-env" onClick={() => openTargetEditor(env)} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '12px', width: '100%', background: 'none', border: 'none', borderTop: i ? '1px solid ' + MD.line : 'none', color: MD.text, padding: '14px 18px', fontSize: '1.02rem', cursor: 'pointer', textAlign: 'left', fontFamily: 'inherit' }}>
+                        <span style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis' }}>{env.name}</span>
+                        {t ? (<span style={{ textAlign: 'right', flexShrink: 0 }}><div style={{ fontWeight: 700 }}>{formatMoney(t.amt)}</div>{t.sub && <div style={{ color: MD.muted, fontSize: '0.8rem' }}>{t.sub}</div>}</span>)
+                          : <span style={{ color: '#8f8fff', fontWeight: 700, flexShrink: 0 }}>Add Target</span>}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+        {grpSheet && (<>
+          <div onClick={() => setGrpSheet(null)} style={{ position: 'fixed', inset: 0, backgroundColor: 'rgba(0,0,0,0.6)', zIndex: 70 }} />
+          <form data-testid="grp-sheet" role="dialog" aria-label="Category group" onSubmit={e => { e.preventDefault(); const nm = grpSheet.draft.trim(); const old = grpSheet.name; if (!nm || nm === old) { setGrpSheet(null); return; } if (groups.some(x => x !== old && x.toLowerCase() === nm.toLowerCase())) { showNotification(`A group named '${nm}' already exists.`); return; } setGroups(groups.map(x => (x === old ? nm : x))); setEnvelopes(envelopes.map(x => (x.group === old ? { ...x, group: nm } : x))); setCollapsedGroups(c => { if (!(old in c)) return c; const n2 = { ...c }; n2[nm] = n2[old]; delete n2[old]; return n2; }); setGrpSheet(null); showNotification(`Group renamed to '${nm}'.`); }} style={{ position: 'fixed', left: 0, right: 0, bottom: 0, zIndex: 71, backgroundColor: MD.card, borderRadius: '18px 18px 0 0', padding: '18px 18px calc(18px + env(safe-area-inset-bottom))' }}>
+            <div style={{ fontWeight: 800, marginBottom: '10px' }}>Rename group</div>
+            <input autoFocus value={grpSheet.draft} onChange={e => setGrpSheet({ ...grpSheet, draft: e.target.value })} aria-label="Group name" style={{ width: '100%', boxSizing: 'border-box', padding: '12px', borderRadius: '10px', border: '1px solid ' + MD.line, backgroundColor: MD.bg, color: MD.text, fontSize: '1rem' }} />
+            <div style={{ display: 'flex', gap: '10px', marginTop: '14px' }}>
+              <button type="button" onClick={() => { const nm = grpSheet.name; setGrpSheet(null); if (window.confirm(`Delete group '${nm}' and its envelopes?`)) handleRemoveGroup(nm); }} style={{ backgroundColor: '#4a1520', color: '#ff9aa0', border: 'none', borderRadius: '10px', padding: '10px 16px', fontWeight: 700, cursor: 'pointer' }}>Delete</button>
+              <div style={{ flex: 1 }} />
+              <button type="button" onClick={() => setGrpSheet(null)} style={{ backgroundColor: MD.line, color: MD.text, border: 'none', borderRadius: '10px', padding: '10px 18px', cursor: 'pointer' }}>Cancel</button>
+              <button type="submit" style={{ backgroundColor: MD.btn, color: '#fff', border: 'none', borderRadius: '10px', padding: '10px 24px', fontWeight: 700, cursor: 'pointer' }}>OK</button>
+            </div>
+          </form>
+        </>)}
+        {(groupPop !== null || envPop) && (<>
+          <div onClick={() => { setGroupPop(null); setEnvPop(null); }} style={{ position: 'fixed', inset: 0, backgroundColor: 'rgba(0,0,0,0.6)', zIndex: 70 }} />
+          <form role="dialog" aria-label={envPop ? 'New Category' : 'New Category Group'} data-testid={envPop ? 'env-pop' : 'group-pop'} onSubmit={e => { e.preventDefault(); if (envPop) submitEnvPop(); else submitGroupPop(); }} style={{ position: 'fixed', left: 0, right: 0, bottom: 0, zIndex: 71, backgroundColor: MD.card, borderRadius: '18px 18px 0 0', padding: '18px 18px calc(18px + env(safe-area-inset-bottom))' }}>
+            <div style={{ fontWeight: 800, marginBottom: '10px' }}>{envPop ? `New category in ${envPop.group}` : 'New Category Group'}</div>
+            <input autoFocus value={envPop ? envPop.name : groupPop} onChange={e => (envPop ? setEnvPop({ ...envPop, name: e.target.value }) : setGroupPop(e.target.value))} placeholder={envPop ? 'New Category' : 'New Category Group'} aria-label={envPop ? 'New Category' : 'New Category Group'} style={{ width: '100%', boxSizing: 'border-box', padding: '12px', borderRadius: '10px', border: '1px solid ' + MD.line, backgroundColor: MD.bg, color: MD.text, fontSize: '1rem' }} />
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '10px', marginTop: '14px' }}>
+              <button type="button" onClick={() => { setGroupPop(null); setEnvPop(null); }} style={{ backgroundColor: MD.line, color: MD.text, border: 'none', borderRadius: '10px', padding: '10px 18px', cursor: 'pointer' }}>Cancel</button>
+              <button type="submit" style={{ backgroundColor: MD.btn, color: '#fff', border: 'none', borderRadius: '10px', padding: '10px 24px', fontWeight: 700, cursor: 'pointer' }}>OK</button>
+            </div>
+          </form>
+        </>)}
+      </div>
+    );
+  };
+  const renderReorder = () => {
+    const live = envelopes.filter(e => !e.isDeleted);
+    const onDown = (e, kind, id) => {
+      e.preventDefault();
+      const startY = e.clientY;
+      let drop = null;
+      const onMove = (ev) => {
+        const y = ev.clientY;
+        const rows = Array.from(document.querySelectorAll('[data-rk]')).filter(r => !(r.dataset.rk === kind + ':' + id));
+        let best = null;
+        rows.forEach(r => {
+          const [rk, rid] = r.dataset.rk.split(':');
+          if (kind === 'group' && rk !== 'group') return;
+          const b = r.getBoundingClientRect();
+          if (y >= b.top && y <= b.bottom) best = { rk, rid, pos: y < b.top + b.height / 2 ? 'before' : 'after' };
+        });
+        if (kind === 'group' && !best) {
+          const hs = rows.filter(r => r.dataset.rk.startsWith('group:'));
+          if (hs.length && y > hs[hs.length - 1].getBoundingClientRect().bottom) best = { rk: 'group', rid: hs[hs.length - 1].dataset.rk.split(':')[1], pos: 'after' };
+        }
+        drop = best;
+        setReDrag({ kind, id, dy: y - startY, drop: best });
+      };
+      const onUp = () => {
+        window.removeEventListener('pointermove', onMove); window.removeEventListener('pointerup', onUp); window.removeEventListener('pointercancel', onUp);
+        if (drop) {
+          if (kind === 'env') {
+            if (drop.rk === 'env') {
+              const tgt2 = live.find(x => x.id === drop.rid);
+              if (tgt2) {
+                if (drop.pos === 'before') moveEnvTo(id, tgt2.group, tgt2.id);
+                else { const sib = live.filter(x => x.group === tgt2.group && x.id !== id); const at = sib.findIndex(x => x.id === tgt2.id); moveEnvTo(id, tgt2.group, sib[at + 1] ? sib[at + 1].id : null); }
+              }
+            } else if (drop.rk === 'group') {
+              if (drop.pos === 'before') { const gi = groups.indexOf(drop.rid); const prevG = gi > 0 ? groups[gi - 1] : null; moveEnvTo(id, prevG || drop.rid, null); }
+              else { const first = live.find(x => x.group === drop.rid && x.id !== id); moveEnvTo(id, drop.rid, first ? first.id : null); }
+            }
+          } else {
+            let gname = drop.rid;
+            if (drop.rk === 'group' && gname !== id) {
+              if (drop.pos === 'before') moveGroupTo(id, gname);
+              else { const rest = groups.filter(x => x !== id); const at = rest.indexOf(gname); moveGroupTo(id, rest[at + 1] || null); }
+            }
+          }
+        }
+        setReDrag(null);
+      };
+      window.addEventListener('pointermove', onMove); window.addEventListener('pointerup', onUp); window.addEventListener('pointercancel', onUp);
+      setReDrag({ kind, id, dy: 0, drop: null });
+    };
+    const handle = (kind, id) => (<span onPointerDown={e => onDown(e, kind, id)} role="button" aria-label="Drag to reorder" data-testid={'drag-' + kind} style={{ touchAction: 'none', cursor: 'grab', color: '#9a9ab5', fontSize: '1.4rem', padding: '6px 4px', userSelect: 'none' }}>☰</span>);
+    const lineFor = (rk, id, pos) => (reDrag && reDrag.drop && reDrag.drop.rk === rk && reDrag.drop.rid === id && reDrag.drop.pos === pos);
+    return (
+      <div data-testid="reorder-screen" style={{ position: 'fixed', inset: 0, zIndex: 64, backgroundColor: '#04040a', color: MD.text, overflowY: reDrag ? 'hidden' : 'auto' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '18px', padding: '16px' }}>
+          <button onClick={() => setReorderOpen(false)} aria-label="Back" style={{ background: 'none', border: 'none', color: MD.text, fontSize: '1.7rem', cursor: 'pointer' }}>←</button>
+          <span style={{ fontSize: '1.5rem' }}>Reorder Categories</span>
+        </div>
+        <div style={{ padding: '0 16px 80px' }}>
+          {groups.map(g => {
+            const list = live.filter(e => e.group === g);
+            const dg = reDrag && reDrag.kind === 'group' && reDrag.id === g;
+            return (
+              <div key={g} data-testid="re-group" style={{ transform: dg ? `translateY(${reDrag.dy}px)` : 'none', opacity: dg ? 0.75 : 1, position: 'relative', zIndex: dg ? 3 : 1 }}>
+                <div data-rk={'group:' + g} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', margin: '22px 4px 8px', borderTop: lineFor('group', g, 'before') ? '3px solid #8f8fff' : '3px solid transparent', borderBottom: lineFor('group', g, 'after') ? '3px solid #8f8fff' : '3px solid transparent' }}>
+                  <span style={{ fontWeight: 800 }}>{g}</span>{handle('group', g)}
+                </div>
+                <div style={{ backgroundColor: MD.card, borderRadius: '22px', overflow: reDrag ? 'visible' : 'hidden', minHeight: '12px' }}>
+                  {list.map((env, i) => {
+                    const de = reDrag && reDrag.kind === 'env' && reDrag.id === env.id;
+                    return (
+                      <div key={env.id} data-rk={'env:' + env.id} data-testid="re-env" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '12px 18px', borderTop: lineFor('env', env.id, 'before') ? '3px solid #8f8fff' : (i ? '1px solid ' + MD.line : '3px solid transparent'), borderBottom: lineFor('env', env.id, 'after') ? '3px solid #8f8fff' : 'none', transform: de ? `translateY(${reDrag.dy}px)` : 'none', opacity: de ? 0.75 : 1, backgroundColor: de ? '#23235a' : 'transparent', position: 'relative', zIndex: de ? 3 : 1 }}>
+                        <span>{env.name}{env.isHidden ? ' (hidden)' : ''}</span>{handle('env', env.id)}
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    );
+  };
   const renderMobilePlan = () => {
     const filterLabels = { all: 'All', underfunded: 'Underfunded', overspent: 'Overspent', available: 'Money Available' };
     const menuEnv = envMenuId ? envelopes.find(e => e.id === envMenuId && !e.isDeleted) : null;
@@ -5889,7 +6099,7 @@ export default function BudgetApp() {
           <div style={{ padding: '16px' }}><button onClick={() => setGroupPop('')} style={{ width: '100%', backgroundColor: MD.card, color: MD.accent, border: 'none', borderRadius: '12px', padding: '14px', fontWeight: 700, fontSize: '0.95rem', cursor: 'pointer' }}>+ Category Group</button></div>
         )}
         {/* new group / new envelope input sheets */}
-        {(groupPop !== null || envPop) && (
+        {!planEdit && (groupPop !== null || envPop) && (
           <>
             <div onClick={() => { setGroupPop(null); setEnvPop(null); }} style={{ position: 'fixed', inset: 0, backgroundColor: 'rgba(0,0,0,0.6)', zIndex: 70 }} />
             <form role="dialog" aria-label={envPop ? 'New Category' : 'New Category Group'} data-testid={envPop ? 'env-pop' : 'group-pop'} onSubmit={e => { e.preventDefault(); if (envPop) submitEnvPop(); else submitGroupPop(); }} style={{ position: 'fixed', left: 0, right: 0, bottom: 0, zIndex: 71, backgroundColor: MD.card, borderRadius: '18px 18px 0 0', padding: '18px 16px calc(20px + env(safe-area-inset-bottom))' }}>
@@ -7055,6 +7265,8 @@ export default function BudgetApp() {
       {/* BUDGET TAB */}
       {isMobile && activeTab === 'budget' && renderMobilePlan()}
       {isMobile && activeTab === 'budget' && renderMobileEnvDetails()}
+      {isMobile && activeTab === 'budget' && planEdit && renderEditPlan()}
+      {isMobile && activeTab === 'budget' && planEdit && reorderOpen && renderReorder()}
       {isMobile && activeTab === 'budget' && tgt && renderMobileTarget()}
       {activeTab === 'budget' && !isMobile && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
