@@ -8,23 +8,82 @@ const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBh
 export const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 // ------------------------------
 
-// Helper to get or generate Budget ID from URL query parameters.
-// No shared "default-budget" anymore: a private random ID is generated once and remembered on this device.
-const getBudgetIdFromUrl = () => {
-  const params = new URLSearchParams(window.location.search);
-  let id = params.get('budgetId');
-  if (!id) {
-    try { id = localStorage.getItem('budgetId'); } catch (e) { /* storage unavailable */ }
-    if (!id) {
-      id = (typeof crypto !== 'undefined' && crypto.randomUUID)
-        ? crypto.randomUUID()
-        : 'b-' + Date.now() + '-' + Math.random().toString(36).slice(2);
-      try { localStorage.setItem('budgetId', id); } catch (e) { /* storage unavailable */ }
+// Before accounts existed, each device kept a private budget ID (in the address or in local storage).
+// It is only used once after signing in, to attach that old budget to the account.
+const readLegacyBudgetId = () => {
+  try {
+    const fromUrl = new URLSearchParams(window.location.search).get('budgetId');
+    return fromUrl || localStorage.getItem('budgetId') || '';
+  } catch (e) { return ''; }
+};
+const forgetLegacyBudgetId = () => {
+  try { localStorage.removeItem('budgetId'); } catch (e) { /* storage unavailable */ }
+  try {
+    if (new URLSearchParams(window.location.search).has('budgetId')) window.history.replaceState({}, '', window.location.pathname);
+  } catch (e) { /* ignore */ }
+};
+
+// Sign-in screen: email + password, or an emailed sign-in link.
+const AuthScreen = () => {
+  const [mode, setMode] = useState('password'); // 'password' | 'link'
+  const [isSignUp, setIsSignUp] = useState(false);
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState('');
+  const [err, setErr] = useState('');
+  const back = window.location.origin + window.location.pathname;
+  const submit = async (e) => {
+    e.preventDefault();
+    setBusy(true); setErr(''); setMsg('');
+    try {
+      if (mode === 'link') {
+        const { error } = await supabase.auth.signInWithOtp({ email: email.trim(), options: { emailRedirectTo: back } });
+        if (error) throw error;
+        setMsg('Check your email for a sign-in link. It can take a minute.');
+      } else if (isSignUp) {
+        const { data, error } = await supabase.auth.signUp({ email: email.trim(), password, options: { emailRedirectTo: back } });
+        if (error) throw error;
+        if (!data.session) setMsg('Account created. Check your email to confirm it, then sign in.');
+      } else {
+        const { error } = await supabase.auth.signInWithPassword({ email: email.trim(), password });
+        if (error) throw error;
+      }
+    } catch (e2) {
+      setErr((e2 && e2.message) || String(e2));
     }
-    const newUrl = `${window.location.pathname}?budgetId=${id}`;
-    window.history.replaceState({ path: newUrl }, '', newUrl);
-  }
-  return id;
+    setBusy(false);
+  };
+  const input = { width: '100%', boxSizing: 'border-box', padding: '10px', border: '1px solid #d1d5db', borderRadius: '8px', fontSize: '0.95rem' };
+  return (
+    <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', backgroundColor: '#f4f5f7', fontFamily: 'system-ui, -apple-system, sans-serif', padding: '16px', boxSizing: 'border-box' }}>
+      <form onSubmit={submit} data-testid="auth-form" style={{ width: '100%', maxWidth: '360px', backgroundColor: 'white', borderRadius: '12px', padding: '24px', boxShadow: '0 4px 16px rgba(0,0,0,0.08)', display: 'flex', flexDirection: 'column', gap: '12px' }}>
+        <div style={{ fontWeight: 800, fontSize: '1.2rem', color: '#1f2f4f' }}>Envelope Budgeting</div>
+        <div style={{ fontSize: '0.85rem', color: '#6b7280', marginTop: '-6px' }}>
+          {mode === 'link' ? 'We will email you a link to sign in.' : isSignUp ? 'Create your account.' : 'Sign in to open your budget on any device.'}
+        </div>
+        <input type="email" required autoComplete="email" placeholder="Email" aria-label="Email" value={email} onChange={e => setEmail(e.target.value)} style={input} />
+        {mode === 'password' && (
+          <input type="password" required minLength={6} autoComplete={isSignUp ? 'new-password' : 'current-password'} placeholder="Password" aria-label="Password" value={password} onChange={e => setPassword(e.target.value)} style={input} />
+        )}
+        <button type="submit" disabled={busy} style={{ padding: '10px', borderRadius: '8px', border: 'none', backgroundColor: '#2f6fb3', color: 'white', fontWeight: 700, fontSize: '0.95rem', cursor: busy ? 'wait' : 'pointer' }}>
+          {busy ? 'Please wait…' : mode === 'link' ? 'Email me a link' : isSignUp ? 'Create account' : 'Sign in'}
+        </button>
+        {err && <div role="alert" style={{ fontSize: '0.82rem', color: '#b42318', backgroundColor: '#fde2e0', padding: '8px 10px', borderRadius: '8px' }}>{err}</div>}
+        {msg && <div role="status" style={{ fontSize: '0.82rem', color: '#17603a', backgroundColor: '#cdeed6', padding: '8px 10px', borderRadius: '8px' }}>{msg}</div>}
+        <div style={{ display: 'flex', justifyContent: 'space-between', gap: '8px', fontSize: '0.8rem' }}>
+          <button type="button" onClick={() => { setMode(mode === 'link' ? 'password' : 'link'); setErr(''); setMsg(''); }} style={{ background: 'none', border: 'none', color: '#2f6fb3', cursor: 'pointer', padding: 0 }}>
+            {mode === 'link' ? 'Use a password instead' : 'Email me a sign-in link instead'}
+          </button>
+          {mode === 'password' && (
+            <button type="button" onClick={() => { setIsSignUp(v => !v); setErr(''); setMsg(''); }} style={{ background: 'none', border: 'none', color: '#6b7280', cursor: 'pointer', padding: 0 }}>
+              {isSignUp ? 'I have an account' : 'Create account'}
+            </button>
+          )}
+        </div>
+      </form>
+    </div>
+  );
 };
 
 // Order-independent JSON so local state can be compared with what Postgres jsonb returns
@@ -1115,7 +1174,9 @@ const getScheduleText = (env) => {
 };
 
 export default function BudgetApp() {
-  const [budgetId, setBudgetId] = useState(getBudgetIdFromUrl);
+  const [session, setSession] = useState(undefined); // undefined = still checking, null = signed out
+  const userId = session ? session.user.id : null;
+  const rowIdRef = useRef(null); // id of this user's row in user_budgets
   const [budgetMonth, setBudgetMonth] = useState(() => getTodayISO().slice(0, 7)); // month shown on the Budget tab
 
   const [accounts, setAccounts] = useState([]);
@@ -1254,10 +1315,28 @@ export default function BudgetApp() {
   const lastJsonRef = useRef('');
   const histRef = useRef({ undo: [], redo: [], prev: null, prevKey: '', lastPush: 0, skip: false, reset: false, resetUntil: 0 });
   const [, setHistTick] = useState(0);
+  const [syncTick, setSyncTick] = useState(0); // bumps once the first load finishes
 
-  // Fetch budget data from Supabase & subscribe to real-time changes
+  // Who is signed in
   useEffect(() => {
-    if (!budgetId) return;
+    let alive = true;
+    supabase.auth.getSession().then(({ data }) => { if (alive) setSession((data && data.session) || null); });
+    const { data: sub } = supabase.auth.onAuthStateChange((_event, sess) => { setSession(sess || null); });
+    return () => { alive = false; sub.subscription.unsubscribe(); };
+  }, []);
+
+  // Fetch budget data from Supabase & subscribe to real-time changes (one budget per signed-in user)
+  useEffect(() => {
+    if (!userId) {
+      // Signed out: drop everything from memory so the next person never sees it
+      loadedRef.current = false;
+      rowIdRef.current = null;
+      lastJsonRef.current = '';
+      histRef.current.reset = true;
+      setAccounts([]); setGroups([]); setCollapsedGroups({}); setCollapsedAccountTx({});
+      setEnvelopes([]); setTransactions([]); setDebts([]); setInvestments([]);
+      return;
+    }
     let cancelled = false;
     loadedRef.current = false;
 
@@ -1278,28 +1357,48 @@ export default function BudgetApp() {
       setInvestments(d.investments ?? []);
     };
 
-    const fetchBudgetData = async () => {
-      const { data, error } = await supabase
-        .from('user_budgets')
-        .select('data')
-        .eq('id', budgetId)
-        .maybeSingle(); // a brand-new budget has no row yet, which is not an error
+    const selectMine = () => supabase.from('user_budgets').select('id, data').eq('user_id', userId).limit(1);
 
+    const fetchBudgetData = async () => {
+      let { data, error } = await selectMine();
       if (cancelled) return;
       if (error) {
         console.error('Error fetching budget data from Supabase:', error);
         setNotification("Couldn't load your budget, so changes won't be saved. Please refresh.");
         return; // stay "not loaded" so we never overwrite saved data with empty state
       }
-      if (data && data.data) applyRemote(data.data);
+      let row = data && data[0];
+      // First sign-in on a device that used the old private budget ID: attach that budget to this account
+      if (!row) {
+        const legacyId = readLegacyBudgetId();
+        if (legacyId) {
+          const claim = await supabase.rpc('claim_budget', { old_id: legacyId });
+          if (cancelled) return;
+          if (claim && !claim.error && claim.data) {
+            const again = await selectMine();
+            if (cancelled) return;
+            row = again.data && again.data[0];
+            if (row) forgetLegacyBudgetId(); // attached to the account, so the old private ID is no longer needed
+          }
+        }
+      }
+      if (row) {
+        rowIdRef.current = row.id;
+        if (row.data) applyRemote(row.data);
+      } else {
+        // A brand-new budget: nothing is saved until you actually add something
+        rowIdRef.current = userId;
+        lastJsonRef.current = snapshot({});
+      }
       loadedRef.current = true;
+      setSyncTick(t => t + 1);
     };
 
     fetchBudgetData();
 
     const channel = supabase
-      .channel(`public:user_budgets:id=eq.${budgetId}`)
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'user_budgets', filter: `id=eq.${budgetId}` }, (payload) => {
+      .channel(`public:user_budgets:user_id=eq.${userId}`)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'user_budgets', filter: `user_id=eq.${userId}` }, (payload) => {
         const d = payload.new && payload.new.data;
         if (!d) return;
         if (snapshot(d) === lastJsonRef.current) return; // our own save echoing back
@@ -1311,11 +1410,11 @@ export default function BudgetApp() {
       cancelled = true;
       supabase.removeChannel(channel);
     };
-  }, [budgetId]);
+  }, [userId]);
 
   // Save budget changes to Supabase (debounced, skipped when nothing actually changed)
   useEffect(() => {
-    if (!budgetId || !loadedRef.current) return;
+    if (!userId || !loadedRef.current) return;
     const dataToSave = { accounts, groups, collapsedGroups, collapsedAccountTx, envelopes, transactions, debts, investments };
     const json = snapshot(dataToSave);
     if (json === lastJsonRef.current) return;
@@ -1323,17 +1422,18 @@ export default function BudgetApp() {
     const timer = setTimeout(async () => {
       const { error } = await supabase
         .from('user_budgets')
-        .upsert({ id: budgetId, data: dataToSave });
+        .upsert({ id: rowIdRef.current || userId, user_id: userId, data: dataToSave });
 
       if (error) {
         console.error('Error saving budget data to Supabase:', error);
+        setNotification("Couldn't save your last change. Check your connection.");
       } else {
         lastJsonRef.current = json;
       }
     }, 400);
 
     return () => clearTimeout(timer);
-  }, [budgetId, accounts, groups, collapsedGroups, collapsedAccountTx, envelopes, transactions, debts, investments]);
+  }, [userId, syncTick, accounts, groups, collapsedGroups, collapsedAccountTx, envelopes, transactions, debts, investments]);
 
   // ----- Undo / redo -----
   // Every change to the budget data is remembered. Edits made within ~1.2 s of each other (typing in a box) count as one step.
@@ -1524,23 +1624,6 @@ export default function BudgetApp() {
   };
 
   const scrollToTop = () => window.scrollTo({ top: 0, behavior: 'smooth' });
-
-  const copyShareLink = () => {
-    const shareUrl = `${window.location.origin}${window.location.pathname}?budgetId=${budgetId}`;
-    navigator.clipboard.writeText(shareUrl);
-    showNotification('Share link copied to clipboard!');
-  };
-
-  // Point this device at another budget (e.g. the ID shown on your phone) so all devices share one budget
-  const [switchIdInput, setSwitchIdInput] = useState(null); // null = closed
-  const switchBudget = () => {
-    let id = (switchIdInput || '').trim();
-    const m = id.match(/[?&]budgetId=([^&#\s]+)/); // accept a pasted share link too
-    if (m) id = decodeURIComponent(m[1]);
-    if (!id) return;
-    try { localStorage.setItem('budgetId', id); } catch (e) { /* storage unavailable */ }
-    window.location.href = `${window.location.pathname}?budgetId=${encodeURIComponent(id)}`;
-  };
 
   const showNotification = (msg) => {
     setNotification(msg);
@@ -3630,6 +3713,11 @@ export default function BudgetApp() {
   );
   const MOBILE_TABS = [['budget', 'Budget', '◔'], ['accounts', 'Accounts', '▦'], ['transactions', 'Transactions', '☰'], ['reports', 'Reports', '◭']];
 
+  if (session === undefined) {
+    return <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', fontFamily: 'system-ui, sans-serif', color: '#6b7280', backgroundColor: '#f4f5f7' }}>Loading…</div>;
+  }
+  if (!session) return <AuthScreen />;
+
   return (
     <div style={{ display: 'flex', minHeight: '100vh', fontFamily: 'system-ui, -apple-system, sans-serif', color: '#1f2937', backgroundColor: '#f4f5f7' }}>
 
@@ -3691,38 +3779,15 @@ export default function BudgetApp() {
         </nav>
 
         <div style={{ marginTop: 'auto', padding: '16px 10px 0 10px', borderTop: '1px solid rgba(255,255,255,0.12)' }}>
-          <div style={{ fontSize: '0.7rem', color: '#8fa0c0', wordBreak: 'break-all', marginBottom: '8px' }}>
-            Budget ID: {budgetId}
+          <div data-testid="signed-in-as" style={{ fontSize: '0.72rem', color: '#8fa0c0', wordBreak: 'break-all', marginBottom: '8px' }}>
+            Signed in as {session && session.user ? session.user.email : ''}
           </div>
           <button
-            onClick={copyShareLink}
+            onClick={() => supabase.auth.signOut()}
             style={{ width: '100%', backgroundColor: 'transparent', color: '#cfe0f7', border: '1px solid rgba(255,255,255,0.28)', padding: '6px 8px', borderRadius: '6px', fontSize: '0.75rem', cursor: 'pointer', fontWeight: 600 }}
           >
-            Copy Share Link
+            Sign out
           </button>
-          {switchIdInput === null ? (
-            <button
-              onClick={() => setSwitchIdInput('')}
-              style={{ width: '100%', background: 'none', color: '#8fa0c0', border: 'none', padding: '6px 8px', fontSize: '0.72rem', cursor: 'pointer', textDecoration: 'underline' }}
-            >
-              Use a different budget ID
-            </button>
-          ) : (
-            <div style={{ marginTop: '6px' }}>
-              <input
-                value={switchIdInput}
-                onChange={e => setSwitchIdInput(e.target.value)}
-                onKeyDown={e => { if (e.key === 'Enter') switchBudget(); }}
-                placeholder="Paste budget ID or share link"
-                aria-label="Budget ID to switch to"
-                style={{ width: '100%', boxSizing: 'border-box', padding: '6px', fontSize: '0.75rem', border: '1px solid #d1d5db', borderRadius: '6px' }}
-              />
-              <div style={{ display: 'flex', gap: '6px', marginTop: '6px' }}>
-                <button onClick={switchBudget} style={{ flex: 1, backgroundColor: '#2f6fb3', color: 'white', border: 'none', borderRadius: '6px', padding: '5px', fontSize: '0.75rem', cursor: 'pointer', fontWeight: 600 }}>Switch</button>
-                <button onClick={() => setSwitchIdInput(null)} style={{ background: 'none', border: 'none', color: '#8fa0c0', fontSize: '0.75rem', cursor: 'pointer' }}>Cancel</button>
-              </div>
-            </div>
-          )}
         </div>
       </aside>
 
