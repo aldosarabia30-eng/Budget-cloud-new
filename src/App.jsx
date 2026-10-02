@@ -10,11 +10,12 @@ export const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
 // Before accounts existed, each device kept a private budget ID (in the address or in local storage).
 // It is only used once after signing in, to attach that old budget to the account.
-const readLegacyBudgetId = () => {
-  try {
-    const fromUrl = new URLSearchParams(window.location.search).get('budgetId');
-    return fromUrl || localStorage.getItem('budgetId') || '';
-  } catch (e) { return ''; }
+const readLegacyBudgetIds = () => {
+  const ids = [];
+  try { ids.push(new URLSearchParams(window.location.search).get('budgetId')); } catch (e) { /* ignore */ }
+  try { ids.push(localStorage.getItem('budgetId')); } catch (e) { /* storage unavailable */ }
+  ids.push('default-budget'); // the shared ID the very first version of the app used
+  return [...new Set(ids.filter(Boolean))];
 };
 const forgetLegacyBudgetId = () => {
   try { localStorage.removeItem('budgetId'); } catch (e) { /* storage unavailable */ }
@@ -107,6 +108,43 @@ const snapshot = (d = {}) => stable({
   debts: d.debts ?? [],
   investments: d.investments ?? []
 });
+
+const DATA_LISTS = ['accounts', 'envelopes', 'transactions', 'debts', 'investments'];
+const normData = (d = {}) => ({
+  accounts: d.accounts ?? [], groups: d.groups ?? [], collapsedGroups: d.collapsedGroups ?? {}, collapsedAccountTx: d.collapsedAccountTx ?? {},
+  envelopes: d.envelopes ?? [], transactions: d.transactions ?? [], debts: d.debts ?? [], investments: d.investments ?? []
+});
+// Three-way merge of two edited copies of the budget, using the last copy both sides agreed on as the base.
+// Whatever only one side changed is kept; if both changed the same item, "mine" wins.
+const mergeBudgetData = (baseIn, mineIn, theirsIn) => {
+  const base = normData(baseIn), mine = normData(mineIn), theirs = normData(theirsIn);
+  const same = (a, b) => stable(a) === stable(b);
+  const out = {};
+  DATA_LISTS.forEach(k => {
+    const B = new Map(base[k].map(x => [x.id, x])), M = new Map(mine[k].map(x => [x.id, x])), T = new Map(theirs[k].map(x => [x.id, x]));
+    const ids = [...theirs[k].map(x => x.id), ...mine[k].map(x => x.id).filter(id => !T.has(id))];
+    out[k] = ids.map(id => {
+      const b = B.get(id), m = M.get(id), t = T.get(id);
+      if (!b) return m || t;                       // added on one side (or both)
+      if (!m) return same(b, t) ? null : t;        // I deleted it; keep it only if they edited it
+      if (!t) return same(b, m) ? null : m;        // they deleted it; keep it only if I edited it
+      if (same(b, m)) return t;
+      return m;
+    }).filter(Boolean);
+  });
+  out.groups = same(base.groups, mine.groups) ? theirs.groups
+    : same(base.groups, theirs.groups) ? mine.groups
+    : [...mine.groups, ...theirs.groups.filter(g => !mine.groups.includes(g))];
+  ['collapsedGroups', 'collapsedAccountTx'].forEach(k => {
+    const o = {};
+    new Set([...Object.keys(mine[k]), ...Object.keys(theirs[k])]).forEach(key => {
+      o[key] = same(base[k][key], mine[k][key]) ? theirs[k][key] : mine[k][key];
+      if (o[key] === undefined) delete o[key];
+    });
+    out[k] = o;
+  });
+  return out;
+};
 
 const MOBILE_QUERY = '(max-width: 720px)';
 const isMobileNow = () => typeof window !== 'undefined' && !!window.matchMedia && window.matchMedia(MOBILE_QUERY).matches;
@@ -1159,6 +1197,7 @@ const getOrdinalSuffix = (num) => {
 };
 
 const getScheduleText = (env) => {
+  if (env.goalType === 'savings_balance') return 'Save up to a balance';
   if (env.goalType !== 'repeating') return '';
   const { cadence, repeatDayOfWeek, repeatDayOfMonth, repeatMonth, repeatYear } = env;
   if (cadence === 'weekly') return `Every week on ${repeatDayOfWeek || 'Monday'}`;
@@ -1172,6 +1211,20 @@ const getScheduleText = (env) => {
   }
   return `Every ${cadence}`;
 };
+
+const BottomSheet = ({ title, onClose, children, testId }) => (
+  <>
+    <div onClick={onClose} style={{ position: 'fixed', inset: 0, backgroundColor: 'rgba(17,24,39,0.45)', zIndex: 59 }} />
+    <div data-testid={testId} role="dialog" aria-label={title} style={{ position: 'fixed', left: 0, right: 0, bottom: 0, zIndex: 60, backgroundColor: 'white', borderRadius: '18px 18px 0 0', maxHeight: '92vh', overflowY: 'auto', boxShadow: '0 -8px 28px rgba(0,0,0,0.25)', padding: '8px 16px calc(18px + env(safe-area-inset-bottom))' }}>
+      <div style={{ width: '40px', height: '4px', borderRadius: '2px', backgroundColor: '#d1d5db', margin: '0 auto 8px' }} />
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px' }}>
+        <div style={{ fontWeight: 700, fontSize: '1.05rem', color: '#111827', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{title}</div>
+        <button onClick={onClose} aria-label="Close" style={{ background: '#f3f4f6', border: 'none', borderRadius: '50%', width: '32px', height: '32px', fontSize: '1rem', cursor: 'pointer', color: '#4b5563', flexShrink: 0 }}>✕</button>
+      </div>
+      {children}
+    </div>
+  </>
+);
 
 export default function BudgetApp() {
   const [session, setSession] = useState(undefined); // undefined = still checking, null = signed out
@@ -1238,6 +1291,13 @@ export default function BudgetApp() {
   });
   useEffect(() => { try { sessionStorage.setItem('budget-unlocked-tx', JSON.stringify(unlockedTxIds)); } catch (e) { /* storage unavailable */ } }, [unlockedTxIds]);
   const [selectedEnvId, setSelectedEnvId] = useState(null); // envelope row opened for actions
+  const [txSheetOpen, setTxSheetOpen] = useState(false); // phone: add/edit transaction sheet
+  const [txFiltersOpen, setTxFiltersOpen] = useState(false); // phone: filters collapsed by default
+  const [showCsv, setShowCsv] = useState(false); // phone: CSV import collapsed by default
+  const [manageAccounts, setManageAccounts] = useState(false); // phone: Accounts tab shows overview unless true
+  const [showRtaInfo, setShowRtaInfo] = useState(false); // phone: Ready to Assign breakdown
+  useEffect(() => { setTxSheetOpen(false); }, [transactions]);
+  useEffect(() => { setSelectedEnvId(null); }, [activeTab]);
   const [envFilter, setEnvFilter] = useState('all'); // 'all' | 'underfunded' | 'overspent' | 'available'
   const [autoMenuOpen, setAutoMenuOpen] = useState(false);
   const [reportView, setReportView] = useState('spending'); // 'spending' | 'networth' | 'age'
@@ -1313,9 +1373,16 @@ export default function BudgetApp() {
   // Sync guards: never save before the initial load finishes, and never echo remote data back.
   const loadedRef = useRef(false);
   const lastJsonRef = useRef('');
+  const revRef = useRef(0);          // version of the budget this device last saw on the server
+  const baseRef = useRef(null);      // the budget as the server last had it (for merging)
+  const rowExistsRef = useRef(false);
+  const savingRef = useRef(false);
+  const applyRemoteRef = useRef(null);
+  const localRef = useRef(null);     // the budget as it is on screen right now
   const histRef = useRef({ undo: [], redo: [], prev: null, prevKey: '', lastPush: 0, skip: false, reset: false, resetUntil: 0 });
   const [, setHistTick] = useState(0);
   const [syncTick, setSyncTick] = useState(0); // bumps once the first load finishes
+  localRef.current = normData({ accounts, groups, collapsedGroups, collapsedAccountTx, envelopes, transactions, debts, investments });
 
   // Who is signed in
   useEffect(() => {
@@ -1332,6 +1399,7 @@ export default function BudgetApp() {
       loadedRef.current = false;
       rowIdRef.current = null;
       lastJsonRef.current = '';
+      revRef.current = 0; baseRef.current = null; rowExistsRef.current = false;
       histRef.current.reset = true;
       setAccounts([]); setGroups([]); setCollapsedGroups({}); setCollapsedAccountTx({});
       setEnvelopes([]); setTransactions([]); setDebts([]); setInvestments([]);
@@ -1340,13 +1408,17 @@ export default function BudgetApp() {
     let cancelled = false;
     loadedRef.current = false;
 
-    const applyRemote = (raw) => {
+    const applyRemote = (raw, mergeWith) => {
       // Older saves kept one lump "assigned" per envelope; convert to monthly assignments.
-      const d = migrateBudgetData(raw);
+      let d = migrateBudgetData(raw);
       histRef.current.reset = true; // data loaded from the server starts a fresh undo history
       histRef.current.resetUntil = Date.now() + 500;
       // Remember what the server has (not the converted copy) so a converted budget gets saved back.
       lastJsonRef.current = snapshot(raw);
+      revRef.current = Number(raw && raw._rev) || 0;
+      const theirs = normData(d);
+      if (mergeWith) d = mergeBudgetData(baseRef.current || theirs, mergeWith, theirs); // keep my unsaved edits on top of theirs
+      baseRef.current = theirs;
       setAccounts(d.accounts ?? []);
       setGroups(d.groups ?? []);
       setCollapsedGroups(d.collapsedGroups ?? {});
@@ -1356,6 +1428,8 @@ export default function BudgetApp() {
       setDebts(d.debts ?? []);
       setInvestments(d.investments ?? []);
     };
+
+    applyRemoteRef.current = applyRemote;
 
     const selectMine = () => supabase.from('user_budgets').select('id, data').eq('user_id', userId).limit(1);
 
@@ -1370,22 +1444,25 @@ export default function BudgetApp() {
       let row = data && data[0];
       // First sign-in on a device that used the old private budget ID: attach that budget to this account
       if (!row) {
-        const legacyId = readLegacyBudgetId();
-        if (legacyId) {
+        for (const legacyId of readLegacyBudgetIds()) {
           const claim = await supabase.rpc('claim_budget', { old_id: legacyId });
           if (cancelled) return;
           if (claim && !claim.error && claim.data) {
             const again = await selectMine();
             if (cancelled) return;
             row = again.data && again.data[0];
-            if (row) forgetLegacyBudgetId(); // attached to the account, so the old private ID is no longer needed
+            if (row) { forgetLegacyBudgetId(); break; } // attached to the account, so the old private ID is no longer needed
           }
         }
       }
       if (row) {
         rowIdRef.current = row.id;
+        rowExistsRef.current = true;
         if (row.data) applyRemote(row.data);
       } else {
+        rowExistsRef.current = false;
+        baseRef.current = normData({});
+        revRef.current = 0;
         // A brand-new budget: nothing is saved until you actually add something
         rowIdRef.current = userId;
         lastJsonRef.current = snapshot({});
@@ -1402,7 +1479,11 @@ export default function BudgetApp() {
         const d = payload.new && payload.new.data;
         if (!d) return;
         if (snapshot(d) === lastJsonRef.current) return; // our own save echoing back
-        applyRemote(d);
+        if ((Number(d._rev) || 0) < revRef.current) return; // older than what we already have
+        rowExistsRef.current = true;
+        const unsaved = snapshot(localRef.current) !== lastJsonRef.current;
+        if (unsaved) { applyRemote(d, localRef.current); setNotification('Merged changes made on another device.'); }
+        else applyRemote(d);
       })
       .subscribe();
 
@@ -1420,15 +1501,47 @@ export default function BudgetApp() {
     if (json === lastJsonRef.current) return;
 
     const timer = setTimeout(async () => {
-      const { error } = await supabase
-        .from('user_budgets')
-        .upsert({ id: rowIdRef.current || userId, user_id: userId, data: dataToSave });
-
-      if (error) {
-        console.error('Error saving budget data to Supabase:', error);
-        setNotification("Couldn't save your last change. Check your connection.");
-      } else {
-        lastJsonRef.current = json;
+      if (savingRef.current) return; // the save in progress re-checks when it finishes
+      savingRef.current = true;
+      let retry = true;
+      try {
+        const rev = revRef.current;
+        const next = { ...dataToSave, _rev: rev + 1 };
+        let conflict = false;
+        let failed = null;
+        if (rowExistsRef.current) {
+          // Only overwrite if the server still has the version we last saw
+          let q = supabase.from('user_budgets').update({ data: next }).eq('id', rowIdRef.current);
+          q = rev > 0 ? q.eq('data->>_rev', String(rev)) : q.is('data->>_rev', null);
+          const { data: hit, error } = await q.select('id');
+          if (error) failed = error; else if (!hit || hit.length === 0) conflict = true;
+        } else {
+          const { error } = await supabase.from('user_budgets').insert({ id: rowIdRef.current || userId, user_id: userId, data: next });
+          if (error) { if (error.code === '23505') conflict = true; else failed = error; }
+          else rowExistsRef.current = true;
+        }
+        if (failed) {
+          retry = false; // don't hammer the server while it's failing; the next edit tries again
+          console.error('Error saving budget data to Supabase:', failed);
+          setNotification("Couldn't save your last change. Check your connection.");
+        } else if (conflict) {
+          // Another device saved first: pull its version and lay my unsaved changes on top, then save again
+          const { data: rows, error } = await supabase.from('user_budgets').select('id, data').eq('user_id', userId).limit(1);
+          const row = rows && rows[0];
+          if (error || !row || !row.data) { setNotification("Couldn't save: your budget changed on another device. Please refresh."); }
+          else {
+            rowIdRef.current = row.id; rowExistsRef.current = true;
+            applyRemoteRef.current(row.data, localRef.current);
+            setNotification('Merged changes made on another device.');
+          }
+        } else {
+          revRef.current = rev + 1;
+          baseRef.current = normData(dataToSave);
+          lastJsonRef.current = json;
+        }
+      } finally {
+        savingRef.current = false;
+        if (retry) setSyncTick(t => t + 1); // edits made while saving get picked up
       }
     }, 400);
 
@@ -1900,12 +2013,13 @@ export default function BudgetApp() {
 
   // How far an envelope is from its target, for the selected month.
   // Repeating goals (bills): funded = what is available for the month (carried over + assigned).
-  // Target-by-date goals (savings): funded = the balance in the envelope at the end of the month.
+  // Savings goals (with or without a date): funded = the balance in the envelope at the end of the month,
+  // so money taken out shows up as needed again.
   const getTargetProgress = (env, row) => {
     if (!env.goalType || env.goalType === 'none') return null;
     const target = Number(env.targetAmount);
     if (!(target > 0)) return null;
-    const funded = env.goalType === 'target_by_date' ? row.end : row.start + row.budgeted + row.income;
+    const funded = (env.goalType === 'target_by_date' || env.goalType === 'savings_balance') ? row.end : row.start + row.budgeted + row.income;
     const left = Math.max(0, target - funded);
     const pct = Math.min(100, Math.max(0, (funded / target) * 100));
     return { target, funded, left, pct };
@@ -2542,6 +2656,7 @@ export default function BudgetApp() {
   const startEditTx = (tx) => {
     if (isTxLocked(tx)) { showNotification(LOCKED_MSG); return; }
     setEditingTxId(tx.id);
+    if (isMobile) setTxSheetOpen(true);
     setTxAmount(String(tx.amount));
     setTxDate(tx.date || getTodayISO());
     setTxNotes(tx.notes || '');
@@ -3644,7 +3759,7 @@ export default function BudgetApp() {
     <button
       key={key}
       onClick={onClick}
-      style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '8px', width: '100%', textAlign: 'left', padding: opts.small ? '6px 10px' : '8px 10px', borderRadius: '6px', border: 'none', cursor: 'pointer', fontSize: opts.small ? '0.84rem' : '0.9rem', fontWeight: active ? 600 : 500, backgroundColor: active ? 'rgba(255,255,255,0.14)' : 'transparent', color: active ? 'white' : '#c9d3e6' }}
+      style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '8px', width: '100%', textAlign: 'left', padding: isMobile ? '12px 12px' : (opts.small ? '6px 10px' : '8px 10px'), borderRadius: '6px', border: 'none', cursor: 'pointer', fontSize: opts.small ? '0.84rem' : '0.9rem', fontWeight: active ? 600 : 500, backgroundColor: active ? 'rgba(255,255,255,0.14)' : 'transparent', color: active ? 'white' : '#c9d3e6' }}
     >
       <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{label}</span>
       {right}
@@ -3668,7 +3783,7 @@ export default function BudgetApp() {
     : rtaShown < 0.004 ? { bg: '#e9ecf1', fg: '#4b5563', sub: 'Ready to Assign' }
     : { bg: '#cdeed6', fg: '#17603a', sub: 'Ready to Assign' };
   const rtaPill = (
-    <div data-testid="rta-pill" style={{ display: 'flex', flexDirection: 'column', alignItems: isMobile ? 'center' : 'flex-end', backgroundColor: rtaTone.bg, color: rtaTone.fg, padding: isMobile ? '8px 14px' : '6px 14px', borderRadius: '10px', minWidth: '110px', width: isMobile ? '100%' : 'auto', boxSizing: 'border-box' }}>
+    <div data-testid="rta-pill" onClick={isMobile ? () => setShowRtaInfo(v => !v) : undefined} style={{ cursor: isMobile ? 'pointer' : 'default', display: 'flex', flexDirection: 'column', alignItems: isMobile ? 'center' : 'flex-end', backgroundColor: rtaTone.bg, color: rtaTone.fg, padding: isMobile ? '8px 14px' : '6px 14px', borderRadius: '10px', minWidth: '110px', width: isMobile ? '100%' : 'auto', boxSizing: 'border-box' }}>
       <span style={{ fontSize: '1.1rem', fontWeight: 800, lineHeight: 1.15 }}>{formatMoney(rtaShown)}</span>
       <span style={{ fontSize: '0.66rem', fontWeight: 700, letterSpacing: '0.04em', textTransform: 'uppercase' }}>
         {rtaTone.sub}{budgetMonth !== todayMonth ? ` · ${monthLabel(budgetMonth, true)}` : ''}
@@ -3710,6 +3825,160 @@ export default function BudgetApp() {
       <button onClick={undo} disabled={!histRef.current.undo.length} aria-label="Undo" title="Undo (Ctrl+Z)" style={undoBtnStyle(!!histRef.current.undo.length)}>↶</button>
       <button onClick={redo} disabled={!histRef.current.redo.length} aria-label="Redo" title="Redo (Ctrl+Shift+Z)" style={undoBtnStyle(!!histRef.current.redo.length)}>↷</button>
     </div>
+  );
+  const txFormCard = (
+          <div style={isMobile ? {} : { backgroundColor: 'white', padding: '14px', borderRadius: '10px', boxShadow: '0 1px 3px rgba(0,0,0,0.1)' }}>
+            {!isMobile && <h3 style={{ margin: '0 0 10px 0', fontSize: '1rem' }}>{editingTxId ? 'Edit Transaction' : '+ Add Transaction'}</h3>}
+            {isMobile && (
+              <div role="tablist" aria-label="Transaction type" style={{ display: 'flex', backgroundColor: '#f3f4f6', borderRadius: '10px', padding: '3px', marginBottom: '12px' }}>
+                {[['expense', 'Expense'], ['income', 'Income'], ['transfer', 'Transfer']].map(([k, l]) => (
+                  <button key={k} type="button" disabled={!!editingTxId && (txType === 'transfer') !== (k === 'transfer')} onClick={() => { setTxType(k); setTxSplitLines(null); }} style={{ flex: 1, border: 'none', borderRadius: '8px', padding: '9px 0', fontSize: '0.9rem', fontWeight: 600, cursor: 'pointer', backgroundColor: txType === k ? 'white' : 'transparent', color: txType === k ? '#111827' : '#6b7280', boxShadow: txType === k ? '0 1px 2px rgba(0,0,0,0.15)' : 'none', opacity: (!!editingTxId && (txType === 'transfer') !== (k === 'transfer')) ? 0.4 : 1 }}>{l}</button>
+                ))}
+              </div>
+            )}
+            <datalist id="payee-suggestions">
+              {payeeMemory.slice(0, 200).map(pm => <option key={pm.name} value={pm.name} />)}
+            </datalist>
+            <form onSubmit={handleAddTransaction} style={{ display: 'grid', gridTemplateColumns: isMobile ? 'minmax(0,1fr) minmax(0,1fr)' : 'repeat(auto-fit, minmax(130px, 1fr))', gap: '10px' }}>
+              {txType === 'transfer' ? (
+                <div style={{ gridColumn: 'span 2', fontSize: '0.8rem', color: '#6b7280', alignSelf: 'center' }}>
+                  Moves money between your accounts. It isn't income or spending, so budgets and reports don't change.
+                </div>
+              ) : (
+                <input
+                  type="text"
+                  placeholder="Payee"
+                  list="payee-suggestions"
+                  autoComplete="off"
+                  value={txPayee}
+                  onChange={e => handlePayeeChange(e.target.value)}
+                  style={{ padding: '8px', border: '1px solid #d1d5db', borderRadius: '6px', fontSize: '0.9rem', gridColumn: 'span 2' }}
+                />
+              )}
+              <SplitAmountInput
+                value={txAmount}
+                onChange={setTxAmount}
+                ariaLabel="Amount"
+                placeholder="Amount ($)"
+                width="100%"
+                wrapStyle={isMobile ? { alignItems: 'stretch', order: -1, gridColumn: '1 / -1' } : { alignItems: 'stretch' }}
+                inputStyle={{ padding: '8px', fontSize: '0.9rem', boxSizing: 'border-box' }}
+              />
+              {!isMobile && (
+              <select
+                value={txType}
+                onChange={e => { setTxType(e.target.value); setTxSplitLines(null); }}
+                aria-label="Type"
+                disabled={!!editingTxId && txType === 'transfer'}
+                style={{ padding: '8px', border: '1px solid #d1d5db', borderRadius: '6px', fontSize: '0.9rem' }}
+              >
+                <option value="expense">Expense</option>
+                <option value="income">Income</option>
+                <option value="transfer">Transfer</option>
+              </select>
+              )}
+              <select
+                value={txAccountId}
+                onChange={e => setTxAccountId(e.target.value)}
+                aria-label={txType === 'transfer' ? 'From account' : 'Account'}
+                style={{ padding: '8px', border: '1px solid #d1d5db', borderRadius: '6px', fontSize: '0.9rem', gridColumn: 'span 2' }}
+              >
+                <option value="">{txType === 'transfer' ? 'From account' : 'Select Account'}</option>
+                {accountChoices(txAccountId).map(acc => (
+                  <option key={acc.id} value={acc.id}>{acc.name}</option>
+                ))}
+              </select>
+              {txType === 'transfer' && (
+                <select
+                  value={txToAccountId}
+                  onChange={e => setTxToAccountId(e.target.value)}
+                  aria-label="To account"
+                  style={{ padding: '8px', border: '1px solid #d1d5db', borderRadius: '6px', fontSize: '0.9rem', gridColumn: 'span 2' }}
+                >
+                  <option value="">To account</option>
+                  {accountChoices(txToAccountId).filter(acc => acc.id !== txAccountId).map(acc => (
+                    <option key={acc.id} value={acc.id}>{acc.name}</option>
+                  ))}
+                </select>
+              )}
+              {txType === 'income' && !editingTxId && txSplitLines && renderFormSplit(txSplitLines, setTxSplitLines, txAmount, true)}
+              {txType === 'income' && !editingTxId && !isCreditCard(accounts.find(a => a.id === txAccountId)) && (
+                <button
+                  type="button"
+                  onClick={() => (txSplitLines ? setTxSplitLines(null) : setTxSplitLines([{ envelopeId: '', amount: '' }]))}
+                  style={{ gridColumn: '1 / -1', justifySelf: 'start', background: 'none', border: 'none', color: '#2563eb', cursor: 'pointer', padding: 0, fontSize: '0.85rem', fontWeight: '600' }}
+                >
+                  {txSplitLines ? 'Keep it all in Ready to Assign' : 'Send some to envelopes'}
+                </button>
+              )}
+              {txType === 'expense' && editingTxId && isSplitTx(transactions.find(t => t.id === editingTxId)) && (
+                <div style={{ gridColumn: 'span 2', fontSize: '0.8rem', color: '#6b7280', padding: '6px 0' }}>
+                  Split across several envelopes. Use the Split button in the list to change it. Changing the amount clears the split.
+                </div>
+              )}
+              {txType === 'expense' && !editingTxId && txSplitLines && renderFormSplit(txSplitLines, setTxSplitLines, txAmount)}
+              {txType === 'expense' && !editingTxId && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (txSplitLines) { setTxSplitLines(null); return; }
+                    setTxSplitLines([{ envelopeId: txEnvelopeId, amount: txAmount }, { envelopeId: '', amount: '' }]);
+                  }}
+                  style={{ gridColumn: '1 / -1', justifySelf: 'start', background: 'none', border: 'none', color: '#2563eb', cursor: 'pointer', padding: 0, fontSize: '0.85rem', fontWeight: '600' }}
+                >
+                  {txSplitLines ? 'Use a single envelope instead' : 'Split across envelopes'}
+                </button>
+              )}
+              {txType === 'expense' && !txSplitLines && !(editingTxId && isSplitTx(transactions.find(t => t.id === editingTxId))) && (
+                <select
+                  value={txEnvelopeId}
+                  onChange={e => setTxEnvelopeId(e.target.value)}
+                  style={{ padding: '8px', border: '1px solid #d1d5db', borderRadius: '6px', fontSize: '0.9rem', gridColumn: 'span 2' }}
+                >
+                  <option value="">Select Envelope (Optional)</option>
+                  {activeEnvelopes.filter(env => !env.isHidden || env.id === txEnvelopeId).map(env => (
+                    <option key={env.id} value={env.id}>{env.group} &gt; {env.name}{env.isHidden ? ' (hidden)' : ''}</option>
+                  ))}
+                </select>
+              )}
+              <input
+                type="date"
+                value={txDate}
+                onChange={e => setTxDate(e.target.value)}
+                style={{ padding: '8px', border: '1px solid #d1d5db', borderRadius: '6px', fontSize: '0.9rem' }}
+              />
+              <input
+                type="text"
+                placeholder="Notes"
+                value={txNotes}
+                onChange={e => setTxNotes(e.target.value)}
+                style={{ padding: '8px', border: '1px solid #d1d5db', borderRadius: '6px', fontSize: '0.9rem' }}
+              />
+              <div style={{ gridColumn: '1 / -1', display: 'flex', gap: '8px' }}>
+                <button type="submit" style={{ flex: 1, backgroundColor: '#2563eb', color: 'white', border: 'none', padding: isMobile ? '13px' : '10px', borderRadius: isMobile ? '10px' : '6px', fontWeight: 'bold', cursor: 'pointer', fontSize: '0.9rem' }}>
+                  {editingTxId ? 'Update Transaction' : 'Save Transaction'}
+                </button>
+                {editingTxId && isMobile && (
+                  <button
+                    type="button"
+                    onClick={() => { const id = editingTxId; setTxSheetOpen(false); cancelEditTx(); handleSoftDeleteTransaction(id); }}
+                    style={{ backgroundColor: '#fee2e2', color: '#b91c1c', border: 'none', padding: '12px 16px', borderRadius: '10px', fontWeight: 'bold', cursor: 'pointer', fontSize: '0.95rem' }}
+                  >
+                    Delete
+                  </button>
+                )}
+                {editingTxId && !isMobile && (
+                  <button
+                    type="button"
+                    onClick={cancelEditTx}
+                    style={{ backgroundColor: '#e5e7eb', color: '#374151', border: 'none', padding: '10px 16px', borderRadius: '6px', fontWeight: 'bold', cursor: 'pointer', fontSize: '0.9rem' }}
+                  >
+                    Cancel
+                  </button>
+                )}
+              </div>
+            </form>
+          </div>
   );
   const MOBILE_TABS = [['budget', 'Budget', '◔'], ['accounts', 'Accounts', '▦'], ['transactions', 'Transactions', '☰'], ['reports', 'Reports', '◭']];
 
@@ -3770,7 +4039,7 @@ export default function BudgetApp() {
         <div style={{ height: '1px', backgroundColor: 'rgba(255,255,255,0.12)', margin: '14px 0 8px' }} />
         <nav style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
           {['new', 'accounts', 'investments', 'debts', 'import', 'trash'].filter(tab => tab !== 'investments' || activeInvestments.length === 0).map(tab =>
-            sideItem(tab, activeTab === tab, () => openTab(tab), NAV_LABELS[tab],
+            sideItem(tab, activeTab === tab, () => { if (tab === 'accounts') setManageAccounts(true); openTab(tab); }, tab === 'accounts' && isMobile ? 'Manage Accounts' : NAV_LABELS[tab],
               tab === 'trash' && totalTrashCount > 0
                 ? <span style={{ fontSize: '0.7rem', backgroundColor: 'rgba(255,255,255,0.18)', color: 'white', borderRadius: '10px', padding: '1px 7px' }}>{totalTrashCount}</span>
                 : null,
@@ -3826,7 +4095,7 @@ export default function BudgetApp() {
       {activeTab === 'budget' && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
           {/* Month summary */}
-          <div style={{ backgroundColor: 'white', padding: '10px 14px', borderRadius: '8px', border: '1px solid #e3e6eb' }}>
+          {(!isMobile || showRtaInfo) && <div style={{ backgroundColor: 'white', padding: '10px 14px', borderRadius: '8px', border: '1px solid #e3e6eb' }}>
             <div style={{ display: 'flex', justifyContent: 'flex-end', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
               <button
                 onClick={handleCopyLastMonth}
@@ -3843,7 +4112,7 @@ export default function BudgetApp() {
             <div style={{ fontSize: '0.72rem', color: '#9ca3af', marginTop: '2px', display: isMobile ? 'none' : 'block' }}>
               What's left in an envelope carries into the next month. Overspending resets the envelope to $0 and comes out of the next month's Ready to Assign.
             </div>
-          </div>
+          </div>}
 
           {groups.length > 0 && (
             <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
@@ -3878,7 +4147,7 @@ export default function BudgetApp() {
           {/* Filters and Auto-Assign */}
           {groups.length > 0 && (
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '8px', flexWrap: 'wrap', position: 'relative' }}>
-              <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
+              <div style={{ display: 'flex', gap: '6px', flexWrap: isMobile ? 'nowrap' : 'wrap', overflowX: isMobile ? 'auto' : 'visible', maxWidth: '100%' }}>
                 {[['all', 'All'], ['underfunded', 'Underfunded'], ['overspent', 'Overspent'], ['available', 'Available']].map(([key, label]) => {
                   const n = key === 'all' ? null : envCounts[key];
                   const active = envFilter === key;
@@ -4039,9 +4308,9 @@ export default function BudgetApp() {
                                   </div>
                                 </div>
                               )}
-                              {env.goalType === 'target_by_date' && getNeeded(env, row) > 0.004 && (
+                              {(env.goalType === 'target_by_date' || env.goalType === 'savings_balance') && getNeeded(env, row) > 0.004 && (
                                 <div data-testid="needed-note" style={{ fontSize: '0.72rem', color: '#8a4b00', marginTop: '3px' }}>
-                                  Needs {formatMoney(getNeeded(env, row))} more this month to stay on track
+                                  Needs {formatMoney(getNeeded(env, row))} more {env.goalType === 'savings_balance' ? 'to reach your goal' : 'this month to stay on track'}
                                 </div>
                               )}
                               {row.income > 0 && (
@@ -4079,6 +4348,17 @@ export default function BudgetApp() {
                             <div style={{ textAlign: 'right' }}>
                               <AvailPill value={remaining} row={row} label={`Available ${env.name}`} onClick={() => setSelectedEnvId(selected ? null : env.id)} />
                             </div>
+                            {selected && isMobile && <div onClick={() => { setSelectedEnvId(null); closeMove(); setHideEnvUi(null); }} style={{ position: 'fixed', inset: 0, backgroundColor: 'rgba(17,24,39,0.45)', zIndex: 59 }} />}
+                            <div data-testid={selected && isMobile ? 'env-sheet' : undefined} style={selected && isMobile ? { position: 'fixed', left: 0, right: 0, bottom: 0, zIndex: 60, backgroundColor: 'white', borderRadius: '18px 18px 0 0', maxHeight: '88vh', overflowY: 'auto', boxShadow: '0 -8px 28px rgba(0,0,0,0.25)', padding: '14px 16px calc(18px + env(safe-area-inset-bottom))', display: 'flex', flexDirection: 'column', gap: '12px' } : { display: 'contents' }}>
+                            {selected && isMobile && (
+                              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '10px' }}>
+                                <div style={{ fontWeight: 700, fontSize: '1.1rem', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis' }}>{env.name}</div>
+                                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                                  <AvailPill value={remaining} row={row} label={`Sheet available ${env.name}`} />
+                                  <button onClick={() => { setSelectedEnvId(null); closeMove(); setHideEnvUi(null); }} aria-label="Close" style={{ background: '#f3f4f6', border: 'none', borderRadius: '50%', width: '32px', height: '32px', cursor: 'pointer', color: '#4b5563' }}>✕</button>
+                                </div>
+                              </div>
+                            )}
                             {selected && (
                               <div data-testid="env-actions" style={{ gridColumn: '1 / -1', display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap', paddingTop: '2px' }}>
                                 {isMobile && (
@@ -4098,7 +4378,7 @@ export default function BudgetApp() {
                                 <button
                                   onClick={() => (moveUi && moveUi.envId === env.id ? closeMove() : openMove(env, 'cover'))}
                                   aria-label={`Cover overspending on ${env.name}`}
-                                  style={{ backgroundColor: '#fee2e2', color: '#b91c1c', border: 'none', borderRadius: '6px', padding: '4px 8px', cursor: 'pointer', fontSize: '0.75rem', fontWeight: 'bold' }}
+                                  style={{ backgroundColor: '#fee2e2', color: '#b91c1c', border: 'none', borderRadius: '6px', padding: isMobile ? '12px 16px' : '4px 8px', cursor: 'pointer', fontSize: isMobile ? '0.95rem' : '0.75rem', fontWeight: 'bold' }}
                                 >
                                   Cover
                                 </button>
@@ -4107,7 +4387,7 @@ export default function BudgetApp() {
                                 <button
                                   onClick={() => (moveUi && moveUi.envId === env.id ? closeMove() : openMove(env, 'move'))}
                                   aria-label={`Move money from ${env.name}`}
-                                  style={{ backgroundColor: 'white', color: '#2563eb', border: '1px solid #bfdbfe', borderRadius: '6px', padding: '3px 8px', cursor: 'pointer', fontSize: '0.75rem', fontWeight: 'bold' }}
+                                  style={{ backgroundColor: 'white', color: '#2563eb', border: '1px solid #bfdbfe', borderRadius: '6px', padding: isMobile ? '12px 16px' : '3px 8px', cursor: 'pointer', fontSize: isMobile ? '0.95rem' : '0.75rem', fontWeight: 'bold' }}
                                 >
                                   Move
                                 </button>
@@ -4116,7 +4396,7 @@ export default function BudgetApp() {
                                 <button
                                   onClick={() => handleUnhideEnvelope(env)}
                                   aria-label={`Unhide envelope ${env.name}`}
-                                  style={{ background: 'white', color: '#2563eb', border: '1px solid #bfdbfe', borderRadius: '6px', padding: '3px 8px', cursor: 'pointer', fontSize: '0.75rem', fontWeight: 'bold' }}
+                                  style={{ background: 'white', color: '#2563eb', border: '1px solid #bfdbfe', borderRadius: '6px', padding: isMobile ? '12px 16px' : '3px 8px', cursor: 'pointer', fontSize: isMobile ? '0.95rem' : '0.75rem', fontWeight: 'bold' }}
                                 >
                                   Unhide
                                 </button>
@@ -4125,7 +4405,7 @@ export default function BudgetApp() {
                                   onClick={() => (hideEnvUi === env.id ? setHideEnvUi(null) : requestHideEnvelope(env))}
                                   title="Hide this envelope. Its history stays."
                                   aria-label={`Hide envelope ${env.name}`}
-                                  style={{ background: 'none', color: '#6b7280', border: 'none', cursor: 'pointer', fontSize: '0.75rem', padding: '4px' }}
+                                  style={{ background: 'none', color: '#6b7280', border: 'none', cursor: 'pointer', fontSize: isMobile ? '0.95rem' : '0.75rem', padding: isMobile ? '12px' : '4px' }}
                                 >
                                   Hide
                                 </button>
@@ -4134,15 +4414,15 @@ export default function BudgetApp() {
                                 onClick={() => startEditEnv(env)}
                                 title="Edit envelope"
                                 aria-label="Edit envelope"
-                                style={{ background: 'none', border: 'none', color: '#2563eb', cursor: 'pointer', fontSize: '0.95rem', padding: '4px' }}
+                                style={{ background: 'none', border: 'none', color: '#2563eb', cursor: 'pointer', fontSize: isMobile ? '0.95rem' : '0.95rem', padding: isMobile ? '12px' : '4px' }}
                               >
-                                ✎
+                                {isMobile ? 'Edit' : '✎'}
                               </button>
                               <button
                                 onClick={() => handleSoftDeleteEnvelope(env.id)}
-                                style={{ background: 'none', border: 'none', color: '#dc2626', cursor: 'pointer', fontSize: '0.9rem', padding: '4px' }}
+                                style={{ background: 'none', border: 'none', color: '#dc2626', cursor: 'pointer', fontSize: '0.9rem', padding: isMobile ? '12px' : '4px' }}
                               >
-                                ✕
+                                {isMobile ? 'Delete' : '✕'}
                               </button>
                               </div>
                             )}
@@ -4216,6 +4496,7 @@ export default function BudgetApp() {
                                 )}
                               </div>
                             )}
+                            </div>
                           </div>
                         );
                       })
@@ -4331,6 +4612,7 @@ export default function BudgetApp() {
                   >
                     <option value="none">No Goal</option>
                     <option value="repeating">Repeating Goal (Bill/Subscription)</option>
+                    <option value="savings_balance">Save Up to an Amount (no date)</option>
                     <option value="target_by_date">Target Balance by Date</option>
                   </select>
                   {newEnvGoalType !== 'none' && (
@@ -4443,8 +4725,36 @@ export default function BudgetApp() {
       )}
 
       {/* ACCOUNTS TAB */}
-      {activeTab === 'accounts' && (
+      {activeTab === 'accounts' && isMobile && !manageAccounts && (
+        <div data-testid="accounts-overview" style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
+          {[['Cash', sideCash], ['Credit', sideCredit]].filter(([, l]) => l.length > 0).map(([label, list]) => (
+            <div key={label} style={{ backgroundColor: 'white', borderRadius: '12px', border: '1px solid #e3e6eb', overflow: 'hidden' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', padding: '10px 14px', backgroundColor: '#f7f8fa', fontSize: '0.75rem', fontWeight: 700, letterSpacing: '0.06em', color: '#6b7280', textTransform: 'uppercase' }}>
+                <span>{label}</span><span>{formatMoney(sumBal(list))}</span>
+              </div>
+              {list.map(x => (
+                <button key={x.acc.id} onClick={() => openAccountRegister(x.acc.id)} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', width: '100%', padding: '15px 14px', background: 'white', border: 'none', borderTop: '1px solid #f0f2f5', textAlign: 'left', fontSize: '1rem', cursor: 'pointer', color: '#111827' }}>
+                  <span>{x.acc.name}</span>
+                  <span style={{ fontWeight: 600, fontVariantNumeric: 'tabular-nums', color: x.bal < -0.004 ? '#b42318' : '#111827' }}>{formatMoney(x.bal)}</span>
+                </button>
+              ))}
+            </div>
+          ))}
+          {activeInvestments.length > 0 && (
+            <div style={{ backgroundColor: 'white', borderRadius: '12px', border: '1px solid #e3e6eb', overflow: 'hidden' }}>
+              <div style={{ padding: '10px 14px', backgroundColor: '#f7f8fa', fontSize: '0.75rem', fontWeight: 700, letterSpacing: '0.06em', color: '#6b7280' }}>TRACKING</div>
+              <button onClick={() => openTab('investments')} style={{ display: 'flex', justifyContent: 'space-between', width: '100%', padding: '15px 14px', background: 'white', border: 'none', fontSize: '1rem', cursor: 'pointer', textAlign: 'left' }}>
+                <span>Investments</span><span style={{ fontWeight: 600 }}>{formatMoney(invTotals.value)}</span>
+              </button>
+            </div>
+          )}
+          {sideAccounts.length === 0 && <div style={{ textAlign: 'center', color: '#6b7280', padding: '20px' }}>No accounts yet.</div>}
+          <button onClick={() => setManageAccounts(true)} style={{ padding: '14px', borderRadius: '12px', border: '1px solid #c9dcf0', backgroundColor: 'white', color: '#2f6fb3', fontWeight: 700, fontSize: '1rem', cursor: 'pointer' }}>+ Add / manage accounts</button>
+        </div>
+      )}
+      {activeTab === 'accounts' && (!isMobile || manageAccounts) && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+          {isMobile && <button onClick={() => setManageAccounts(false)} style={{ alignSelf: 'flex-start', background: 'none', border: 'none', color: '#2f6fb3', fontWeight: 700, fontSize: '1rem', cursor: 'pointer', padding: '4px 0' }}>‹ Accounts</button>}
           <div style={{ backgroundColor: 'white', padding: '14px', borderRadius: '10px', boxShadow: '0 1px 3px rgba(0,0,0,0.1)' }}>
             <h3 style={{ margin: '0 0 10px 0', fontSize: '1rem' }}>+ Add Account</h3>
             <form onSubmit={handleAddAccount} style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
@@ -5188,140 +5498,7 @@ export default function BudgetApp() {
       {/* TRANSACTIONS TAB */}
       {activeTab === 'transactions' && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
-          <div style={{ backgroundColor: 'white', padding: '14px', borderRadius: '10px', boxShadow: '0 1px 3px rgba(0,0,0,0.1)' }}>
-            <h3 style={{ margin: '0 0 10px 0', fontSize: '1rem' }}>{editingTxId ? 'Edit Transaction' : '+ Add Transaction'}</h3>
-            <datalist id="payee-suggestions">
-              {payeeMemory.slice(0, 200).map(pm => <option key={pm.name} value={pm.name} />)}
-            </datalist>
-            <form onSubmit={handleAddTransaction} style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(130px, 1fr))', gap: '10px' }}>
-              {txType === 'transfer' ? (
-                <div style={{ gridColumn: 'span 2', fontSize: '0.8rem', color: '#6b7280', alignSelf: 'center' }}>
-                  Moves money between your accounts. It isn't income or spending, so budgets and reports don't change.
-                </div>
-              ) : (
-                <input
-                  type="text"
-                  placeholder="Payee"
-                  list="payee-suggestions"
-                  autoComplete="off"
-                  value={txPayee}
-                  onChange={e => handlePayeeChange(e.target.value)}
-                  style={{ padding: '8px', border: '1px solid #d1d5db', borderRadius: '6px', fontSize: '0.9rem', gridColumn: 'span 2' }}
-                />
-              )}
-              <SplitAmountInput
-                value={txAmount}
-                onChange={setTxAmount}
-                ariaLabel="Amount"
-                placeholder="Amount ($)"
-                width="100%"
-                wrapStyle={{ alignItems: 'stretch' }}
-                inputStyle={{ padding: '8px', fontSize: '0.9rem', boxSizing: 'border-box' }}
-              />
-              <select
-                value={txType}
-                onChange={e => { setTxType(e.target.value); setTxSplitLines(null); }}
-                aria-label="Type"
-                disabled={!!editingTxId && txType === 'transfer'}
-                style={{ padding: '8px', border: '1px solid #d1d5db', borderRadius: '6px', fontSize: '0.9rem' }}
-              >
-                <option value="expense">Expense</option>
-                <option value="income">Income</option>
-                <option value="transfer">Transfer</option>
-              </select>
-              <select
-                value={txAccountId}
-                onChange={e => setTxAccountId(e.target.value)}
-                aria-label={txType === 'transfer' ? 'From account' : 'Account'}
-                style={{ padding: '8px', border: '1px solid #d1d5db', borderRadius: '6px', fontSize: '0.9rem', gridColumn: 'span 2' }}
-              >
-                <option value="">{txType === 'transfer' ? 'From account' : 'Select Account'}</option>
-                {accountChoices(txAccountId).map(acc => (
-                  <option key={acc.id} value={acc.id}>{acc.name}</option>
-                ))}
-              </select>
-              {txType === 'transfer' && (
-                <select
-                  value={txToAccountId}
-                  onChange={e => setTxToAccountId(e.target.value)}
-                  aria-label="To account"
-                  style={{ padding: '8px', border: '1px solid #d1d5db', borderRadius: '6px', fontSize: '0.9rem', gridColumn: 'span 2' }}
-                >
-                  <option value="">To account</option>
-                  {accountChoices(txToAccountId).filter(acc => acc.id !== txAccountId).map(acc => (
-                    <option key={acc.id} value={acc.id}>{acc.name}</option>
-                  ))}
-                </select>
-              )}
-              {txType === 'income' && !editingTxId && txSplitLines && renderFormSplit(txSplitLines, setTxSplitLines, txAmount, true)}
-              {txType === 'income' && !editingTxId && !isCreditCard(accounts.find(a => a.id === txAccountId)) && (
-                <button
-                  type="button"
-                  onClick={() => (txSplitLines ? setTxSplitLines(null) : setTxSplitLines([{ envelopeId: '', amount: '' }]))}
-                  style={{ gridColumn: '1 / -1', justifySelf: 'start', background: 'none', border: 'none', color: '#2563eb', cursor: 'pointer', padding: 0, fontSize: '0.85rem', fontWeight: '600' }}
-                >
-                  {txSplitLines ? 'Keep it all in Ready to Assign' : 'Send some to envelopes'}
-                </button>
-              )}
-              {txType === 'expense' && editingTxId && isSplitTx(transactions.find(t => t.id === editingTxId)) && (
-                <div style={{ gridColumn: 'span 2', fontSize: '0.8rem', color: '#6b7280', padding: '6px 0' }}>
-                  Split across several envelopes. Use the Split button in the list to change it. Changing the amount clears the split.
-                </div>
-              )}
-              {txType === 'expense' && !editingTxId && txSplitLines && renderFormSplit(txSplitLines, setTxSplitLines, txAmount)}
-              {txType === 'expense' && !editingTxId && (
-                <button
-                  type="button"
-                  onClick={() => {
-                    if (txSplitLines) { setTxSplitLines(null); return; }
-                    setTxSplitLines([{ envelopeId: txEnvelopeId, amount: txAmount }, { envelopeId: '', amount: '' }]);
-                  }}
-                  style={{ gridColumn: '1 / -1', justifySelf: 'start', background: 'none', border: 'none', color: '#2563eb', cursor: 'pointer', padding: 0, fontSize: '0.85rem', fontWeight: '600' }}
-                >
-                  {txSplitLines ? 'Use a single envelope instead' : 'Split across envelopes'}
-                </button>
-              )}
-              {txType === 'expense' && !txSplitLines && !(editingTxId && isSplitTx(transactions.find(t => t.id === editingTxId))) && (
-                <select
-                  value={txEnvelopeId}
-                  onChange={e => setTxEnvelopeId(e.target.value)}
-                  style={{ padding: '8px', border: '1px solid #d1d5db', borderRadius: '6px', fontSize: '0.9rem', gridColumn: 'span 2' }}
-                >
-                  <option value="">Select Envelope (Optional)</option>
-                  {activeEnvelopes.filter(env => !env.isHidden || env.id === txEnvelopeId).map(env => (
-                    <option key={env.id} value={env.id}>{env.group} &gt; {env.name}{env.isHidden ? ' (hidden)' : ''}</option>
-                  ))}
-                </select>
-              )}
-              <input
-                type="date"
-                value={txDate}
-                onChange={e => setTxDate(e.target.value)}
-                style={{ padding: '8px', border: '1px solid #d1d5db', borderRadius: '6px', fontSize: '0.9rem' }}
-              />
-              <input
-                type="text"
-                placeholder="Notes"
-                value={txNotes}
-                onChange={e => setTxNotes(e.target.value)}
-                style={{ padding: '8px', border: '1px solid #d1d5db', borderRadius: '6px', fontSize: '0.9rem' }}
-              />
-              <div style={{ gridColumn: '1 / -1', display: 'flex', gap: '8px' }}>
-                <button type="submit" style={{ flex: 1, backgroundColor: '#2563eb', color: 'white', border: 'none', padding: '10px', borderRadius: '6px', fontWeight: 'bold', cursor: 'pointer', fontSize: '0.9rem' }}>
-                  {editingTxId ? 'Update Transaction' : 'Save Transaction'}
-                </button>
-                {editingTxId && (
-                  <button
-                    type="button"
-                    onClick={cancelEditTx}
-                    style={{ backgroundColor: '#e5e7eb', color: '#374151', border: 'none', padding: '10px 16px', borderRadius: '6px', fontWeight: 'bold', cursor: 'pointer', fontSize: '0.9rem' }}
-                  >
-                    Cancel
-                  </button>
-                )}
-              </div>
-            </form>
-          </div>
+          {!isMobile && txFormCard}
 
           {transferMatches.length > 0 && (
             <div data-testid="transfer-matches" style={{ backgroundColor: '#eef2ff', border: '1px solid #c7d2fe', padding: '12px 14px', borderRadius: '10px' }}>
@@ -5362,6 +5539,9 @@ export default function BudgetApp() {
           )}
 
           {/* CSV import */}
+          {isMobile && !showCsv ? (
+            <button onClick={() => setShowCsv(true)} style={{ background: 'white', border: '1px dashed #c9d2de', borderRadius: '10px', padding: '12px', color: '#2f6fb3', fontWeight: 600, fontSize: '0.9rem', cursor: 'pointer' }}>Import transactions from a CSV file…</button>
+          ) : (
           <div style={{ backgroundColor: 'white', padding: '14px', borderRadius: '10px', boxShadow: '0 1px 3px rgba(0,0,0,0.1)' }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
               <div style={{ minWidth: 0 }}>
@@ -5525,6 +5705,7 @@ export default function BudgetApp() {
             )}
           </div>
 
+          )}
           <div style={{ backgroundColor: 'white', padding: '14px', borderRadius: '10px', boxShadow: '0 1px 3px rgba(0,0,0,0.1)' }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px', flexWrap: 'wrap', gap: '8px' }}>
               <h3 style={{ margin: 0, fontSize: '1rem' }}>All Transactions</h3>
@@ -5572,6 +5753,8 @@ export default function BudgetApp() {
                 aria-label="Search transactions"
                 style={{ flex: '2 1 180px', padding: '7px', border: '1px solid #d1d5db', borderRadius: '6px', fontSize: '0.85rem' }}
               />
+              {isMobile && <button type="button" onClick={() => setTxFiltersOpen(v => !v)} aria-expanded={txFiltersOpen} style={{ padding: '8px 12px', border: '1px solid #d1d5db', borderRadius: '8px', backgroundColor: txFiltersActive ? '#e8f0fa' : 'white', color: '#2f6fb3', fontWeight: 600, fontSize: '0.85rem', cursor: 'pointer' }}>Filters{txFiltersActive ? ' •' : ''}</button>}
+              {(!isMobile || txFiltersOpen) && <>
               <select value={txFilterAccount} onChange={e => setTxFilterAccount(e.target.value)} aria-label="Filter by account" style={{ flex: '1 1 110px', padding: '7px', border: '1px solid #d1d5db', borderRadius: '6px', fontSize: '0.85rem' }}>
                 <option value="">All accounts</option>
                 {activeAccounts.map(a => (<option key={a.id} value={a.id}>{a.name}{a.isHidden ? ' (hidden)' : ''}</option>))}
@@ -5599,6 +5782,7 @@ export default function BudgetApp() {
               </select>
               <input type="date" value={txFromDate} onChange={e => setTxFromDate(e.target.value)} aria-label="From date" style={{ padding: '6px', border: '1px solid #d1d5db', borderRadius: '6px', fontSize: '0.85rem' }} />
               <input type="date" value={txToDate} onChange={e => setTxToDate(e.target.value)} aria-label="To date" style={{ padding: '6px', border: '1px solid #d1d5db', borderRadius: '6px', fontSize: '0.85rem' }} />
+              </>}
               {txFiltersActive && (
                 <>
                   <span data-testid="tx-filter-count" style={{ fontSize: '0.8rem', color: '#6b7280' }}>
@@ -5609,7 +5793,7 @@ export default function BudgetApp() {
               )}
             </div>
 
-            {visibleTransactions.length > 0 && (
+            {!isMobile && visibleTransactions.length > 0 && (
               <label style={{ display: 'flex', alignItems: 'center', gap: '8px', paddingBottom: '8px', borderBottom: '1px solid #e5e7eb', fontSize: '0.85rem', color: '#6b7280', cursor: 'pointer' }}>
                 <input
                   type="checkbox"
@@ -5640,19 +5824,22 @@ export default function BudgetApp() {
 
                     return (
                       <React.Fragment key={tx.id}>
-                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '8px 0', borderBottom: unlockAskId === tx.id ? 'none' : '1px solid #f3f4f6', gap: '8px' }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: isMobile ? '12px 0' : '8px 0', borderBottom: unlockAskId === tx.id ? 'none' : '1px solid #f3f4f6', gap: '8px' }}>
                         <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flex: 1, minWidth: 0 }}>
-                          <input
+                          {!isMobile && <input
                             type="checkbox"
                             checked={isSelected}
                             onChange={() => handleToggleSelectTx(tx.id)}
                             style={{ cursor: 'pointer', flexShrink: 0 }}
-                          />
-                          <div style={{ minWidth: 0, flex: 1 }}>
+                          />}
+                          <div onClick={isMobile ? () => (locked ? setUnlockAskId(tx.id) : startEditTx(tx)) : undefined} style={{ minWidth: 0, flex: 1, cursor: isMobile ? 'pointer' : 'default' }}>
                             <div style={{ fontWeight: '600', fontSize: '0.9rem', wordBreak: 'break-word' }}>{tx.payee}</div>
                             <div style={{ fontSize: '0.75rem', color: '#6b7280', wordBreak: 'break-word' }}>
                               {acc?.name} {tx.notes ? `• ${tx.notes}` : ''}
                             </div>
+                            {isMobile && tx.type === 'expense' && !tx.isTransfer && !isSplitTx(tx) && (
+                              <div style={{ marginTop: '3px', fontSize: '0.75rem', fontWeight: 600, color: env ? '#2f6fb3' : '#b45309' }}>{env ? env.name : 'Needs a category'}</div>
+                            )}
                             {tx.isTransfer && (
                               <div style={{ marginTop: '4px', display: 'flex', gap: '10px', alignItems: 'center', flexWrap: 'wrap' }}>
                                 <span data-testid="transfer-badge" style={{ fontSize: '0.7rem', fontWeight: '600', color: '#4f46e5', backgroundColor: '#eef2ff', padding: '2px 6px', borderRadius: '999px' }}>
@@ -5705,7 +5892,7 @@ export default function BudgetApp() {
                                 {splitTxId === tx.id ? 'Close' : incomeAllocs(tx).length ? 'Edit envelopes' : 'Send to envelopes'}
                               </button>
                             )}
-                            {tx.type === 'expense' && !tx.isTransfer && !isSplitTx(tx) && (
+                            {!isMobile && tx.type === 'expense' && !tx.isTransfer && !isSplitTx(tx) && (
                               <select
                                 value={tx.envelopeId || ''}
                                 onChange={e => handleAssignTxEnvelope(tx.id, e.target.value)}
@@ -5836,7 +6023,7 @@ export default function BudgetApp() {
                           </div>
                         </div>
                         <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexShrink: 0 }}>
-                          <span style={{ fontWeight: 'bold', color: tx.isTransfer ? '#6b7280' : (tx.type === 'income') === (Number(tx.amount) >= 0) ? '#059669' : '#1f2937', fontSize: '0.9rem' }}>
+                          <span style={{ fontWeight: 'bold', color: tx.isTransfer ? '#6b7280' : (tx.type === 'income') === (Number(tx.amount) >= 0) ? '#059669' : '#1f2937', fontSize: isMobile ? '1rem' : '0.9rem' }}>
                             {signedMoney(tx)}
                           </span>
                           {hasLock && (
@@ -5849,7 +6036,7 @@ export default function BudgetApp() {
                               {locked ? '🔒' : '🔓'}
                             </button>
                           )}
-                          <button
+                          {!isMobile && <button
                             onClick={() => startEditTx(tx)}
                             disabled={locked}
                             title={locked ? 'Reconciled and locked' : 'Edit transaction'}
@@ -5857,8 +6044,8 @@ export default function BudgetApp() {
                             style={{ background: 'none', border: 'none', color: '#2563eb', cursor: locked ? 'not-allowed' : 'pointer', padding: '4px', opacity: locked ? 0.35 : 1 }}
                           >
                             ✎
-                          </button>
-                          <button
+                          </button>}
+                          {!isMobile && <button
                             onClick={() => handleSoftDeleteTransaction(tx.id)}
                             disabled={locked}
                             title={locked ? 'Reconciled and locked' : 'Delete transaction'}
@@ -5866,7 +6053,7 @@ export default function BudgetApp() {
                             style={{ background: 'none', border: 'none', color: '#dc2626', cursor: locked ? 'not-allowed' : 'pointer', padding: '4px', opacity: locked ? 0.35 : 1 }}
                           >
                             ✕
-                          </button>
+                          </button>}
                         </div>
                       </div>
                       {unlockAskId === tx.id && locked && (
@@ -6234,24 +6421,31 @@ export default function BudgetApp() {
         </div>
       </div>
 
+      {/* Phone layout: global touch tweaks, transaction sheet, floating add button and bottom tab bar */}
+      {isMobile && <style>{`input,select,textarea{font-size:16px !important} input[aria-label="Amount"]{font-size:1.5rem !important;font-weight:700 !important;padding:10px !important} [role=dialog] input,[role=dialog] select{min-width:0 !important;max-width:100% !important;box-sizing:border-box !important} button{touch-action:manipulation}`}</style>}
+      {isMobile && txSheetOpen && (
+        <BottomSheet title={editingTxId ? 'Edit transaction' : 'Add transaction'} testId="tx-sheet" onClose={() => { setTxSheetOpen(false); cancelEditTx(); }}>
+          {txFormCard}
+        </BottomSheet>
+      )}
       {/* Phone layout: floating add button and bottom tab bar */}
       {isMobile && ['budget', 'accounts', 'transactions'].includes(activeTab) && (
         <button
-          onClick={() => { setTxFilterAccount(''); openTab('transactions'); scrollToTop(); }}
+          onClick={() => { cancelEditTx(); if (txFilterAccount) setTxAccountId(txFilterAccount); setTxSheetOpen(true); }}
           aria-label="Add transaction"
-          style={{ position: 'fixed', right: '16px', bottom: '72px', width: '52px', height: '52px', borderRadius: '50%', border: 'none', backgroundColor: '#2f6fb3', color: 'white', fontSize: '1.8rem', lineHeight: 1, boxShadow: '0 4px 12px rgba(0,0,0,0.25)', cursor: 'pointer', zIndex: 30 }}
+          style={{ position: 'fixed', right: '16px', bottom: 'calc(72px + env(safe-area-inset-bottom))', width: '56px', height: '56px', borderRadius: '50%', border: 'none', backgroundColor: '#2f6fb3', color: 'white', fontSize: '1.8rem', lineHeight: 1, boxShadow: '0 4px 12px rgba(0,0,0,0.25)', cursor: 'pointer', zIndex: 30 }}
         >
           +
         </button>
       )}
       {isMobile && (
-        <nav data-testid="mobile-tabs" style={{ position: 'fixed', left: 0, right: 0, bottom: 0, height: '58px', display: 'flex', backgroundColor: 'white', borderTop: '1px solid #e3e6eb', zIndex: 30 }}>
+        <nav data-testid="mobile-tabs" style={{ position: 'fixed', left: 0, right: 0, bottom: 0, height: 'calc(58px + env(safe-area-inset-bottom))', paddingBottom: 'env(safe-area-inset-bottom)', display: 'flex', backgroundColor: 'white', borderTop: '1px solid #e3e6eb', zIndex: 30 }}>
           {MOBILE_TABS.map(([tab, label, glyph]) => {
             const active = activeTab === tab;
             return (
               <button
                 key={tab}
-                onClick={() => { if (tab === 'transactions') setTxFilterAccount(''); openTab(tab); }}
+                onClick={() => { if (tab === 'transactions') setTxFilterAccount(''); if (tab === 'accounts') setManageAccounts(false); setSelectedEnvId(null); openTab(tab); }}
                 style={{ flex: 1, background: 'none', border: 'none', cursor: 'pointer', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: '2px', color: active ? '#2f6fb3' : '#6b7280', fontWeight: active ? 700 : 500, fontSize: '0.68rem', borderTop: active ? '2px solid #2f6fb3' : '2px solid transparent' }}
               >
                 <span style={{ fontSize: '1.1rem', lineHeight: 1 }}>{glyph}</span>
