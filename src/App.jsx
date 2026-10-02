@@ -3262,8 +3262,8 @@ export default function BudgetApp() {
       ? transactions.find(t => t.id !== tx.id && t.transferId === tx.transferId)
       : null;
 
-  const startEditTx = (tx) => {
-    if (isTxLocked(tx)) { showNotification(LOCKED_MSG); return; }
+  const startEditTx = (tx, force) => {
+    if (!force && isTxLocked(tx)) { showNotification(LOCKED_MSG); return; }
     setEditingTxId(tx.id);
     if (isMobile) setTxSheetOpen(true);
     setTxAmount(String(tx.amount));
@@ -6448,6 +6448,8 @@ export default function BudgetApp() {
     const simple = !tx.isTransfer && !split && incomeAllocs(tx).length === 0;
     const cleared = !!(tx.cleared || tx.reconciled);
     const close = () => { setMTxId(null); setMTxMenu(null); setMTxMore(false); };
+    // Locked (reconciled) rows unlock themselves when you go to change their category or split them.
+    const thenEdit = (fn) => { if (locked) { unlockTx(tx); setTimeout(fn, 0); } else fn(); };
     const field = { width: '100%', boxSizing: 'border-box', background: 'none', border: 'none', color: MD.text, fontSize: '1.05rem', fontWeight: 600, padding: 0, fontFamily: 'inherit' };
     const rowBox = (icon, label, body, onClick, last, testId) => (
       <div role={onClick ? 'button' : undefined} onClick={onClick} data-testid={testId} style={{ display: 'flex', gap: '16px', alignItems: 'center', padding: '14px 18px', borderBottom: last ? 'none' : '1px solid ' + MD.line, cursor: onClick ? 'pointer' : 'default' }}>
@@ -6495,15 +6497,15 @@ export default function BudgetApp() {
             : split ? <div>{tx.splits.map((sp, i) => { const se = envelopes.find(e => e.id === sp.envelopeId); return <div key={i} data-testid="split-part" style={{ fontSize: '0.95rem', display: 'flex', justifyContent: 'space-between', padding: '2px 0' }}><span>{se ? se.name : 'No envelope'}</span><span>{plainMoney(sp.amount)}</span></div>; })}</div>
             : income ? <span style={{ backgroundColor: '#1c3a1c', color: '#b6f08a', borderRadius: '8px', padding: '5px 10px', fontSize: '0.95rem' }}>Ready to Assign</span>
             : <span style={{ backgroundColor: env ? '#25253f' : '#4a3410', color: env ? MD.text : '#ffcf70', borderRadius: '8px', padding: '5px 10px', fontSize: '0.95rem' }}>{env ? env.name : 'Uncategorized'}</span>,
-            (!tx.isTransfer && !split && !income && !locked) ? () => setMTxMenu('cat') : null, false, 'tx-cat-row')}
+            (!tx.isTransfer && !income && !LOAN_ACC_IDS.has(tx.accountId)) ? (split ? () => thenEdit(() => startEditTx(tx, true)) : () => thenEdit(() => setMTxMenu('cat'))) : null, false, 'tx-cat-row')}
           {rowBox('▤', 'Account', tx.isTransfer ? <div style={{ fontWeight: 600, fontSize: '1.05rem' }}>{acc ? acc.name : ''}{other ? ` ⇄ ${other.name}` : ''}</div> : (
             <select aria-label="Account" value={tx.accountId} disabled={locked} onChange={e => patchTx(tx.id, { accountId: e.target.value })} style={{ ...field, appearance: 'none', WebkitAppearance: 'none' }}>
               {accountChoices(tx.accountId).map(a => (<option key={a.id} value={a.id} style={{ color: '#111' }}>{a.name}</option>))}
             </select>))}
           {rowBox('▦', 'Date', <input type="date" aria-label="Date" value={tx.date || ''} disabled={locked} onChange={e => { if (e.target.value) patchTx(tx.id, { date: e.target.value }); }} style={{ ...field, colorScheme: 'dark' }} />, null, true)}
         </div>
-        {(split || tx.isTransfer || incomeAllocs(tx).length > 0 || (!tx.isTransfer && !locked)) && (
-          <button onClick={() => { startEditTx(tx); }} disabled={locked} style={{ width: '100%', backgroundColor: '#1d1d38', color: MD.accent, border: 'none', borderRadius: '999px', padding: '14px', fontWeight: 700, fontSize: '1rem', cursor: 'pointer', marginBottom: '14px', opacity: locked ? 0.4 : 1 }}>{tx.isTransfer ? 'Edit transfer' : split ? 'Edit split' : income ? (incomeAllocs(tx).length ? 'Edit envelopes' : 'Send to envelopes…') : 'Split across categories…'}</button>
+        {(split || tx.isTransfer || incomeAllocs(tx).length > 0 || !tx.isTransfer) && (
+          <button onClick={() => thenEdit(() => startEditTx(tx, true))} style={{ width: '100%', backgroundColor: '#1d1d38', color: MD.accent, border: 'none', borderRadius: '999px', padding: '14px', fontWeight: 700, fontSize: '1rem', cursor: 'pointer', marginBottom: '14px' }}>{tx.isTransfer ? 'Edit transfer' : split ? 'Edit split' : income ? (incomeAllocs(tx).length ? 'Edit envelopes' : 'Send to envelopes…') : 'Split across categories…'}</button>
         )}
         {!tx.isTransfer && !split && !income && !locked && (
           <button onClick={() => openSplit(tx) || setMTxId(null)} style={{ display: 'none' }} />
