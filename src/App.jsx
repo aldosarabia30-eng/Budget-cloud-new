@@ -6733,6 +6733,9 @@ export default function BudgetApp() {
     const cleared = !!(tx.cleared || tx.reconciled);
     const close = () => { setMTxId(null); setMTxMenu(null); setMTxMore(false); };
     // Locked (reconciled) rows unlock themselves when you go to change their category or split them.
+    const incAl = incomeAllocs(tx);
+    const incSingle = incAl.length === 1 && incAl[0].amount >= Number(tx.amount) - 0.004;
+    const setIncomeEnv = (envId) => { setTransactions(prev => prev.map(t => { if (t.id !== tx.id) return t; const { allocations, ...rest } = t; return envId ? { ...rest, allocations: [{ envelopeId: envId, amount: Number(t.amount) }] } : rest; })); showNotification(envId ? `Sent to '${(envelopes.find(e => e.id === envId) || {}).name}'.` : 'Back in Ready to Assign.'); };
     const thenEdit = (fn) => { if (locked) { unlockTx(tx); setTimeout(fn, 0); } else fn(); };
     const field = { width: '100%', boxSizing: 'border-box', background: 'none', border: 'none', color: MD.text, fontSize: '1.05rem', fontWeight: 600, padding: 0, fontFamily: 'inherit' };
     const rowBox = (icon, label, body, onClick, last, testId) => (
@@ -6779,9 +6782,11 @@ export default function BudgetApp() {
           {rowBox('▣', 'Category',
             (tx.isTransfer || LOAN_ACC_IDS.has(tx.accountId)) ? <span style={{ color: MD.muted }}>Category not needed</span>
             : split ? <div>{tx.splits.map((sp, i) => { const se = envelopes.find(e => e.id === sp.envelopeId); return <div key={i} data-testid="split-part" style={{ fontSize: '0.95rem', display: 'flex', justifyContent: 'space-between', padding: '2px 0' }}><span>{se ? se.name : 'No envelope'}</span><span>{plainMoney(sp.amount)}</span></div>; })}</div>
-            : income ? <span style={{ backgroundColor: '#1c3a1c', color: '#b6f08a', borderRadius: '8px', padding: '5px 10px', fontSize: '0.95rem' }}>Ready to Assign</span>
+            : income ? (incAl.length === 0 || incSingle
+              ? <span style={{ backgroundColor: incAl.length ? '#25253f' : '#1c3a1c', color: incAl.length ? MD.text : '#b6f08a', borderRadius: '8px', padding: '5px 10px', fontSize: '0.95rem' }}>{incAl.length ? ((envelopes.find(e => e.id === incAl[0].envelopeId) || {}).name || 'Envelope') : 'Ready to Assign'}</span>
+              : <div>{incAl.map((a, i) => { const ae = envelopes.find(e => e.id === a.envelopeId); return <div key={i} style={{ fontSize: '0.95rem', display: 'flex', justifyContent: 'space-between', padding: '2px 0' }}><span>{ae ? ae.name : 'Envelope'}</span><span>{plainMoney(a.amount)}</span></div>; })}<div style={{ fontSize: '0.85rem', color: MD.muted }}>{plainMoney(round2(Number(tx.amount) - incAl.reduce((t, a) => t + a.amount, 0)))} stays in Ready to Assign</div></div>)
             : <span style={{ backgroundColor: env ? '#25253f' : '#4a3410', color: env ? MD.text : '#ffcf70', borderRadius: '8px', padding: '5px 10px', fontSize: '0.95rem' }}>{env ? env.name : 'Uncategorized'}</span>,
-            (!tx.isTransfer && !income && !LOAN_ACC_IDS.has(tx.accountId)) ? (split ? () => thenEdit(() => startEditTx(tx, true)) : () => thenEdit(() => setMTxMenu('cat'))) : null, false, 'tx-cat-row')}
+            (!tx.isTransfer && !LOAN_ACC_IDS.has(tx.accountId)) ? ((split || (income && !incSingle && incAl.length > 0)) ? () => thenEdit(() => startEditTx(tx, true)) : () => thenEdit(() => setMTxMenu('cat'))) : null, false, 'tx-cat-row')}
           {rowBox('▤', 'Account', tx.isTransfer ? <div style={{ fontWeight: 600, fontSize: '1.05rem' }}>{acc ? acc.name : ''}{other ? ` ⇄ ${other.name}` : ''}</div> : (
             <select aria-label="Account" value={tx.accountId} disabled={locked} onChange={e => patchTx(tx.id, { accountId: e.target.value })} style={{ ...field, appearance: 'none', WebkitAppearance: 'none' }}>
               {accountChoices(tx.accountId).map(a => (<option key={a.id} value={a.id} style={{ color: '#111' }}>{a.name}</option>))}
@@ -6819,11 +6824,12 @@ export default function BudgetApp() {
             <div onClick={() => setMTxMenu(null)} style={{ position: 'fixed', inset: 0, backgroundColor: 'rgba(0,0,0,0.6)', zIndex: 70 }} />
             <div data-testid="tx-cat-sheet" role="dialog" aria-label="Choose category" style={{ position: 'fixed', left: 0, right: 0, bottom: 0, maxHeight: '75vh', overflowY: 'auto', zIndex: 71, backgroundColor: MD.card, borderRadius: '18px 18px 0 0', padding: '14px 0 calc(16px + env(safe-area-inset-bottom))' }}>
               <div style={{ fontWeight: 800, padding: '4px 18px 10px', fontSize: '1.05rem' }}>Category</div>
-              {tx.envelopeId && <button onClick={() => { handleAssignTxEnvelope(tx.id, ''); setMTxMenu(null); }} style={{ display: 'block', width: '100%', textAlign: 'left', background: 'none', border: 'none', color: '#ffcf70', padding: '12px 18px', fontSize: '1rem', cursor: 'pointer' }}>Uncategorized</button>}
+              {income && <button onClick={() => { setIncomeEnv(''); setMTxMenu(null); }} style={{ display: 'block', width: '100%', textAlign: 'left', background: incAl.length === 0 ? '#23235a' : 'none', border: 'none', color: '#b6f08a', padding: '12px 18px', fontSize: '1rem', cursor: 'pointer' }}>Ready to Assign</button>}
+              {!income && tx.envelopeId && <button onClick={() => { handleAssignTxEnvelope(tx.id, ''); setMTxMenu(null); }} style={{ display: 'block', width: '100%', textAlign: 'left', background: 'none', border: 'none', color: '#ffcf70', padding: '12px 18px', fontSize: '1rem', cursor: 'pointer' }}>Uncategorized</button>}
               {envelopeChoices.map(c => (
                 <div key={c.label}>
                   <div style={{ padding: '10px 18px 4px', fontSize: '0.78rem', fontWeight: 700, color: MD.muted, textTransform: 'uppercase', letterSpacing: '0.04em' }}>{c.label}</div>
-                  {c.list.map(e => (<button key={e.id} onClick={() => { handleAssignTxEnvelope(tx.id, e.id); setMTxMenu(null); }} style={{ display: 'flex', justifyContent: 'space-between', width: '100%', textAlign: 'left', background: tx.envelopeId === e.id ? '#23235a' : 'none', border: 'none', color: MD.text, padding: '12px 18px', fontSize: '1rem', cursor: 'pointer' }}><span>{e.name}</span>{tx.envelopeId === e.id && <span>✓</span>}</button>))}
+                  {c.list.map(e => (<button key={e.id} onClick={() => { if (income) setIncomeEnv(e.id); else handleAssignTxEnvelope(tx.id, e.id); setMTxMenu(null); }} style={{ display: 'flex', justifyContent: 'space-between', width: '100%', textAlign: 'left', background: tx.envelopeId === e.id ? '#23235a' : 'none', border: 'none', color: MD.text, padding: '12px 18px', fontSize: '1rem', cursor: 'pointer' }}><span>{e.name}</span>{tx.envelopeId === e.id && <span>✓</span>}</button>))}
                 </div>
               ))}
             </div>
