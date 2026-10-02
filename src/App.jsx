@@ -1663,6 +1663,7 @@ export default function BudgetApp() {
   const [barMenu, setBarMenu] = useState(null); // 'flag' | 'more' | null
   const [collapsedSplits, setCollapsedSplits] = useState([]);
   const [moveHover, setMoveHover] = useState(false);
+  const [payPop, setPayPop] = useState(null); // { fromId, amount, date }
   const [showCsv, setShowCsv] = useState(false); // phone: CSV import collapsed by default
   const [manageAccounts, setManageAccounts] = useState(false); // phone: Accounts tab shows overview unless true
   const [showRtaInfo, setShowRtaInfo] = useState(false); // phone: Ready to Assign breakdown
@@ -4865,7 +4866,21 @@ export default function BudgetApp() {
                       )}
                       </div>
                     </div>
-                    <div style={{ marginTop: '12px', paddingTop: '10px', borderTop: '1px solid #e8e5de' }}>{balanceTriple(clearedBal, workingBal)}</div>
+                    <div style={{ marginTop: '12px', paddingTop: '10px', borderTop: '1px solid #e8e5de', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '12px' }}>
+                      {balanceTriple(clearedBal, workingBal)}
+                      {isCreditCard(acc) && (() => {
+                        const c = (budgetView && budgetView.cc && budgetView.cc[acc.id]) || { available: 0 };
+                        const owed = Math.max(0, round2(-workingBal));
+                        const short = owed > 0.004 && c.available < owed - 0.004;
+                        const bg = c.available <= 0.004 ? '#e5e7eb' : short ? '#ffe7c2' : '#b8f0b8';
+                        return (
+                          <div data-testid="cc-payment-pill" style={{ textAlign: 'center' }} title={owed > 0 ? `${formatMoney(c.available)} set aside of ${formatMoney(owed)} owed` : 'Nothing owed'}>
+                            <span style={{ display: 'inline-block', backgroundColor: bg, color: '#14532d', fontWeight: 700, fontSize: '0.85rem', borderRadius: '999px', padding: '2px 10px' }}>{formatMoney(c.available)}</span>
+                            <div style={{ fontSize: '0.72rem', color: '#4b5563', marginTop: '2px' }}>Payment</div>
+                          </div>
+                        );
+                      })()}
+                    </div>
                   </div>
                 ) : (
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexWrap: 'wrap', gap: '10px' }}>
@@ -4947,6 +4962,20 @@ export default function BudgetApp() {
   };
 
   // Desktop register: YNAB-style table (date, payee, category, memo, outflow, inflow, cleared)
+  const handleRecordPayment = (card) => {
+    if (!payPop) return;
+    const amt = round2(Number(payPop.amount));
+    const from = accounts.find(a => a.id === payPop.fromId && !a.isDeleted);
+    if (!from || !(amt > 0)) { showNotification('Pick an account to pay from and enter an amount.'); return; }
+    const date = payPop.date || getTodayISO();
+    const stamp = Date.now();
+    const base = { date, amount: amt, envelopeId: '', notes: '', isDeleted: false, cleared: false, reconciled: false, isTransfer: true, transferId: 'xfer-' + stamp };
+    const outLeg = { ...base, id: 'tx-' + stamp + '-o', type: 'expense', accountId: from.id, transferAccountId: card.id, payee: 'Payment: ' + card.name };
+    const inLeg = { ...base, id: 'tx-' + stamp + '-i', type: 'income', accountId: card.id, transferAccountId: from.id, payee: 'Payment: ' + from.name };
+    setTransactions(prev => [outLeg, inLeg, ...prev]);
+    setPayPop(null);
+    showNotification(`Recorded a ${formatMoney(amt)} payment from ${from.name} to ${card.name}.`);
+  };
   const selTxs = () => transactions.filter(t => selectedTxIds.includes(t.id) && !t.isDeleted);
   const bulkSetCleared = (val) => {
     const ids = new Set(selTxs().filter(t => !isTxLocked(t)).map(t => t.id));
@@ -5045,6 +5074,33 @@ export default function BudgetApp() {
           <div style={{ display: 'flex', alignItems: 'center', gap: '14px', padding: '8px 4px', flexWrap: 'wrap', borderBottom: '1px solid #eef0f3' }}>
             <button onClick={() => setShowAddForm(v => !v)} aria-expanded={showAddForm} style={tbtn}>⊕ Add Transaction</button>
             <button onClick={() => setShowCsv(v => !v)} aria-expanded={showCsv} style={tbtn}>⬆ File Import</button>
+            {curAcc && isCreditCard(curAcc) && (
+              <div style={{ position: 'relative' }}>
+                <button onClick={() => { const c = (budgetView && budgetView.cc && budgetView.cc[curAcc.id]) || { available: 0 }; const owed = Math.max(0, round2(-getAccountBalance(curAcc.id))); const first = activeAccounts.find(a => !isCreditCard(a) && !a.isHidden); setPayPop(pp => (pp ? null : { fromId: first ? first.id : '', amount: String(round2(Math.min(owed, Math.max(c.available, 0)) || owed || '')), date: getTodayISO() })); }} aria-expanded={!!payPop} title="Quickly record a credit card payment." style={{ ...tbtn, backgroundColor: payPop ? '#ece9fb' : 'transparent', borderRadius: '6px', padding: '6px 8px' }}>▭ Record Payment</button>
+                {payPop && (
+                  <div data-testid="pay-pop" style={{ position: 'absolute', top: '100%', left: 0, marginTop: '6px', zIndex: 40, width: '290px', backgroundColor: 'white', borderRadius: '10px', boxShadow: '0 8px 28px rgba(0,0,0,0.22)', padding: '14px', display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                    <div style={{ fontWeight: 700, fontSize: '0.95rem' }}>Record a payment to {curAcc.name}</div>
+                    <label style={{ fontSize: '0.75rem', color: '#4b5563' }}>Pay from
+                      <select value={payPop.fromId} onChange={e => setPayPop(pp => ({ ...pp, fromId: e.target.value }))} aria-label="Pay from account" style={{ ...inp, width: '100%', marginTop: '2px' }}>
+                        {activeAccounts.filter(a => !isCreditCard(a) && !a.isHidden).map(a => (<option key={a.id} value={a.id}>{a.name}</option>))}
+                      </select>
+                    </label>
+                    <div style={{ display: 'flex', gap: '8px' }}>
+                      <label style={{ fontSize: '0.75rem', color: '#4b5563', flex: 1 }}>Amount
+                        <input type="number" step="0.01" min="0" value={payPop.amount} onChange={e => setPayPop(pp => ({ ...pp, amount: e.target.value }))} aria-label="Payment amount" style={{ ...inp, width: '100%', marginTop: '2px', boxSizing: 'border-box' }} />
+                      </label>
+                      <label style={{ fontSize: '0.75rem', color: '#4b5563', flex: 1 }}>Date
+                        <input type="date" value={payPop.date} onChange={e => setPayPop(pp => ({ ...pp, date: e.target.value }))} aria-label="Payment date" style={{ ...inp, width: '100%', marginTop: '2px', boxSizing: 'border-box' }} />
+                      </label>
+                    </div>
+                    <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '8px', marginTop: '4px' }}>
+                      <button onClick={() => setPayPop(null)} style={{ background: 'none', border: '1px solid #d1d5db', borderRadius: '6px', padding: '6px 14px', cursor: 'pointer' }}>Cancel</button>
+                      <button onClick={() => handleRecordPayment(curAcc)} style={{ backgroundColor: '#5b3fd6', color: 'white', border: 'none', borderRadius: '6px', padding: '6px 16px', fontWeight: 700, cursor: 'pointer' }}>Record</button>
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
             <span style={{ width: '1px', height: '20px', backgroundColor: '#e3e6eb' }} />
             <button onClick={undo} disabled={!histRef.current.undo.length} aria-label="Undo" style={{ ...tbtn, color: histRef.current.undo.length ? '#3b22a7' : '#b6bdd1', cursor: histRef.current.undo.length ? 'pointer' : 'not-allowed' }}>↶ Undo</button>
             <button onClick={redo} disabled={!histRef.current.redo.length} aria-label="Redo" style={{ ...tbtn, color: histRef.current.redo.length ? '#3b22a7' : '#b6bdd1', cursor: histRef.current.redo.length ? 'pointer' : 'not-allowed' }}>↷ Redo</button>
