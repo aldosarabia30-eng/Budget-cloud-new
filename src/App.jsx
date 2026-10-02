@@ -737,6 +737,7 @@ const looksLikeInvestment = (name) => /\b(ira|roth|401\s?k|403\s?b|hsa|brokerage
 const guessActualAccountType = (name) => {
   const n = String(name || '').toLowerCase();
   if (/card|credit|visa|mastercard|amex|discover|autograph|reflect|simplicity/.test(n)) return 'Credit Card';
+  if (/loan|mortgage/.test(n)) return 'Loan';
   if (/saving/.test(n)) return 'Savings';
   if (/cash/.test(n) && !/cashback/.test(n)) return 'Cash';
   return 'Checking';
@@ -2281,6 +2282,8 @@ export default function BudgetApp() {
 
   // Credit cards hold debt (negative balance) and never feed Ready to Assign.
   const isCreditCard = (acc) => acc?.type === 'Credit Card';
+  // Loans (like YNAB's Loans group) hold debt: they are not cash, so they never feed opening balances or age of money.
+  const isLoanAcc = (acc) => acc?.type === 'Loan';
 
   // Does this transaction add to Ready to Assign? Only income into a live, non-credit-card account.
   const countsTowardRTA = (tx) => {
@@ -2383,7 +2386,7 @@ export default function BudgetApp() {
     Object.values(cc).forEach(c => { c.available = round2(c.setAside + c.assigned - c.paid); });
     if (SHOW_CC_GROUP) budgetedThrough += ccAssignedThrough;
 
-    const opening = activeAccounts.filter(a => !isCreditCard(a)).reduce((sum, a) => sum + Number(a.initialBalance), 0);
+    const opening = activeAccounts.filter(a => !isCreditCard(a) && !isLoanAcc(a)).reduce((sum, a) => sum + Number(a.initialBalance), 0);
     const income = activeTransactions
       .filter(t => countsTowardRTA(t) && txMonth(t) <= key)
       .reduce((sum, t) => sum + Number(t.amount), 0);
@@ -4534,11 +4537,11 @@ export default function BudgetApp() {
   // Age of money right now (first in, first out), for the header
   const computeAgeCurrent = () => {
     const dated = activeTransactions.filter(t => /^\d{4}-\d{2}-\d{2}$/.test(t.date || ''));
-    const cashIds = new Set(activeAccounts.filter(a => !isCreditCard(a)).map(a => a.id));
+    const cashIds = new Set(activeAccounts.filter(a => !isCreditCard(a) && !isLoanAcc(a)).map(a => a.id));
     const cardIds = new Set(activeAccounts.filter(isCreditCard).map(a => a.id));
     const toMs = (d) => new Date(d + 'T00:00:00').getTime();
     const events = [];
-    const openingTotal = activeAccounts.filter(a => !isCreditCard(a)).reduce((t, a) => t + Math.max(0, Number(a.initialBalance) || 0), 0);
+    const openingTotal = activeAccounts.filter(a => !isCreditCard(a) && !isLoanAcc(a)).reduce((t, a) => t + Math.max(0, Number(a.initialBalance) || 0), 0);
     if (openingTotal > 0 && dated.length) events.push({ date: dated.reduce((m, t) => (t.date < m ? t.date : m), dated[0].date), kind: 'in', amount: openingTotal, order: 0 });
     dated.forEach(t => {
       const amt = Number(t.amount) || 0;
@@ -4697,11 +4700,11 @@ export default function BudgetApp() {
     }
 
     // ---- Age of money: how old the dollars you spend are (first in, first out) ----
-    const cashIds = new Set(activeAccounts.filter(a => !isCreditCard(a)).map(a => a.id));
+    const cashIds = new Set(activeAccounts.filter(a => !isCreditCard(a) && !isLoanAcc(a)).map(a => a.id));
     const cardIds = new Set(activeAccounts.filter(isCreditCard).map(a => a.id));
     const toMs = (d) => new Date(d + 'T00:00:00').getTime();
     const events = [];
-    const openingTotal = activeAccounts.filter(a => !isCreditCard(a)).reduce((t, a) => t + Math.max(0, Number(a.initialBalance) || 0), 0);
+    const openingTotal = activeAccounts.filter(a => !isCreditCard(a) && !isLoanAcc(a)).reduce((t, a) => t + Math.max(0, Number(a.initialBalance) || 0), 0);
     if (openingTotal > 0 && dated.length) events.push({ date: dated.reduce((m, t) => (t.date < m ? t.date : m), dated[0].date), kind: 'in', amount: openingTotal, order: 0 });
     dated.forEach(t => {
       const amt = Number(t.amount) || 0;
@@ -4776,8 +4779,10 @@ export default function BudgetApp() {
     <span style={{ fontSize: '0.8rem', fontVariantNumeric: 'tabular-nums', color: n < -0.004 ? '#ffa8a1' : '#e6ecf7', flexShrink: 0 }}>{formatMoney(n)}</span>
   );
   const sideAccounts = activeAccounts.filter(a => !a.isHidden).map(a => ({ acc: a, bal: getAccountBalance(a.id) }));
-  const sideCash = sideAccounts.filter(x => !isCreditCard(x.acc));
+  const sideCash = sideAccounts.filter(x => !isCreditCard(x.acc) && !isLoanAcc(x.acc));
   const sideCredit = sideAccounts.filter(x => isCreditCard(x.acc));
+  const sideLoanAccs = sideAccounts.filter(x => isLoanAcc(x.acc));
+  const loanGroupTotal = sideLoanAccs.reduce((t, x) => t + x.bal, 0) - activeDebts.reduce((t, d) => t + (Number(d.balance) || 0), 0);
   const sumBal = (list) => list.reduce((t, x) => t + x.bal, 0);
 
   // Desktop sidebar, modelled on YNAB's plan view
@@ -4847,7 +4852,8 @@ export default function BudgetApp() {
       {!sideCollapsed.cash && sideCash.map(x => dItem('acc-' + x.acc.id, activeTab === 'transactions' && txFilterAccount === x.acc.id, () => openAccountRegister(x.acc.id), x.acc.name, dBal(x.bal), { small: true }))}
       {sideCredit.length > 0 && dHead('credit', 'CREDIT', sumBal(sideCredit), !sideCollapsed.credit, () => setSideCollapsed(c => ({ ...c, credit: !c.credit })))}
       {!sideCollapsed.credit && sideCredit.map(x => dItem('acc-' + x.acc.id, activeTab === 'transactions' && txFilterAccount === x.acc.id, () => openAccountRegister(x.acc.id), x.acc.name, dBal(x.bal), { small: true }))}
-      {activeDebts.length > 0 && dHead('loans', 'LOANS', -activeDebts.reduce((t, d) => t + (Number(d.balance) || 0), 0), !sideCollapsed.loans, () => setSideCollapsed(c => ({ ...c, loans: !c.loans })))}
+      {(activeDebts.length > 0 || sideLoanAccs.length > 0) && dHead('loans', 'LOANS', loanGroupTotal, !sideCollapsed.loans, () => setSideCollapsed(c => ({ ...c, loans: !c.loans })))}
+      {!sideCollapsed.loans && sideLoanAccs.map(x => dItem('acc-' + x.acc.id, activeTab === 'transactions' && txFilterAccount === x.acc.id, () => openAccountRegister(x.acc.id), x.acc.name, dBal(x.bal), { small: true }))}
       {!sideCollapsed.loans && activeDebts.map(d => dItem('debt-' + d.id, activeTab === 'debts', () => openTab('debts'), d.name, dBal(-(Number(d.balance) || 0)), { small: true }))}
       {activeInvestments.length > 0 && dHead('tracking', 'TRACKING', invTotals.value, !sideCollapsed.tracking, () => setSideCollapsed(c => ({ ...c, tracking: !c.tracking })))}
       {activeInvestments.length > 0 && !sideCollapsed.tracking && dItem('investments', activeTab === 'investments', () => openTab('investments'), 'Investments', dBal(invTotals.value), { small: true })}
@@ -5294,7 +5300,7 @@ export default function BudgetApp() {
                     <div style={{ fontWeight: 700, fontSize: '0.95rem' }}>Record a payment to {curAcc.name}</div>
                     <label style={{ fontSize: '0.75rem', color: '#4b5563' }}>Pay from
                       <select value={payPop.fromId} onChange={e => setPayPop(pp => ({ ...pp, fromId: e.target.value }))} aria-label="Pay from account" style={{ ...inp, width: '100%', marginTop: '2px' }}>
-                        {activeAccounts.filter(a => !isCreditCard(a) && !a.isHidden).map(a => (<option key={a.id} value={a.id}>{a.name}</option>))}
+                        {activeAccounts.filter(a => !isCreditCard(a) && !isLoanAcc(a) && !a.isHidden).map(a => (<option key={a.id} value={a.id}>{a.name}</option>))}
                       </select>
                     </label>
                     <div style={{ display: 'flex', gap: '8px' }}>
@@ -6715,6 +6721,8 @@ export default function BudgetApp() {
         {!sideCollapsed.cash && sideCash.map(x => sideItem('acc-' + x.acc.id, activeTab === 'transactions' && txFilterAccount === x.acc.id, () => openAccountRegister(x.acc.id), x.acc.name, sideBalance(x.bal), { small: true }))}
         {sideCredit.length > 0 && sideToggleHeading('credit', 'CREDIT', sumBal(sideCredit))}
         {!sideCollapsed.credit && sideCredit.map(x => sideItem('acc-' + x.acc.id, activeTab === 'transactions' && txFilterAccount === x.acc.id, () => openAccountRegister(x.acc.id), x.acc.name, sideBalance(x.bal), { small: true }))}
+        {sideLoanAccs.length > 0 && sideToggleHeading('loans', 'LOANS', sideLoanAccs.reduce((t, x) => t + x.bal, 0))}
+        {!sideCollapsed.loans && sideLoanAccs.map(x => sideItem('acc-' + x.acc.id, activeTab === 'transactions' && txFilterAccount === x.acc.id, () => openAccountRegister(x.acc.id), x.acc.name, sideBalance(x.bal), { small: true }))}
         {activeInvestments.length > 0 && sideHeading('TRACKING', invTotals.value)}
         {activeInvestments.length > 0 && sideItem('investments', activeTab === 'investments', () => openTab('investments'), 'Investments', sideBalance(invTotals.value), { small: true })}
 
@@ -7809,7 +7817,7 @@ export default function BudgetApp() {
             <span style={{ fontWeight: 700, fontVariantNumeric: 'tabular-nums', color: balColor(bal) }}>{formatMoney(bal)}</span>
           </button>
         );
-        const loanTotal = -activeDebts.reduce((t, d) => t + (Number(d.balance) || 0), 0);
+        const loanTotal = loanGroupTotal;
         return (
           <div data-testid="accounts-overview" style={{ backgroundColor: MD.bg, color: MD.text, minHeight: '100vh', paddingBottom: '170px' }}>
             <div style={{ position: 'sticky', top: 0, zIndex: 25, backgroundColor: MD.bg, padding: '10px 16px 6px', display: 'flex', alignItems: 'center', gap: '16px' }}>
@@ -7819,7 +7827,7 @@ export default function BudgetApp() {
             </div>
             {sideCash.length > 0 && sec('Cash', sumBal(sideCash), sideCash.map((x, i) => rowOf(x.acc.id, 'cash', x.acc.name, x.bal, () => openAccountRegister(x.acc.id), i === sideCash.length - 1)))}
             {sideCredit.length > 0 && sec('Credit', sumBal(sideCredit), sideCredit.map((x, i) => rowOf(x.acc.id, 'card', x.acc.name, x.bal, () => openAccountRegister(x.acc.id), i === sideCredit.length - 1)))}
-            {activeDebts.length > 0 && sec('Loan', loanTotal, activeDebts.map((d, i) => rowOf(d.id, 'loan', d.name, -(Number(d.balance) || 0), () => openTab('debts'), i === activeDebts.length - 1)))}
+            {(activeDebts.length > 0 || sideLoanAccs.length > 0) && sec('Loan', loanTotal, [...sideLoanAccs.map((x, i) => rowOf(x.acc.id, 'loan', x.acc.name, x.bal, () => openAccountRegister(x.acc.id), activeDebts.length === 0 && i === sideLoanAccs.length - 1)), ...activeDebts.map((d, i) => rowOf(d.id, 'loan', d.name, -(Number(d.balance) || 0), () => openTab('debts'), i === activeDebts.length - 1))])}
             {activeInvestments.length > 0 && sec('Tracking', invTotals.value, rowOf('inv', 'cash', 'Investments', invTotals.value, () => openTab('investments'), true))}
             {sideClosed.length > 0 && sec('Closed', null, (<>
               <button onClick={() => setClosedOpen(o => !o)} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', width: '100%', background: 'none', border: 'none', color: MD.text, padding: '16px', cursor: 'pointer', fontSize: '1rem', textAlign: 'left' }}><span>{sideClosed.length} closed account{sideClosed.length === 1 ? '' : 's'}</span><span style={{ color: MD.muted }}>{closedOpen ? '⌄' : '›'}</span></button>
@@ -7854,6 +7862,7 @@ export default function BudgetApp() {
                 <option value="Savings">Savings</option>
                 <option value="Cash">Cash</option>
                 <option value="Credit Card">Credit Card</option>
+                <option value="Loan">Loan</option>
               </select>
               <input
                 type="number"
@@ -9337,6 +9346,7 @@ export default function BudgetApp() {
                             <option value="Savings">Savings</option>
                             <option value="Cash">Cash</option>
                             <option value="Credit Card">Credit Card</option>
+                            <option value="Loan">Loan</option>
                           </select>
                           <span style={{ fontSize: '0.75rem', color: '#6b7280', minWidth: '90px', textAlign: 'right' }}>
                             {a.txCount} tx · {formatMoney(a.balance)}
