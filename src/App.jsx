@@ -6616,7 +6616,8 @@ export default function BudgetApp() {
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '10px', marginTop: '5px' }}>
                     <div style={{ minWidth: 0 }}>
                       {tx.isTransfer ? chip(<><span>⇄</span>Transfer</>, 'xfer')
-                        : isSplitTx(tx) ? chip(`Split (${tx.splits.length})`, 'split')
+                        : isSplitTx(tx) ? (<div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px' }}>{tx.splits.slice(0, 3).map((sp, i) => { const se = envelopes.find(x => x.id === sp.envelopeId); return <span key={i}>{chip(`${se ? se.name : 'No envelope'} ${plainMoney(sp.amount)}`, 'split')}</span>; })}{tx.splits.length > 3 && chip(`+${tx.splits.length - 3} more`, 'split')}</div>)
+                        : income && incomeAllocs(tx).length > 0 ? (<div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px' }}>{incomeAllocs(tx).slice(0, 3).map((a, i) => { const ae = envelopes.find(x => x.id === a.envelopeId); return <span key={i}>{chip(`${ae ? ae.name : 'Envelope'} ${plainMoney(a.amount)}`, 'cat')}</span>; })}{incomeAllocs(tx).length > 3 && chip(`+${incomeAllocs(tx).length - 3} more`, 'cat')}{round2(Number(tx.amount) - incomeAllocs(tx).reduce((t, a) => t + a.amount, 0)) > 0.004 && <span>{chip(`Ready to Assign ${plainMoney(round2(Number(tx.amount) - incomeAllocs(tx).reduce((t, a) => t + a.amount, 0)))}`, 'rta')}</span>}</div>)
                         : income ? chip('Ready to Assign', 'rta')
                         : env ? chip(env.name + (env.isDeleted ? ' (deleted)' : ''), 'cat')
                         : chip('Uncategorized', 'warn')}
