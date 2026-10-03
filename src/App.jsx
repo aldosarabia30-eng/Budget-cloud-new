@@ -1740,6 +1740,7 @@ export default function BudgetApp() {
   const autoPayeeEnvRef = useRef('');
   const [unlockAskId, setUnlockAskId] = useState(null); // row showing the "unlock?" question
   const [splitTxId, setSplitTxId] = useState(null); // transaction whose split editor is open
+  const [splitPick, setSplitPick] = useState(null); // phone split screen: line index choosing a category
   const [splitDraft, setSplitDraft] = useState([]); // [{ envelopeId, amount: string }]
   const [txDate, setTxDate] = useState(getTodayISO());
   const [txNotes, setTxNotes] = useState('');
@@ -2233,7 +2234,7 @@ export default function BudgetApp() {
   const backRef = useRef(null);
   backRef.current = () => {
     const steps = [
-      [grpSheet, () => setGrpSheet(null)], [epMenu, () => setEpMenu(false)], [reorderOpen, () => setReorderOpen(false)], [envMenuId, () => { setEnvMenuId(null); setKpDraft(null); }], [mTxId, () => setMTxId(null)], [planEdit, () => setPlanEdit(false)],
+      [splitPick !== null, () => setSplitPick(null)], [isMobile && splitTxId, () => closeSplit()], [grpSheet, () => setGrpSheet(null)], [epMenu, () => setEpMenu(false)], [reorderOpen, () => setReorderOpen(false)], [envMenuId, () => { setEnvMenuId(null); setKpDraft(null); }], [mTxId, () => setMTxId(null)], [planEdit, () => setPlanEdit(false)],
       [tgtSub, () => setTgtSub(null)], [tgt, () => setTgt(null)], [ctxMenu, () => setCtxMenu(null)],
       [splitTxId, () => setSplitTxId(null)], [txSheetOpen, () => setTxSheetOpen(false)], [movePick, () => setMovePick(null)], [moveUi, () => setMoveUi(null)],
       [hideEnvUi, () => setHideEnvUi(null)], [selectedEnvId, () => setSelectedEnvId(null)], [showRtaInfo, () => setShowRtaInfo(false)],
@@ -3829,8 +3830,8 @@ export default function BudgetApp() {
   };
 
   // ----- Split transactions -----
-  const openSplit = (tx) => {
-    if (isTxLocked(tx)) { showNotification(LOCKED_MSG); return; }
+  const openSplit = (tx, force) => {
+    if (!force && isTxLocked(tx)) { showNotification(LOCKED_MSG); return; }
     setSplitTxId(tx.id);
     if (tx.type === 'income') {
       const al = incomeAllocs(tx);
@@ -6446,7 +6447,6 @@ export default function BudgetApp() {
             <span>Available</span><span style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>{darkPill(env, row, true)}<span style={{ color: MD.muted }}>›</span></span>
           </div>
         </div>
-        {moveUi && moveUi.envId === env.id && renderMoveScreen(env)}
         {progress && (<>
           {secTitle('Target')}
           <div data-testid="target-card" style={{ backgroundColor: MD.card, borderRadius: '22px', padding: '18px' }}>
@@ -6722,6 +6722,60 @@ export default function BudgetApp() {
       </div>
     );
   };
+  // Phone split screen (dark): lines of category + amount, remaining counter, Save
+  const renderMobileSplit = () => {
+    const tx = transactions.find(t => t.id === splitTxId && !t.isDeleted);
+    if (!tx) return null;
+    const inc = tx.type === 'income';
+    const left = splitRemaining(tx.amount);
+    const ok = inc ? left >= -0.004 : Math.abs(left) < 0.005;
+    return (
+      <div data-testid="m-split" style={{ position: 'fixed', inset: 0, zIndex: 66, backgroundColor: MD.bg, color: MD.text, overflowY: 'auto', paddingBottom: '40px' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '16px', padding: '16px' }}>
+          <button onClick={closeSplit} aria-label="Cancel split" style={{ background: 'none', border: 'none', color: MD.text, fontSize: '1.7rem', cursor: 'pointer' }}>←</button>
+          <span style={{ fontSize: '1.4rem', flex: 1 }}>{inc ? 'Send to envelopes' : 'Split'}</span>
+          <button onClick={handleSaveSplit} disabled={!ok} data-testid="split-save" style={{ background: ok ? MD.btn : '#33334d', color: '#fff', border: 'none', borderRadius: '999px', padding: '10px 22px', fontWeight: 700, fontSize: '1rem', cursor: ok ? 'pointer' : 'default' }}>Save</button>
+        </div>
+        <div style={{ textAlign: 'center', padding: '4px 16px 16px' }}>
+          <div style={{ fontSize: '2.2rem', fontWeight: 800 }}>{formatMoney(Number(tx.amount))}</div>
+          <div data-testid="split-left" style={{ marginTop: '4px', fontWeight: 700, color: ok ? '#86d13a' : '#ffcf70' }}>
+            {inc ? `${formatMoney(Math.max(0, left))} stays in Ready to Assign${left < -0.004 ? ` (over by ${formatMoney(-left)})` : ''}` : Math.abs(left) < 0.005 ? 'Fully split' : left > 0 ? `${formatMoney(left)} left to split` : `${formatMoney(-left)} too much`}
+          </div>
+        </div>
+        <div style={{ padding: '0 16px' }}>
+          {splitDraft.map((l, i) => {
+            const e = envelopes.find(x => x.id === l.envelopeId);
+            return (
+              <div key={i} data-testid="split-line" style={{ backgroundColor: MD.card, borderRadius: '18px', padding: '14px 16px', marginBottom: '12px' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                  <button onClick={() => setSplitPick(i)} aria-label={`Category for line ${i + 1}`} style={{ flex: 1, textAlign: 'left', background: 'none', border: 'none', color: e ? MD.text : '#ffcf70', fontSize: '1.05rem', fontWeight: 600, cursor: 'pointer', padding: 0, fontFamily: 'inherit' }}>{e ? e.name : 'Choose category'} <span style={{ color: MD.muted }}>›</span></button>
+                  {splitDraft.length > 1 && <button onClick={() => removeSplitLine(i)} aria-label={`Remove line ${i + 1}`} style={{ background: 'none', border: 'none', color: '#ff7b7f', fontSize: '1.2rem', cursor: 'pointer' }}>✕</button>}
+                </div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginTop: '10px' }}>
+                  <span style={{ color: MD.muted }}>$</span>
+                  <input aria-label={`Amount for line ${i + 1}`} inputMode="decimal" value={l.amount} onChange={ev => updateSplitLine(i, { amount: ev.target.value })} placeholder="0.00" style={{ flex: 1, minWidth: 0, background: MD.bg, color: MD.text, border: '1px solid ' + MD.line, borderRadius: '10px', padding: '10px 12px', fontSize: '1.1rem', fontFamily: 'inherit' }} />
+                  {left !== 0 && String(l.amount).trim() === '' && <button onClick={() => fillSplitRemainder(i, tx.amount)} style={{ background: '#1d1d38', color: MD.accent, border: 'none', borderRadius: '999px', padding: '8px 12px', fontWeight: 600, fontSize: '0.8rem', cursor: 'pointer' }}>Use remainder</button>}
+                </div>
+              </div>
+            );
+          })}
+          <button onClick={addSplitLine} data-testid="split-add" style={{ width: '100%', backgroundColor: '#1d1d38', color: MD.accent, border: 'none', borderRadius: '999px', padding: '14px', fontWeight: 700, fontSize: '1rem', cursor: 'pointer' }}>+ Add split</button>
+        </div>
+        {splitPick !== null && (<>
+          <div onClick={() => setSplitPick(null)} style={{ position: 'fixed', inset: 0, backgroundColor: 'rgba(0,0,0,0.6)', zIndex: 70 }} />
+          <div data-testid="split-cat-sheet" role="dialog" aria-label="Choose category" style={{ position: 'fixed', left: 0, right: 0, bottom: 0, maxHeight: '75vh', overflowY: 'auto', zIndex: 71, backgroundColor: MD.card, borderRadius: '18px 18px 0 0', padding: '14px 0 calc(16px + env(safe-area-inset-bottom))' }}>
+            <div style={{ fontWeight: 800, padding: '4px 18px 10px', fontSize: '1.05rem' }}>Category</div>
+            {envelopeChoices.map(c => (
+              <div key={c.label}>
+                <div style={{ padding: '10px 18px 4px', fontSize: '0.78rem', fontWeight: 700, color: MD.muted, textTransform: 'uppercase', letterSpacing: '0.04em' }}>{c.label}</div>
+                {c.list.map(e => (<button key={e.id} onClick={() => { updateSplitLine(splitPick, { envelopeId: e.id }); setSplitPick(null); }} style={{ display: 'block', width: '100%', textAlign: 'left', background: splitDraft[splitPick] && splitDraft[splitPick].envelopeId === e.id ? '#23235a' : 'none', border: 'none', color: MD.text, padding: '12px 18px', fontSize: '1rem', cursor: 'pointer', fontFamily: 'inherit' }}>{e.name}</button>))}
+              </div>
+            ))}
+          </div>
+        </>)}
+      </div>
+    );
+  };
   const renderMobileTxDetail = () => {
     const tx = mTxId ? transactions.find(t => t.id === mTxId && !t.isDeleted) : null;
     if (!tx) return null;
@@ -6786,7 +6840,7 @@ export default function BudgetApp() {
               ? <span style={{ backgroundColor: incAl.length ? '#25253f' : '#1c3a1c', color: incAl.length ? MD.text : '#b6f08a', borderRadius: '8px', padding: '5px 10px', fontSize: '0.95rem' }}>{incAl.length ? ((envelopes.find(e => e.id === incAl[0].envelopeId) || {}).name || 'Envelope') : 'Ready to Assign'}</span>
               : <div>{incAl.map((a, i) => { const ae = envelopes.find(e => e.id === a.envelopeId); return <div key={i} style={{ fontSize: '0.95rem', display: 'flex', justifyContent: 'space-between', padding: '2px 0' }}><span>{ae ? ae.name : 'Envelope'}</span><span>{plainMoney(a.amount)}</span></div>; })}<div style={{ fontSize: '0.85rem', color: MD.muted }}>{plainMoney(round2(Number(tx.amount) - incAl.reduce((t, a) => t + a.amount, 0)))} stays in Ready to Assign</div></div>)
             : <span style={{ backgroundColor: env ? '#25253f' : '#4a3410', color: env ? MD.text : '#ffcf70', borderRadius: '8px', padding: '5px 10px', fontSize: '0.95rem' }}>{env ? env.name : 'Uncategorized'}</span>,
-            (!tx.isTransfer && !LOAN_ACC_IDS.has(tx.accountId)) ? ((split || (income && !incSingle && incAl.length > 0)) ? () => thenEdit(() => startEditTx(tx, true)) : () => thenEdit(() => setMTxMenu('cat'))) : null, false, 'tx-cat-row')}
+            (!tx.isTransfer && !LOAN_ACC_IDS.has(tx.accountId)) ? ((split || (income && !incSingle && incAl.length > 0)) ? () => thenEdit(() => openSplit(tx, true)) : () => thenEdit(() => setMTxMenu('cat'))) : null, false, 'tx-cat-row')}
           {rowBox('▤', 'Account', tx.isTransfer ? <div style={{ fontWeight: 600, fontSize: '1.05rem' }}>{acc ? acc.name : ''}{other ? ` ⇄ ${other.name}` : ''}</div> : (
             <select aria-label="Account" value={tx.accountId} disabled={locked} onChange={e => patchTx(tx.id, { accountId: e.target.value })} style={{ ...field, appearance: 'none', WebkitAppearance: 'none' }}>
               {accountChoices(tx.accountId).map(a => (<option key={a.id} value={a.id} style={{ color: '#111' }}>{a.name}</option>))}
@@ -6794,7 +6848,7 @@ export default function BudgetApp() {
           {rowBox('▦', 'Date', <input type="date" aria-label="Date" value={tx.date || ''} disabled={locked} onChange={e => { if (e.target.value) patchTx(tx.id, { date: e.target.value }); }} style={{ ...field, colorScheme: 'dark' }} />, null, true)}
         </div>
         {(split || tx.isTransfer || incomeAllocs(tx).length > 0 || !tx.isTransfer) && (
-          <button onClick={() => thenEdit(() => startEditTx(tx, true))} style={{ width: '100%', backgroundColor: '#1d1d38', color: MD.accent, border: 'none', borderRadius: '999px', padding: '14px', fontWeight: 700, fontSize: '1rem', cursor: 'pointer', marginBottom: '14px' }}>{tx.isTransfer ? 'Edit transfer' : split ? 'Edit split' : income ? (incomeAllocs(tx).length ? 'Edit envelopes' : 'Send to envelopes…') : 'Split across categories…'}</button>
+          <button onClick={() => thenEdit(() => (tx.isTransfer ? startEditTx(tx, true) : openSplit(tx, true)))} style={{ width: '100%', backgroundColor: '#1d1d38', color: MD.accent, border: 'none', borderRadius: '999px', padding: '14px', fontWeight: 700, fontSize: '1rem', cursor: 'pointer', marginBottom: '14px' }}>{tx.isTransfer ? 'Edit transfer' : split ? 'Edit split' : income ? (incomeAllocs(tx).length ? 'Edit envelopes' : 'Send to envelopes…') : 'Split across categories…'}</button>
         )}
         {!tx.isTransfer && !split && !income && !locked && (
           <button onClick={() => openSplit(tx) || setMTxId(null)} style={{ display: 'none' }} />
@@ -6824,6 +6878,7 @@ export default function BudgetApp() {
             <div onClick={() => setMTxMenu(null)} style={{ position: 'fixed', inset: 0, backgroundColor: 'rgba(0,0,0,0.6)', zIndex: 70 }} />
             <div data-testid="tx-cat-sheet" role="dialog" aria-label="Choose category" style={{ position: 'fixed', left: 0, right: 0, bottom: 0, maxHeight: '75vh', overflowY: 'auto', zIndex: 71, backgroundColor: MD.card, borderRadius: '18px 18px 0 0', padding: '14px 0 calc(16px + env(safe-area-inset-bottom))' }}>
               <div style={{ fontWeight: 800, padding: '4px 18px 10px', fontSize: '1.05rem' }}>Category</div>
+              <button data-testid="cat-split" onClick={() => { setMTxMenu(null); openSplit(tx, true); }} style={{ display: 'block', width: '100%', textAlign: 'left', background: 'none', border: 'none', borderBottom: '1px solid ' + MD.line, color: MD.accent, padding: '12px 18px', fontSize: '1rem', fontWeight: 700, cursor: 'pointer' }}>{income ? 'Send to several envelopes…' : 'Split…'}</button>
               {income && <button onClick={() => { setIncomeEnv(''); setMTxMenu(null); }} style={{ display: 'block', width: '100%', textAlign: 'left', background: incAl.length === 0 ? '#23235a' : 'none', border: 'none', color: '#b6f08a', padding: '12px 18px', fontSize: '1rem', cursor: 'pointer' }}>Ready to Assign</button>}
               {!income && tx.envelopeId && <button onClick={() => { handleAssignTxEnvelope(tx.id, ''); setMTxMenu(null); }} style={{ display: 'block', width: '100%', textAlign: 'left', background: 'none', border: 'none', color: '#ffcf70', padding: '12px 18px', fontSize: '1rem', cursor: 'pointer' }}>Uncategorized</button>}
               {envelopeChoices.map(c => (
@@ -8919,6 +8974,8 @@ export default function BudgetApp() {
       {/* TRANSACTIONS TAB */}
       {isMobile && activeTab === 'transactions' && renderMobileSpending()}
       {isMobile && activeTab === 'transactions' && renderMobileTxDetail()}
+      {isMobile && splitTxId && renderMobileSplit()}
+      {isMobile && moveUi && (() => { const me = envelopes.find(x => x.id === moveUi.envId); return me ? renderMoveScreen(me) : null; })()}
       {activeTab === 'transactions' && !isMobile && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
           {isMobile && txFilterAccount && (() => { const hdrAcc = accounts.find(a => a.id === txFilterAccount && !a.isDeleted); return hdrAcc ? renderAccountHeader(hdrAcc) : null; })()}
