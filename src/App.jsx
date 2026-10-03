@@ -2258,6 +2258,25 @@ export default function BudgetApp() {
     return () => window.removeEventListener('popstate', onPop);
   }, []);
 
+  // Remember the scroll position of each screen so coming back puts you where you were (not at the top).
+  const scrollMemo = useRef({ key: '', pos: {}, ignoreUntil: 0 });
+  const viewKey = [activeTab, mTxId || '', selectedEnvId || '', tgt ? 't' : '', planEdit ? 'p' : '', reorderOpen ? 'r' : '', splitTxId || '', moveUi ? 'm' : '', manageAccounts ? 'a' : '', envMenuId ? '' : ''].join('|');
+  useEffect(() => {
+    const onScroll = () => { const m = scrollMemo.current; if (performance.now() < m.ignoreUntil) return; m.pos[m.key] = window.scrollY; };
+    window.addEventListener('scroll', onScroll, { passive: true });
+    return () => window.removeEventListener('scroll', onScroll);
+  }, []);
+  useLayoutEffect(() => {
+    const m = scrollMemo.current;
+    if (m.key === viewKey) return;
+    m.key = viewKey;
+    m.ignoreUntil = performance.now() + 250;
+    const to = m.pos[viewKey] || 0;
+    window.scrollTo(0, to);
+    // content can finish laying out a moment later; re-apply once
+    const t = setTimeout(() => { if (m.key === viewKey && Math.abs(window.scrollY - to) > 2) window.scrollTo(0, to); }, 60);
+    return () => clearTimeout(t);
+  }, [viewKey]);
   const openTab = (tab) => {
     setTrashConfirm(null);
     if (tab === 'new' && editingEnvId) resetEnvForm(); // "+ New" always starts a fresh form
