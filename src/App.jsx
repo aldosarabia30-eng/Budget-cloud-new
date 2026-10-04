@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useLayoutEffect, useRef, useMemo } from 'react';
+\import React, { useState, useEffect, useLayoutEffect, useRef, useMemo } from 'react';
 import { createClient } from '@supabase/supabase-js';
 
 // --- SUPABASE CONFIGURATION ---
@@ -1691,6 +1691,14 @@ export default function BudgetApp() {
   const [collapsedSplits, setCollapsedSplits] = useState([]);
   const [moveHover, setMoveHover] = useState(false);
   const [planEdit, setPlanEdit] = useState(false);
+  // Bank sync (SimpleFIN). The access URL stays on this device (localStorage); account links live on the accounts as sfId.
+  const [sfCfg, setSfCfg] = useState(() => { try { return JSON.parse(localStorage.getItem('budget-simplefin') || '{}') || {}; } catch (e) { return {}; } });
+  const [sfWorker, setSfWorker] = useState('');
+  const [sfToken, setSfToken] = useState('');
+  const [sfBusy, setSfBusy] = useState(false);
+  const [sfMsg, setSfMsg] = useState('');
+  const [sfDays, setSfDays] = useState('30');
+  const [sfData, setSfData] = useState(null); // last fetched SimpleFIN accounts
   const [epMenu, setEpMenu] = useState(false); // phone Edit Plan: top ⋮ menu
   const [reorderOpen, setReorderOpen] = useState(false); // phone: Reorder Categories screen
   const [grpSheet, setGrpSheet] = useState(null); // phone Edit Plan: { name, draft } group ⋮ sheet
@@ -3789,6 +3797,91 @@ export default function BudgetApp() {
         ? detectMapping(importRows[0])
         : { date: '', payee: '', amount: '', debit: '', credit: '', notes: '' });
     }
+  };
+
+  // ----- Bank sync (SimpleFIN via your Worker proxy) -----
+  const sfSave = (cfg) => { setSfCfg(cfg); try { localStorage.setItem('budget-simplefin', JSON.stringify(cfg)); } catch (e) { /* storage unavailable */ } };
+  const sfCall = async (route, payload) => {
+    const base = (sfCfg.workerUrl || sfWorker).trim().replace(/\/$/, '');
+    if (!/^(https:\/\/|http:\/\/localhost)/i.test(base)) throw new Error('Enter your Worker URL first (it starts with https://).');
+    const r = await fetch(base + route, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+    let out = null;
+    try { out = await r.json(); } catch (e) { /* not json */ }
+    if (!r.ok) throw new Error((out && out.error) || `The Worker answered ${r.status}.`);
+    return out;
+  };
+  const sfConnect = async () => {
+    const raw = sfToken.trim();
+    if (!raw) { setSfMsg('Paste your SimpleFIN setup token (or an access URL).'); return; }
+    setSfBusy(true); setSfMsg('');
+    try {
+      const workerUrl = (sfCfg.workerUrl || sfWorker).trim().replace(/\/$/, '');
+      if (!/^(https:\/\/|http:\/\/localhost)/i.test(workerUrl)) throw new Error('Enter your Worker URL first (it starts with https://).');
+      let accessUrl = raw;
+      if (!/^https:\/\/.+@/i.test(raw)) accessUrl = (await sfCall('/claim', { token: raw })).accessUrl;
+      sfSave({ workerUrl, accessUrl });
+      setSfToken('');
+      setSfMsg('Connected. Now press Fetch accounts.');
+    } catch (e) { setSfMsg(String(e.message || e)); }
+    setSfBusy(false);
+  };
+  const sfDisconnect = () => { sfSave({}); setSfData(null); setSfMsg('Disconnected from this device. Your accounts and transactions were not changed.'); };
+  const sfFetch = async (days) => {
+    setSfBusy(true); setSfMsg('');
+    try {
+      const start = Math.floor(Date.now() / 1000) - Math.max(1, Number(days) || 30) * 86400;
+      const out = await sfCall('/accounts', { accessUrl: sfCfg.accessUrl, startDate: start });
+      setSfData(out);
+      // Link bank accounts to budget accounts by name the first time
+      setAccounts(prev => {
+        const taken = new Set(prev.map(a => a.sfId).filter(Boolean));
+        return prev.map(a => {
+          if (a.sfId || a.isDeleted) return a;
+          const hit = (out.accounts || []).find(b => !taken.has(b.id) && b.name && a.name && (b.name.toLowerCase().includes(a.name.trim().toLowerCase()) || a.name.trim().toLowerCase().includes(b.name.toLowerCase())));
+          if (hit) { taken.add(hit.id); return { ...a, sfId: hit.id }; }
+          return a;
+        });
+      });
+      const errs = (out.errlist || []).map(e => e.msg || e.message || e.code).filter(Boolean);
+      setSfMsg(errs.length ? 'The bank reported: ' + errs.join('; ') : `Found ${(out.accounts || []).length} bank account${(out.accounts || []).length === 1 ? '' : 's'}.`);
+    } catch (e) { setSfMsg(String(e.message || e)); }
+    setSfBusy(false);
+  };
+  const sfLink = (bankId, accId) => setAccounts(prev => prev.map(a => (a.sfId === bankId && a.id !== accId ? { ...a, sfId: '' } : (a.id === accId ? { ...a, sfId: bankId } : a))));
+  const sfImport = () => {
+    if (!sfData) return;
+    const stamp = Date.now();
+    const mine = transactions.filter(t => !t.isDeleted);
+    const knownIds = new Set(mine.map(t => t.sfId).filter(Boolean));
+    const used = new Set();
+    const isoOf = (posted) => new Date(Number(posted) * 1000).toISOString().slice(0, 10);
+    const dayNum = (iso) => Math.round(new Date(iso + 'T00:00:00Z').getTime() / 86400000);
+    const added = [];
+    let skippedSame = 0, skippedLike = 0, linked = 0;
+    (sfData.accounts || []).forEach(b => {
+      const acc = accounts.find(a => a.sfId === b.id && !a.isDeleted);
+      if (!acc) return;
+      linked++;
+      (b.transactions || []).forEach((bt, i) => {
+        if (!bt || bt.id == null || knownIds.has(bt.id)) { skippedSame++; return; }
+        const amt = round2(Number(bt.amount));
+        if (!isFinite(amt) || amt === 0) return;
+        const date = isoOf(bt.posted);
+        const type = amt < 0 ? 'expense' : 'income';
+        // Same money already in the register (typed by hand or from a CSV): don't double it
+        const twin = mine.find(t => !t.sfId && !used.has(t.id) && t.accountId === acc.id && t.type === type && !t.isTransfer && Math.abs(Number(t.amount) - Math.abs(amt)) < 0.005 && Math.abs(dayNum(t.date) - dayNum(date)) <= 4);
+        if (twin) { used.add(twin.id); skippedLike++; return; }
+        added.push({ id: `tx-sf${stamp}-${added.length}`, date, payee: String(bt.description || 'Bank transaction').replace(/\s+/g, ' ').trim(), amount: Math.abs(amt), type, accountId: acc.id, envelopeId: '', notes: '', isDeleted: false, cleared: true, reconciled: false, unapproved: true, sfId: bt.id });
+      });
+    });
+    if (!linked) { setSfMsg('Link at least one bank account to a budget account first.'); return; }
+    if (!added.length) { setSfMsg(`Nothing new. ${skippedSame + skippedLike} transaction${skippedSame + skippedLike === 1 ? ' was' : 's were'} already in your budget.`); return; }
+    setTransactions(prev => [...added, ...prev]);
+    const last = added[0].accountId;
+    setSfData(null);
+    setSelectedTxIds([]); setTxFilterAccount(last); setTxFilterStatus('attention'); setTxAccountId(last);
+    openTab('transactions');
+    showNotification(`Imported ${added.length} bank transaction${added.length === 1 ? '' : 's'}${skippedLike ? ` (${skippedLike} matched ones you already had)` : ''}. Approve or categorize them below.`);
   };
 
   const handleConfirmImport = () => {
@@ -9658,6 +9751,46 @@ export default function BudgetApp() {
               <button onClick={exportBudgetCSV} style={{ backgroundColor: 'white', color: '#2f6fb3', border: '1px solid #c9dcf0', padding: '7px 12px', borderRadius: '6px', fontWeight: 'bold', cursor: 'pointer', fontSize: '0.85rem' }}>Budget by month (CSV)</button>
               <button onClick={() => { downloadBudgetBackup(); showNotification('Full backup downloaded.'); }} style={{ backgroundColor: 'white', color: '#2f6fb3', border: '1px solid #c9dcf0', padding: '7px 12px', borderRadius: '6px', fontWeight: 'bold', cursor: 'pointer', fontSize: '0.85rem' }}>Full backup (JSON)</button>
             </div>
+          </div>
+          <div data-testid="simplefin-card" style={{ backgroundColor: 'white', padding: '14px', borderRadius: '10px', boxShadow: '0 1px 3px rgba(0,0,0,0.1)' }}>
+            <h3 style={{ margin: '0 0 6px 0', fontSize: '1rem' }}>Bank sync (SimpleFIN)</h3>
+            <p style={{ margin: '0 0 10px 0', fontSize: '0.85rem', color: '#6b7280' }}>
+              Pulls recent transactions from your banks through SimpleFIN Bridge and a small Worker you deploy (see <code>simplefin-worker.js</code>). New ones land as "to approve" in the right account.
+            </p>
+            {!sfCfg.accessUrl ? (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                <input aria-label="Worker URL" value={sfCfg.workerUrl || sfWorker} onChange={e => setSfWorker(e.target.value)} placeholder="Worker URL, e.g. https://simplefin.you.workers.dev" style={{ padding: '9px', borderRadius: '6px', border: '1px solid #d1d5db' }} />
+                <input aria-label="SimpleFIN setup token" value={sfToken} onChange={e => setSfToken(e.target.value)} placeholder="SimpleFIN setup token (or an existing access URL)" style={{ padding: '9px', borderRadius: '6px', border: '1px solid #d1d5db' }} />
+                <div><button onClick={sfConnect} disabled={sfBusy} style={{ backgroundColor: '#2563eb', color: 'white', border: 'none', padding: '8px 14px', borderRadius: '6px', fontWeight: 'bold', cursor: sfBusy ? 'wait' : 'pointer' }}>{sfBusy ? 'Connecting…' : 'Connect'}</button></div>
+              </div>
+            ) : (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+                <div style={{ display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap' }}>
+                  <label style={{ fontSize: '0.85rem' }}>Last <input aria-label="Days to fetch" inputMode="numeric" value={sfDays} onChange={e => setSfDays(e.target.value.replace(/\D/g, ''))} style={{ width: '52px', padding: '6px', borderRadius: '6px', border: '1px solid #d1d5db' }} /> days</label>
+                  <button onClick={() => sfFetch(sfDays)} disabled={sfBusy} data-testid="sf-fetch" style={{ backgroundColor: '#2563eb', color: 'white', border: 'none', padding: '8px 14px', borderRadius: '6px', fontWeight: 'bold', cursor: sfBusy ? 'wait' : 'pointer' }}>{sfBusy ? 'Working…' : 'Fetch accounts'}</button>
+                  <button onClick={() => { if (window.confirm('Disconnect bank sync on this device?')) sfDisconnect(); }} style={{ background: 'white', color: '#b91c1c', border: '1px solid #fecaca', padding: '7px 12px', borderRadius: '6px', cursor: 'pointer' }}>Disconnect</button>
+                  <button onClick={() => { try { navigator.clipboard.writeText(sfCfg.accessUrl); setSfMsg('Access URL copied. Paste it into "SimpleFIN setup token" on another device to connect it too. Keep it private.'); } catch (e) { setSfMsg('Could not copy.'); } }} style={{ background: 'white', color: '#2f6fb3', border: '1px solid #c9dcf0', padding: '7px 12px', borderRadius: '6px', cursor: 'pointer' }}>Copy access URL</button>
+                </div>
+                {sfData && (
+                  <div data-testid="sf-accounts" style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                    {(sfData.accounts || []).map(b => {
+                      const linked = accounts.find(a => a.sfId === b.id && !a.isDeleted);
+                      return (
+                        <div key={b.id} style={{ border: '1px solid #e5e7eb', borderRadius: '8px', padding: '10px' }}>
+                          <div style={{ fontWeight: 600 }}>{b.name} <span style={{ color: '#6b7280', fontWeight: 400 }}>· bank balance {formatMoney(Number(b.balance) || 0)} · {(b.transactions || []).length} transaction{(b.transactions || []).length === 1 ? '' : 's'}</span></div>
+                          <select aria-label={`Budget account for ${b.name}`} value={linked ? linked.id : ''} onChange={e => sfLink(b.id, e.target.value)} style={{ marginTop: '6px', width: '100%', padding: '7px', borderRadius: '6px', border: '1px solid #d1d5db' }}>
+                            <option value="">Don't import this account</option>
+                            {activeAccounts.map(a => (<option key={a.id} value={a.id}>{a.name}</option>))}
+                          </select>
+                        </div>
+                      );
+                    })}
+                    <div><button onClick={sfImport} data-testid="sf-import" style={{ backgroundColor: '#16a34a', color: 'white', border: 'none', padding: '9px 16px', borderRadius: '6px', fontWeight: 'bold', cursor: 'pointer' }}>Import new transactions</button></div>
+                  </div>
+                )}
+              </div>
+            )}
+            {sfMsg && <div role="status" style={{ marginTop: '10px', fontSize: '0.85rem', color: '#374151' }}>{sfMsg}</div>}
           </div>
           <div style={{ backgroundColor: 'white', padding: '14px', borderRadius: '10px', boxShadow: '0 1px 3px rgba(0,0,0,0.1)' }}>
             <h3 style={{ margin: '0 0 6px 0', fontSize: '1rem' }}>Import from Actual Budget</h3>
