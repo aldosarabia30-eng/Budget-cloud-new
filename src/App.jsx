@@ -1722,6 +1722,7 @@ export default function BudgetApp() {
   const [txFiltersOpen, setTxFiltersOpen] = useState(false); // phone: filters collapsed by default
   const [showAddForm, setShowAddForm] = useState(false); // desktop register: Add Transaction form toggled from the toolbar
   const [acctMenuOpen, setAcctMenuOpen] = useState(false);
+  const [editAcc, setEditAcc] = useState(null); // { id, name, type, balance } while the Edit account sheet is open
   const [catMenu, setCatMenu] = useState(null); // { txId|null, x, y, up, hover }
   const [barMenu, setBarMenu] = useState(null); // 'flag' | 'more' | null
   const [collapsedSplits, setCollapsedSplits] = useState([]);
@@ -3231,6 +3232,20 @@ export default function BudgetApp() {
     setEnvelopes(envelopes.map(e => (e.id === envId ? { ...e, isDeleted: true } : e)));
     if (editingEnvId === envId) resetEnvForm();
     showNotification(`Envelope '${env.name}' deleted.`);
+  };
+
+  const openEditAccount = (acc) => setEditAcc({ id: acc.id, name: acc.name || '', type: acc.type || 'Checking', balance: String(acc.type === 'Credit Card' ? Math.abs(Number(acc.initialBalance) || 0) : (Number(acc.initialBalance) || 0)) });
+  const saveEditAccount = (e) => {
+    if (e) e.preventDefault();
+    if (!editAcc) return;
+    const name = editAcc.name.trim();
+    if (!name) { showNotification('Give the account a name.'); return; }
+    const entered = parseFloat(editAcc.balance);
+    const bal = isFinite(entered) ? entered : 0;
+    const isCC = editAcc.type === 'Credit Card';
+    setAccounts(prev => prev.map(a => (a.id === editAcc.id ? { ...a, name, type: editAcc.type, initialBalance: isCC ? -Math.abs(bal) : bal } : a)));
+    setEditAcc(null);
+    showNotification(`Updated '${name}'.`);
   };
 
   const handleAddAccount = (e) => {
@@ -5269,6 +5284,7 @@ export default function BudgetApp() {
                               {['Checking', 'Savings', 'Cash', 'Credit Card', 'Loan'].map(t => <option key={t} value={t}>{t}</option>)}
                             </select>
                           </div>
+                          <button data-testid="edit-account" onClick={() => { setAcctMenuOpen(false); openEditAccount(acc); }} style={{ display: 'block', width: '100%', textAlign: 'left', padding: '10px 14px', background: 'white', border: 'none', borderBottom: '1px solid #eee', cursor: 'pointer', fontSize: '0.9rem' }}>Edit name &amp; starting balance</button>
                           <button onClick={() => { setAcctMenuOpen(false); (acc.isHidden ? handleUnhideAccount(acc) : handleHideAccount(acc)); }} aria-label={`${acc.isHidden ? 'Unhide' : 'Hide'} account ${acc.name.trim()}`} style={{ display: 'block', width: '100%', textAlign: 'left', padding: '10px 14px', background: 'white', border: 'none', cursor: 'pointer', fontSize: '0.9rem' }}>{acc.isHidden ? 'Unhide account' : 'Hide account'}</button>
                           <button onClick={() => { setAcctMenuOpen(false); handleSoftDeleteAccount(acc.id); }} style={{ display: 'block', width: '100%', textAlign: 'left', padding: '10px 14px', background: 'white', border: 'none', cursor: 'pointer', fontSize: '0.9rem', color: '#dc2626' }}>Delete account</button>
                         </div>
@@ -5313,6 +5329,14 @@ export default function BudgetApp() {
                       style={{ backgroundColor: '#059669', color: 'white', border: 'none', padding: '6px 10px', borderRadius: '6px', fontWeight: 'bold', cursor: 'pointer', fontSize: '0.8rem' }}
                     >
                       Reconcile
+                    </button>
+                    <button
+                      data-testid="edit-account"
+                      onClick={() => openEditAccount(acc)}
+                      aria-label={`Edit account ${acc.name.trim()}`}
+                      style={{ backgroundColor: 'white', color: '#374151', border: '1px solid #d1d5db', padding: '6px 10px', borderRadius: '6px', fontWeight: 'bold', cursor: 'pointer', fontSize: '0.8rem' }}
+                    >
+                      Edit
                     </button>
                     <button
                       onClick={() => (acc.isHidden ? handleUnhideAccount(acc) : handleHideAccount(acc))}
@@ -6390,7 +6414,7 @@ export default function BudgetApp() {
       day: String(env.cadence === 'yearly' ? (env.repeatDayOfMonth || '1') : '1'),
       due: env.goalType === 'target_by_date' ? (env.targetDate || nextKey) : (env.goalType === 'savings_balance' ? '' : nextKey),
       repeat: !!env.goalRepeat, every: Number(env.repeatEvery) || 1,
-      custKind: env.goalType === 'savings_balance' || (env.goalType === 'target_by_date' && env.goalMode !== 'setaside') ? 'balance' : 'setaside'
+      custKind: env.goalMode === 'refill' && env.goalType === 'target_by_date' ? 'refill' : (env.goalType === 'savings_balance' || (env.goalType === 'target_by_date' && env.goalMode !== 'setaside') ? 'balance' : 'setaside')
     });
     setTgtSub(null);
   };
@@ -6421,6 +6445,87 @@ export default function BudgetApp() {
     setEnvelopes(envelopes.map(e => (e.id === tgt.envId ? { ...e, goalType: 'none', targetAmount: 0, targetDate: '', goalRepeat: false } : e)));
     showNotification('Target removed.');
     closeTargetEditor();
+  };
+  // Desktop: the target editor lives inside the right-hand panel, on the same page
+  const renderInlineTarget = () => {
+    if (!tgt) return null;
+    const set = (patch) => setTgt(prev => ({ ...prev, ...patch }));
+    const money = formatMoney(parseFloat(tgt.amt) || 0);
+    const period = { weekly: 'week', monthly: 'month', yearly: 'year' }[tgt.freq];
+    const fld = { width: '100%', boxSizing: 'border-box', padding: '9px 10px', border: '1px solid #d9d4c7', borderRadius: '8px', fontSize: '0.9rem', backgroundColor: 'white', color: '#26231c' };
+    const lab = { fontSize: '0.8rem', fontWeight: 600, color: '#26231c', margin: '12px 0 4px', display: 'block' };
+    const nextSel = (
+      <>
+        <label style={lab}>{tgt.freq === 'custom' ? 'I want to' : `Next ${period} I want to`}</label>
+        {tgt.freq === 'custom' ? (
+          <select aria-label="I want to" value={tgt.custKind} onChange={e => set({ custKind: e.target.value })} style={fld}>
+            <option value="setaside">Set aside {money}</option>
+            <option value="refill">Fill up to {money}</option>
+            <option value="balance">Have a balance of {money}</option>
+          </select>
+        ) : (
+          <select aria-label={`Next ${period} I want to`} value={tgt.mode} onChange={e => set({ mode: e.target.value })} style={fld}>
+            <option value="setaside">Set aside another {money}</option>
+            <option value="refill">Refill up to {money}</option>
+          </select>
+        )}
+        <div style={{ fontSize: '0.75rem', color: '#6b665c', marginTop: '4px' }}>
+          {tgt.freq === 'custom'
+            ? (tgt.custKind === 'setaside' ? 'Use for: bills, subscriptions, saving over time. Adds the amount regardless of the current balance.' : tgt.custKind === 'refill' ? 'Use for: gasoline, fun money, dining out. Uses what is already there and fills up to the amount.' : 'Use for: long-term savings. Reach this balance by the date and keep it.')
+            : (tgt.mode === 'refill' ? 'Use what is already in the category and fill it up.' : 'Add the amount on top of whatever is left over.')}
+        </div>
+      </>
+    );
+    const tabBtn = (k, l) => (
+      <button key={k} role="tab" aria-selected={tgt.freq === k} onClick={() => set({ freq: k })} style={{ flex: 1, padding: '7px 2px', border: 'none', borderRadius: '6px', backgroundColor: tgt.freq === k ? 'white' : 'transparent', boxShadow: tgt.freq === k ? '0 1px 2px rgba(0,0,0,0.15)' : 'none', fontWeight: tgt.freq === k ? 700 : 500, cursor: 'pointer', fontSize: '0.82rem', color: '#26231c' }}>{l}</button>
+    );
+    const canSave = (parseFloat(tgt.amt) || 0) > 0;
+    return (
+      <div data-testid="inline-target-editor">
+        <div role="tablist" style={{ display: 'flex', gap: '2px', backgroundColor: '#ece8dc', borderRadius: '8px', padding: '3px' }}>
+          {[['weekly', 'Weekly'], ['monthly', 'Monthly'], ['yearly', 'Yearly'], ['custom', 'Custom']].map(([k, l]) => tabBtn(k, l))}
+        </div>
+        <label style={lab}>{tgt.freq === 'custom' ? 'Amount' : 'I need'}</label>
+        <input aria-label="Target amount" type="number" step="0.01" min="0" autoFocus value={tgt.amt} onChange={e => set({ amt: e.target.value })} placeholder="0.00" style={fld} />
+        {tgt.freq === 'weekly' && (<>
+          <label style={lab}>On</label>
+          <select aria-label="Day of week" value={tgt.dow} onChange={e => set({ dow: e.target.value })} style={fld}>{TGT_DOW.map(d => <option key={d} value={d}>{d}</option>)}</select>
+          <label style={{ ...lab, display: 'flex', alignItems: 'center', gap: '6px', fontWeight: 500 }}><input type="checkbox" checked={tgt.bi} onChange={e => set({ bi: e.target.checked })} /> Every 2 weeks</label>
+        </>)}
+        {tgt.freq === 'monthly' && (<>
+          <label style={lab}>By</label>
+          <select aria-label="Day of month" value={tgt.dom} onChange={e => set({ dom: e.target.value })} style={fld}>
+            <option value="last">Last Day of Month</option>
+            {Array.from({ length: 31 }, (_, i) => String(i + 1)).map(d => <option key={d} value={d}>{`The ${d}${getOrdinalSuffix(d)}`}</option>)}
+          </select>
+        </>)}
+        {tgt.freq === 'yearly' && (<>
+          <label style={lab}>By</label>
+          <div style={{ display: 'flex', gap: '6px' }}>
+            <select aria-label="Month" value={tgt.month} onChange={e => set({ month: e.target.value })} style={{ ...fld, flex: 2 }}>{TGT_MONTHS.map(m => <option key={m} value={m}>{m}</option>)}</select>
+            <select aria-label="Day" value={tgt.day} onChange={e => set({ day: e.target.value })} style={{ ...fld, flex: 1 }}>{Array.from({ length: 31 }, (_, i) => String(i + 1)).map(d => <option key={d} value={d}>{d}</option>)}</select>
+          </div>
+        </>)}
+        {tgt.freq === 'custom' && (<>
+          {nextSel}
+          <label style={lab}>Due on (optional)</label>
+          <input aria-label="Due on" type="date" value={tgt.due} onChange={e => set({ due: e.target.value, repeat: e.target.value ? tgt.repeat : false })} style={fld} />
+          {tgt.due && (
+            <label style={{ ...lab, display: 'flex', alignItems: 'center', gap: '6px', fontWeight: 500 }}><input type="checkbox" checked={tgt.repeat} onChange={e => set({ repeat: e.target.checked })} /> Repeat</label>
+          )}
+          {tgt.due && tgt.repeat && (
+            <select aria-label="Repeat every" value={tgt.every} onChange={e => set({ every: Number(e.target.value) })} style={fld}>{REPEAT_EVERY.map(([n, l]) => <option key={n} value={n}>{l}</option>)}</select>
+          )}
+        </>)}
+        {tgt.freq !== 'custom' && nextSel}
+        <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginTop: '16px' }}>
+          {tgt.existing && <button data-testid="delete-target" onClick={deleteTarget} style={{ background: 'none', border: 'none', color: '#d1242f', fontWeight: 600, cursor: 'pointer', padding: '6px 2px' }}>🗑 Delete</button>}
+          <span style={{ flex: 1 }} />
+          <button onClick={closeTargetEditor} style={{ background: 'none', border: 'none', color: '#4b32c3', fontWeight: 600, cursor: 'pointer', padding: '6px 8px' }}>Cancel</button>
+          <button data-testid="save-target" disabled={!canSave} onClick={saveTarget} style={{ backgroundColor: canSave ? '#5b3fd6' : '#c9c3e8', color: 'white', border: 'none', borderRadius: '8px', padding: '9px 16px', fontWeight: 700, cursor: canSave ? 'pointer' : 'default' }}>Save Target</button>
+        </div>
+      </div>
+    );
   };
   const renderMobileTarget = () => {
     const env = envelopes.find(e => e.id === tgt.envId);
@@ -6471,8 +6576,9 @@ export default function BudgetApp() {
         <div data-testid="target-sub" style={shell}>
           {header('I Want To', () => setTgtSub(null))}
           <div style={{ margin: '12px 16px', backgroundColor: MD.card, borderRadius: '28px', overflow: 'hidden' }}>
-            {pickItem('s', tgt.custKind === 'setaside', `Set aside ${money}`, sub('Assign this much before the due date'), () => { set({ custKind: 'setaside' }); setTgtSub(null); })}
-            {pickItem('b', tgt.custKind === 'balance', `Have a balance of ${money}`, sub('Reach this balance by the due date'), () => { set({ custKind: 'balance' }); setTgtSub(null); })}
+            {pickItem('s', tgt.custKind === 'setaside', `Set aside ${money}`, (<><div style={{ color: '#d0d0e6', fontSize: '0.85rem', marginTop: '4px' }}>Use for: bills, subscriptions, saving over time</div>{sub(`Add ${money} to this category, regardless of its current balance.`)}</>), () => { set({ custKind: 'setaside' }); setTgtSub(null); })}
+            {pickItem('f', tgt.custKind === 'refill', `Fill up to ${money}`, (<><div style={{ color: '#d0d0e6', fontSize: '0.85rem', marginTop: '4px' }}>Use for: gasoline, fun money, dining out</div>{sub('Use what is already in the category and fill it up to ' + money + '.')}</>), () => { set({ custKind: 'refill' }); setTgtSub(null); })}
+            {pickItem('b', tgt.custKind === 'balance', `Have a balance of ${money}`, sub('Reach this amount by a specific time and refrain from spending until you reach it.'), () => { set({ custKind: 'balance' }); setTgtSub(null); })}
           </div>
         </div>
       );
@@ -6555,7 +6661,7 @@ export default function BudgetApp() {
             <div role="button" data-testid="next-row" onClick={() => setTgtSub('each')} style={{ ...rowBase, borderBottom: 'none' }}>{ico('⟳')}<div style={{ flex: 1 }}>{lab(`Next ${period} I want to`)}{val(nextText)}</div></div>
           </>) : (<>
             {amountRow('Amount')}
-            <div role="button" data-testid="iwant-row" onClick={() => setTgtSub('iwant')} style={{ ...rowBase, borderBottom: 'none' }}>{ico('◎')}<div style={{ flex: 1 }}>{lab('I want to')}{val(tgt.custKind === 'balance' ? `Have a balance of ${money}` : `Set aside ${money}`)}</div></div>
+            <div role="button" data-testid="iwant-row" onClick={() => setTgtSub('iwant')} style={{ ...rowBase, borderBottom: 'none' }}>{ico('◎')}<div style={{ flex: 1 }}>{lab('I want to')}{val(tgt.custKind === 'balance' ? `Have a balance of ${money}` : tgt.custKind === 'refill' ? `Fill up to ${money}` : `Set aside ${money}`)}</div></div>
           </>)}
         </div>
         {tgt.freq === 'custom' && (
@@ -7467,6 +7573,7 @@ export default function BudgetApp() {
                 </div>
                 <div data-testid="target-card" style={pCard}>
                   <div style={{ fontWeight: 700, fontSize: '0.95rem', marginBottom: '10px' }}>◔ Target</div>
+                  {!isMobile && tgt && tgt.envId === selEnv.id ? renderInlineTarget() : (<>
                   {selProg ? (
                     <>
                       <div style={{ fontWeight: 600, fontSize: '0.88rem' }}>{getScheduleText(selEnv) || 'Target'} · {formatMoney(selProg.target)}</div>
@@ -7485,7 +7592,8 @@ export default function BudgetApp() {
                   ) : (
                     <div style={{ fontSize: '0.85rem', color: '#6b665c', marginBottom: '8px' }}>No target set for this envelope.</div>
                   )}
-                  <button onClick={() => startEditEnv(selEnv)} style={{ width: '100%', marginTop: '10px', padding: '10px', borderRadius: '8px', border: 'none', backgroundColor: '#f0ecff', color: '#4b32c3', fontWeight: 600, cursor: 'pointer', fontSize: '0.9rem' }}>{selProg ? 'Edit Target' : 'Create Target'}</button>
+                  <button data-testid="edit-target" onClick={() => openTargetEditor(selEnv)} style={{ width: '100%', marginTop: '10px', padding: '10px', borderRadius: '8px', border: 'none', backgroundColor: '#f0ecff', color: '#4b32c3', fontWeight: 600, cursor: 'pointer', fontSize: '0.9rem' }}>{selProg ? 'Edit Target' : 'Create Target'}</button>
+                  </>)}
                 </div>
               </>
             )}
@@ -8526,6 +8634,14 @@ export default function BudgetApp() {
                       style={{ backgroundColor: '#059669', color: 'white', border: 'none', padding: '6px 10px', borderRadius: '6px', fontWeight: 'bold', cursor: 'pointer', fontSize: '0.8rem' }}
                     >
                       Reconcile
+                    </button>
+                    <button
+                      data-testid="edit-account"
+                      onClick={() => openEditAccount(acc)}
+                      aria-label={`Edit account ${acc.name.trim()}`}
+                      style={{ backgroundColor: 'white', color: '#374151', border: '1px solid #d1d5db', padding: '6px 10px', borderRadius: '6px', fontWeight: 'bold', cursor: 'pointer', fontSize: '0.8rem' }}
+                    >
+                      Edit
                     </button>
                     <button
                       onClick={() => (acc.isHidden ? handleUnhideAccount(acc) : handleHideAccount(acc))}
@@ -10166,6 +10282,25 @@ export default function BudgetApp() {
       {/* Phone layout: global touch tweaks, transaction sheet, floating add button and bottom tab bar */}
       <style>{`body{margin:0}`}</style>
       {isMobile && <style>{`input,select,textarea{font-size:16px !important} input[aria-label="Amount"]{font-size:1.5rem !important;font-weight:700 !important;padding:10px !important} [data-testid=m-add-tx] input[aria-label="Amount"],[data-testid=m-tx-detail] input[aria-label="Amount"]{font-size:2.4rem !important;font-weight:800 !important} [role=dialog] input,[role=dialog] select{min-width:0 !important;max-width:100% !important;box-sizing:border-box !important} button{touch-action:manipulation}`}</style>}
+      {editAcc && (
+        <BottomSheet title="Edit account" testId="edit-account-sheet" onClose={() => setEditAcc(null)}>
+          <form onSubmit={saveEditAccount} style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+            <label style={{ fontSize: '0.8rem', color: '#4b5563' }}>Name
+              <input aria-label="Account name" value={editAcc.name} onChange={e => setEditAcc({ ...editAcc, name: e.target.value })} style={{ width: '100%', boxSizing: 'border-box', padding: '10px', border: '1px solid #d1d5db', borderRadius: '8px', fontSize: '1rem', marginTop: '4px' }} />
+            </label>
+            <label style={{ fontSize: '0.8rem', color: '#4b5563' }}>Type
+              <select aria-label="Account type" value={editAcc.type} onChange={e => setEditAcc({ ...editAcc, type: e.target.value })} style={{ width: '100%', boxSizing: 'border-box', padding: '10px', border: '1px solid #d1d5db', borderRadius: '8px', fontSize: '1rem', marginTop: '4px' }}>
+                {['Checking', 'Savings', 'Cash', 'Credit Card', 'Loan'].map(t => <option key={t} value={t}>{t}</option>)}
+              </select>
+            </label>
+            <label style={{ fontSize: '0.8rem', color: '#4b5563' }}>{editAcc.type === 'Credit Card' ? 'Starting amount owed ($)' : 'Starting balance ($)'}
+              <input aria-label="Starting balance" type="number" step="0.01" inputMode="decimal" value={editAcc.balance} onChange={e => setEditAcc({ ...editAcc, balance: e.target.value })} style={{ width: '100%', boxSizing: 'border-box', padding: '10px', border: '1px solid #d1d5db', borderRadius: '8px', fontSize: '1rem', marginTop: '4px' }} />
+            </label>
+            <div style={{ fontSize: '0.75rem', color: '#6b7280' }}>Transactions stay as they are. The account balance and Ready to Assign update right away. Imported YNAB accounts start at $0 and carry their opening balance as a transaction.</div>
+            <button type="submit" data-testid="edit-account-save" style={{ backgroundColor: '#2563eb', color: 'white', border: 'none', padding: '12px', borderRadius: '10px', fontWeight: 700, fontSize: '1rem', cursor: 'pointer' }}>Save</button>
+          </form>
+        </BottomSheet>
+      )}
       {isMobile && txSheetOpen && !editingTxId && !addLight && renderMobileAddTx()}
       {isMobile && txSheetOpen && (!!editingTxId || addLight) && (
         <BottomSheet inset={kbInset} title={editingTxId ? 'Edit transaction' : 'Add transaction'} testId="tx-sheet" onClose={() => { setTxSheetOpen(false); cancelEditTx(); }}>
