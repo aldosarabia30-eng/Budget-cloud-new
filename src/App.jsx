@@ -502,6 +502,42 @@ const canLinkAsTransfer = (a, b) =>
   a.type !== b.type && a.accountId !== b.accountId &&
   centsOf(a.amount) === centsOf(b.amount) && centsOf(a.amount) > 0;
 // Suggest likely pairs (same amount, opposite direction, different accounts, dates within a few days).
+// Possible duplicates: same account, direction and amount, dates within a few days.
+// Two bank-synced rows with different bank ids are real separate charges, so they are skipped.
+const dupWords = (p) => String(p || '').toLowerCase().replace(/[^a-z0-9 ]+/g, ' ').split(/\s+/).filter(w => w.length > 2);
+const findDupPairs = (txs, maxDays = 3) => {
+  const groups = new Map();
+  txs.forEach(t => {
+    if (!t || t.isDeleted || t.dupOk) return;
+    const key = `${t.accountId}|${t.type}|${Math.round(Number(t.amount) * 100)}`;
+    (groups.get(key) || groups.set(key, []).get(key)).push(t);
+  });
+  const day = (iso) => Math.round(new Date((iso || '1970-01-01') + 'T00:00:00Z').getTime() / 86400000);
+  const pairs = [];
+  groups.forEach(list => {
+    if (list.length < 2) return;
+    list.sort((a, b) => String(a.date).localeCompare(String(b.date)));
+    const used = new Set();
+    for (let i = 0; i < list.length; i++) {
+      if (used.has(list[i].id)) continue;
+      for (let j = i + 1; j < list.length; j++) {
+        if (used.has(list[j].id)) continue;
+        const a = list[i], b = list[j];
+        const gap = day(b.date) - day(a.date);
+        if (gap > maxDays) break;
+        if (a.isTransfer && b.isTransfer && a.transferId && a.transferId === b.transferId) continue;
+        if (a.sfId && b.sfId && a.sfId !== b.sfId) continue;
+        const wa = dupWords(a.payee), wb = dupWords(b.payee);
+        const similar = wa.some(w => wb.includes(w)) || (!wa.length && !wb.length);
+        pairs.push({ a, b, gap, similar, key: a.id + '|' + b.id });
+        used.add(a.id); used.add(b.id);
+        break;
+      }
+    }
+  });
+  // likeliest first: same payee-ish and same day
+  return pairs.sort((x, y) => (y.similar - x.similar) || (x.gap - y.gap));
+};
 const findTransferMatches = (txs, maxDays = 3) => {
   const live = txs.filter(t => !t.isDeleted && !t.isTransfer && t.payee !== 'Reconciliation Adjustment');
   const outs = live.filter(t => t.type === 'expense');
@@ -2601,6 +2637,9 @@ export default function BudgetApp() {
   // Likely transfers hiding as separate expense/income pairs (e.g. after importing both accounts)
   const transferMatches = useMemo(() => findTransferMatches(activeTransactions.filter(t => !isTxLocked(t))), [transactions, unlockedTxIds]);
 
+  const dupPairs = useMemo(() => findDupPairs(activeTransactions), [transactions]);
+  const dupKeep = (pair) => setTransactions(prev => prev.map(t => (t.id === pair.a.id || t.id === pair.b.id ? { ...t, dupOk: true } : t)));
+  const dupKeepAll = () => { const ids = new Set(dupPairs.flatMap(p => [p.a.id, p.b.id])); setTransactions(prev => prev.map(t => (ids.has(t.id) ? { ...t, dupOk: true } : t))); showNotification('Marked all as not duplicates.'); };
   // Transactions after the search box and filters
   const txFiltersActive = !!(txSearch.trim() || txFilterAccount || txFilterEnvelope || txFilterType || txFilterStatus || txFromDate || txToDate);
   const visibleTransactions = useMemo(() => {
@@ -5418,6 +5457,37 @@ export default function BudgetApp() {
     const set = new Set(ids);
     setTransactions(prev => prev.map(t => (set.has(t.id) && t.unapproved ? { ...t, unapproved: false } : t)));
   };
+  // Review list of possible duplicate transactions (shown above the registers)
+  const renderDupPanel = (dark) => {
+    if (!dupPairs.length) return null;
+    const shown = dupPairs.slice(0, 5);
+    const accName = (id) => accounts.find(a => a.id === id)?.name || '';
+    const btn = (primary) => ({ border: 'none', borderRadius: dark ? '999px' : '6px', padding: dark ? '7px 12px' : '5px 10px', fontWeight: 700, cursor: 'pointer', fontSize: '0.8rem', backgroundColor: primary ? (dark ? MD.btn : '#b45309') : (dark ? MD.line : '#e5e7eb'), color: primary ? 'white' : (dark ? MD.text : '#111827') });
+    const line = (t) => (
+      <div style={{ display: 'flex', justifyContent: 'space-between', gap: '8px', alignItems: 'center', padding: '3px 0' }}>
+        <span style={{ minWidth: 0, wordBreak: 'break-word' }}>{formatDate(t.date, 'us')} · {t.payee || '(no payee)'}{t.sfId ? ' · bank' : ''}{t.unapproved ? ' · unapproved' : ''}</span>
+        <button data-testid="dup-delete" onClick={() => handleSoftDeleteTransaction(t.id)} aria-label={`Delete ${t.payee}`} style={btn(false)}>Delete</button>
+      </div>
+    );
+    return (
+      <div data-testid="dup-panel" style={dark ? { margin: '0 16px 12px', backgroundColor: '#3a2a12', color: MD.text, borderRadius: '14px', padding: '10px 14px', fontSize: '0.86rem' } : { backgroundColor: '#fffbeb', border: '1px solid #fcd34d', padding: '12px 14px', borderRadius: '10px', color: '#78350f' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
+          <strong>{dupPairs.length} possible duplicate{dupPairs.length === 1 ? '' : 's'} to review</strong>
+          <button data-testid="dup-keep-all" onClick={dupKeepAll} style={btn(false)}>None are duplicates</button>
+        </div>
+        <div style={{ fontSize: '0.75rem', opacity: 0.8, margin: '2px 0 6px' }}>Same account, direction and amount, within 3 days. Delete the extra one, or keep both.</div>
+        {shown.map(pr => (
+          <div key={pr.key} data-testid="dup-pair" style={{ borderTop: dark ? '1px solid #5a4420' : '1px solid #fde68a', padding: '6px 0' }}>
+            <div style={{ fontWeight: 700 }}>${Number(pr.a.amount).toFixed(2)} {pr.a.type === 'income' ? 'inflow' : 'outflow'} · {accName(pr.a.accountId)}{pr.similar ? ' · similar payee' : ''}</div>
+            {line(pr.a)}
+            {line(pr.b)}
+            <button data-testid="dup-keep" onClick={() => dupKeep(pr)} style={{ ...btn(true), marginTop: '4px' }}>Keep both</button>
+          </div>
+        ))}
+        {dupPairs.length > shown.length && <div style={{ fontSize: '0.78rem', opacity: 0.8, paddingTop: '4px' }}>+ {dupPairs.length - shown.length} more after you clear these.</div>}
+      </div>
+    );
+  };
   // Banner above a register: how many transactions still need approval or a category
   const renderApproveBanner = (dark) => {
     const scope = activeTransactions.filter(t => !txFilterAccount || t.accountId === txFilterAccount);
@@ -6713,6 +6783,7 @@ export default function BudgetApp() {
             )}
           </div>
         )}
+        {renderDupPanel(true)}
         {transferMatches.length > 0 && (
           <div data-testid="transfer-matches" style={{ margin: '0 16px 12px', backgroundColor: '#1d1d45', borderRadius: '14px', padding: '10px 14px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '8px', fontSize: '0.88rem' }}>
             <span>{transferMatches.length} possible transfer{transferMatches.length === 1 ? '' : 's'}</span>
@@ -9112,6 +9183,7 @@ export default function BudgetApp() {
         <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
           {isMobile && txFilterAccount && (() => { const hdrAcc = accounts.find(a => a.id === txFilterAccount && !a.isDeleted); return hdrAcc ? renderAccountHeader(hdrAcc) : null; })()}
 
+          {renderDupPanel(false)}
           {transferMatches.length > 0 && (
             <div data-testid="transfer-matches" style={{ backgroundColor: '#eef2ff', border: '1px solid #c7d2fe', padding: '12px 14px', borderRadius: '10px' }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
