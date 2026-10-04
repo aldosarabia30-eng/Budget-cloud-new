@@ -2637,7 +2637,7 @@ export default function BudgetApp() {
   // Likely transfers hiding as separate expense/income pairs (e.g. after importing both accounts)
   const transferMatches = useMemo(() => findTransferMatches(activeTransactions.filter(t => !isTxLocked(t))), [transactions, unlockedTxIds]);
 
-  const dupPairs = useMemo(() => findDupPairs(activeTransactions), [transactions]);
+  const dupPairs = useMemo(() => findDupPairs(activeTransactions.filter(t => !isTxLocked(t))), [transactions, unlockedTxIds]);
   const dupKeep = (pair) => setTransactions(prev => prev.map(t => (t.id === pair.a.id || t.id === pair.b.id ? { ...t, dupOk: true } : t)));
   const dupKeepAll = () => { const ids = new Set(dupPairs.flatMap(p => [p.a.id, p.b.id])); setTransactions(prev => prev.map(t => (ids.has(t.id) ? { ...t, dupOk: true } : t))); showNotification('Marked all as not duplicates.'); };
   // Transactions after the search box and filters
