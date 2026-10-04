@@ -365,7 +365,7 @@ const AssignedInput = ({ value, onCommit, ariaLabel, width = '92px', big = false
       width={width}
       inputStyle={big ? { textAlign: 'center', fontSize: '1.6rem', fontWeight: 700, padding: '10px', boxSizing: 'border-box', width: '100%', minWidth: 0 } : { textAlign: 'right' }}
       placeholder="0.00"
-      onFocus={() => setDraft(String(value))}
+      onFocus={() => setDraft(null)}
       onChange={v => {
         setDraft(v);
         const n = v.trim() === '' ? 0 : evalAmount(v);
@@ -1747,6 +1747,9 @@ export default function BudgetApp() {
   const [pickYear, setPickYear] = useState(null);
   const [tgt, setTgt] = useState(null); // phone target editor draft
   const [tgtSub, setTgtSub] = useState(null); // 'each' | 'by' | 'iwant' | 'every'
+  const [assignPop, setAssignPop] = useState(null); // desktop: env id whose Assigned box has its quick-fill dropdown open
+  const [actPop, setActPop] = useState(null); // desktop: env id whose Activity list is open
+  const [availPop, setAvailPop] = useState(null); // desktop: { envId, x, y, otherId, amount } cover / move dropdown
   const [ctxMenu, setCtxMenu] = useState(null); // desktop right-click menu: { kind: 'env'|'group', id, name, x, y }
   const [assignOpen, setAssignOpen] = useState(false);
   const [mTxId, setMTxId] = useState(null);
@@ -3194,21 +3197,22 @@ export default function BudgetApp() {
   };
   const closeMove = () => { setMoveUi(null); setMovePick(null); };
 
-  const confirmMove = () => {
-    if (!moveUi) return;
-    const amount = round2(evalAmount(moveUi.amount));
+  const confirmMove = (override) => {
+    const ui = override && override.envId ? override : moveUi;
+    if (!ui) return;
+    const amount = round2(evalAmount(ui.amount));
     if (!(amount > 0)) { showNotification('Enter an amount above $0.'); return; }
-    if (!moveUi.otherId) { showNotification(moveUi.mode === 'cover' ? 'Choose where the money comes from.' : 'Choose where to move the money.'); return; }
-    const main = envelopes.find(e => e.id === moveUi.envId);
-    if (!main) { closeMove(); return; }
+    if (!ui.otherId) { showNotification(ui.mode === 'cover' ? 'Choose where the money comes from.' : 'Choose where to move the money.'); return; }
+    const main = envelopes.find(e => e.id === ui.envId);
+    if (!main) { closeMove(); setAvailPop(null); return; }
     // giver = who loses assigned money, taker = who gains it ('rta' = Ready to Assign, no envelope change)
-    const giverId = moveUi.mode === 'cover' ? moveUi.otherId : main.id;
-    const takerId = moveUi.mode === 'cover' ? main.id : moveUi.otherId;
+    const giverId = ui.mode === 'cover' ? ui.otherId : main.id;
+    const takerId = ui.mode === 'cover' ? main.id : ui.otherId;
     if (giverId === 'rta') {
       if (amount > rtaShown + 0.004) { showNotification(`Only ${formatMoney(Math.max(0, rtaShown))} is left in Ready to Assign.`); return; }
     } else {
       const giver = envelopes.find(e => e.id === giverId);
-      if (!giver) { closeMove(); return; }
+      if (!giver) { closeMove(); setAvailPop(null); return; }
       if (amount > envRow(giver).end + 0.004) { showNotification(`'${giver.name}' only has ${formatMoney(Math.max(0, envRow(giver).end))} available.`); return; }
     }
     setEnvelopes(prev => prev.map(e => {
@@ -3218,11 +3222,11 @@ export default function BudgetApp() {
       return e;
     }));
     const nameOf = (id) => (id === 'rta' ? 'Ready to Assign' : (envelopes.find(e => e.id === id) || {}).name);
-    logMove({ kind: 'move', amount, fromName: nameOf(giverId) || 'Envelope', toName: nameOf(takerId) || 'Envelope', cover: moveUi.mode === 'cover' });
-    showNotification(moveUi.mode === 'cover'
+    logMove({ kind: 'move', amount, fromName: nameOf(giverId) || 'Envelope', toName: nameOf(takerId) || 'Envelope', cover: ui.mode === 'cover' });
+    showNotification(ui.mode === 'cover'
       ? `Covered ${formatMoney(amount)} for '${main.name}' from ${nameOf(giverId)}.`
       : `Moved ${formatMoney(amount)} from '${main.name}' to ${nameOf(takerId)}.`);
-    closeMove();
+    closeMove(); setAvailPop(null);
   };
 
   const handleSoftDeleteEnvelope = (envId) => {
@@ -7336,6 +7340,77 @@ export default function BudgetApp() {
     }
     setCtxMenu(null);
   };
+  // Desktop pop-ups opened from the budget table: Activity list and Cover / Move dropdown
+  const renderDeskPops = () => {
+    if (isMobile) return null;
+    const out = [];
+    if (actPop) {
+      const env = envelopes.find(e => e.id === actPop);
+      if (env) {
+        const rows = [];
+        activeTransactions.forEach(t => {
+          if (!t.date || String(t.date).slice(0, 7) !== budgetMonth || t.type !== 'expense') return;
+          txParts(t).filter(x => x.envelopeId === env.id).forEach(x => rows.push({ t, amt: x.amount }));
+        });
+        rows.sort((a, b) => String(b.t.date).localeCompare(String(a.t.date)));
+        out.push(
+          <div key="act" onClick={() => setActPop(null)} style={{ position: 'fixed', inset: 0, zIndex: 70, backgroundColor: 'rgba(17,24,39,0.25)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+            <div data-testid="activity-pop" role="dialog" aria-label="Activity" onClick={e => e.stopPropagation()} style={{ width: 'min(560px, 92vw)', maxHeight: '70vh', overflowY: 'auto', backgroundColor: 'white', borderRadius: '14px', boxShadow: '0 12px 40px rgba(0,0,0,0.3)', padding: '20px 24px' }}>
+              <div style={{ fontSize: '1.25rem', fontWeight: 700 }}>Activity</div>
+              <div style={{ fontSize: '0.85rem', color: '#6b665c', marginBottom: '10px' }}>{env.name}</div>
+              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.85rem' }}>
+                <thead><tr style={{ textAlign: 'left', borderTop: '1px solid #ddd', borderBottom: '1px solid #ddd' }}>{['Account', 'Date', 'Payee', 'Memo', 'Amount'].map((h, i) => <th key={h} style={{ padding: '6px 8px', fontWeight: 600, textAlign: i === 4 ? 'right' : 'left' }}>{h}</th>)}</tr></thead>
+                <tbody>
+                  {rows.map(({ t, amt }, i) => (
+                    <tr key={t.id + i} style={{ borderBottom: '1px solid #eee' }}>
+                      <td style={{ padding: '7px 8px' }}>{(accounts.find(a => a.id === t.accountId) || {}).name}</td>
+                      <td style={{ padding: '7px 8px', whiteSpace: 'nowrap' }}>{formatDate(t.date, 'us')}</td>
+                      <td style={{ padding: '7px 8px' }}>{t.payee}</td>
+                      <td style={{ padding: '7px 8px', color: '#6b665c' }}>{t.notes}</td>
+                      <td style={{ padding: '7px 8px', textAlign: 'right', whiteSpace: 'nowrap' }}>{formatMoney(-amt)}</td>
+                    </tr>
+                  ))}
+                  {rows.length === 0 && <tr><td colSpan={5} style={{ padding: '12px 8px', color: '#6b665c' }}>No transactions this month.</td></tr>}
+                </tbody>
+              </table>
+              <div style={{ textAlign: 'right', marginTop: '14px' }}><button onClick={() => setActPop(null)} style={{ backgroundColor: '#5b3fd6', color: 'white', border: 'none', borderRadius: '8px', padding: '9px 20px', fontWeight: 700, cursor: 'pointer' }}>Close</button></div>
+            </div>
+          </div>
+        );
+      }
+    }
+    if (availPop) {
+      const env = envelopes.find(e => e.id === availPop.envId);
+      if (env) {
+        const cover = availPop.mode === 'cover';
+        const groups = [...new Set(visibleEnvelopes.filter(e => e.id !== env.id && (!cover || envRow(e).end > 0.004)).map(e => e.group))];
+        out.push(
+          <div key="avail" onClick={() => setAvailPop(null)} style={{ position: 'fixed', inset: 0, zIndex: 70 }}>
+            <div data-testid="avail-pop" role="dialog" aria-label={cover ? 'Cover overspending' : 'Move money'} onClick={e => e.stopPropagation()} style={{ position: 'fixed', left: availPop.x, top: availPop.y, width: '320px', backgroundColor: 'white', borderRadius: '12px', boxShadow: '0 10px 32px rgba(0,0,0,0.28)', padding: '16px' }}>
+              <div style={{ fontWeight: 700, marginBottom: '8px' }}>{cover ? 'Cover overspending from' : 'Move money to'}</div>
+              <select aria-label={cover ? 'Take money from' : 'Move money to'} value={availPop.otherId} onChange={e => setAvailPop({ ...availPop, otherId: e.target.value })} style={{ width: '100%', padding: '9px', border: '1px solid #d9d4c7', borderRadius: '8px', fontSize: '0.9rem' }}>
+                <option value="">Choose a category…</option>
+                {(!cover || rtaShown > 0.004) && <optgroup label="Inflow:"><option value="rta">Ready to Assign{rtaShown ? ` — ${formatMoney(rtaShown)}` : ''}</option></optgroup>}
+                {groups.map(g => (
+                  <optgroup key={g} label={`${g}:`}>
+                    {visibleEnvelopes.filter(e => e.group === g && e.id !== env.id && (!cover || envRow(e).end > 0.004)).map(e => <option key={e.id} value={e.id}>{e.name} — {formatMoney(envRow(e).end)}</option>)}
+                  </optgroup>
+                ))}
+              </select>
+              <div style={{ display: 'flex', gap: '8px', alignItems: 'center', marginTop: '10px' }}>
+                <SplitAmountInput value={availPop.amount} onChange={v => setAvailPop({ ...availPop, amount: v })} ariaLabel="Amount to move" width="110px" />
+                <span style={{ flex: 1 }} />
+                <button onClick={() => setAvailPop(null)} style={{ background: 'none', border: 'none', color: '#4b32c3', fontWeight: 600, cursor: 'pointer' }}>Cancel</button>
+                <button data-testid="avail-go" onClick={() => confirmMove({ envId: env.id, mode: availPop.mode, otherId: availPop.otherId, amount: availPop.amount })} style={{ backgroundColor: '#5b3fd6', color: 'white', border: 'none', borderRadius: '8px', padding: '8px 16px', fontWeight: 700, cursor: 'pointer' }}>{cover ? 'Cover' : 'Move'}</button>
+              </div>
+            </div>
+          </div>
+        );
+      }
+    }
+    return out;
+  };
+
   const renderCtxMenu = () => {
     if (!ctxMenu) return null;
     const env = ctxMenu.kind === 'env' ? envelopes.find(e => e.id === ctxMenu.id) : null;
@@ -7380,6 +7455,7 @@ export default function BudgetApp() {
       {/* Side menu */}
       {!isMobile && (sidebarOpen ? deskSidebar : deskRail)}
       {!isMobile && renderCtxMenu()}
+      {renderDeskPops()}
       {isMobile && <aside
         style={{
           width: '240px',
@@ -7905,18 +7981,47 @@ export default function BudgetApp() {
                             </div>
                             {!isMobile && (
                               <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+                                <div style={{ position: 'relative' }} onFocus={(ev) => { const r = ev.currentTarget.getBoundingClientRect(); setAssignPop({ id: env.id, x: Math.max(8, r.right - 250), y: Math.min(r.bottom + 4, window.innerHeight - 290) }); }} onBlur={() => setAssignPop(null)}>
                                 <AssignedInput
                                   value={row.budgeted}
                                   ariaLabel={`Assigned ${env.name}`}
                                   onCommit={n => handleAssignMonth(env.id, n)}
                                 />
+                                {assignPop && assignPop.id === env.id && (() => {
+                                  const needed = getNeeded(env, row);
+                                  const prevRow = (budgetView.rowsByEnv[env.id] && budgetView.rowsByEnv[env.id].get(addMonthKey(budgetMonth, -1))) || null;
+                                  const lastAssigned = prevRow ? Math.max(0, prevRow.budgeted) : 0;
+                                  const lastSpent = prevRow ? Math.max(0, prevRow.spent) : 0;
+                                  const cur = Number(row.budgeted) || 0;
+                                  const setTo = (n) => handleAssignMonth(env.id, Math.max(0, round2(n)));
+                                  const items = [
+                                    needed > 0.004 && [`Underfunded`, formatMoney(needed), () => setTo(cur + needed)],
+                                    [`Assigned Last Month`, formatMoney(lastAssigned), () => setTo(lastAssigned)],
+                                    [`Spent Last Month`, formatMoney(lastSpent), () => setTo(lastSpent)],
+                                    [`Add $10`, '+$10', () => setTo(cur + 10)],
+                                    [`Subtract $10`, '−$10', () => setTo(cur - 10)],
+                                    [`Reset Assigned Amount`, '', () => setTo(0)]
+                                  ].filter(Boolean);
+                                  return (
+                                    <div data-testid="assign-pop" onMouseDown={e => e.preventDefault()} style={{ position: 'fixed', left: assignPop.x, top: assignPop.y, width: '250px', backgroundColor: 'white', border: '1px solid #e3e6eb', borderRadius: '10px', boxShadow: '0 8px 24px rgba(0,0,0,0.18)', zIndex: 80, padding: '6px 0', textAlign: 'left' }}>
+                                      {items.map(([label, amt, fn]) => (
+                                        <button key={label} type="button" onClick={fn} style={{ display: 'flex', justifyContent: 'space-between', width: '100%', background: 'none', border: 'none', padding: '9px 14px', cursor: 'pointer', fontSize: '0.88rem', color: '#26231c' }}>
+                                          <span>{label}</span><span style={{ color: '#6b665c' }}>{amt}</span>
+                                        </button>
+                                      ))}
+                                    </div>
+                                  );
+                                })()}
+                                </div>
                               </div>
                             )}
                             {!isMobile && (
-                              <div style={{ textAlign: 'right', fontSize: '0.88rem', color: '#4b5563' }}>{formatMoney(spent)}</div>
+                              <div style={{ textAlign: 'right', fontSize: '0.88rem', color: '#4b5563' }}>
+                                {Math.abs(spent) > 0.004 ? <button type="button" data-testid="activity-link" aria-label={`Activity for ${env.name}`} onClick={() => setActPop(env.id)} style={{ background: 'none', border: 'none', padding: 0, font: 'inherit', color: '#4b5563', cursor: 'pointer', textDecoration: 'underline dotted' }}>{formatMoney(spent)}</button> : formatMoney(spent)}
+                              </div>
                             )}
                             <div style={{ textAlign: 'right' }}>
-                              <AvailPill value={remaining} row={row} label={`Available ${env.name}`} ynab={!isMobile} underfunded={!isMobile && getNeeded(env, row) > 0.004} onClick={() => setSelectedEnvId(selected ? null : env.id)} />
+                              <AvailPill value={remaining} row={row} label={`Available ${env.name}`} ynab={!isMobile} underfunded={!isMobile && getNeeded(env, row) > 0.004} onClick={(ev) => { if (isMobile || (Math.abs(remaining) < 0.005)) { setSelectedEnvId(selected ? null : env.id); return; } const r = ev.currentTarget.getBoundingClientRect(); setSelectedEnvId(env.id); setAvailPop({ envId: env.id, x: Math.max(8, Math.min(r.right - 320, window.innerWidth - 336)), y: Math.min(r.bottom + 6, window.innerHeight - 260), otherId: '', amount: String(Math.abs(round2(remaining))) , mode: remaining < 0 ? 'cover' : 'move' }); }} />
                             </div>
                             {isMobile && funds > 0.004 && (() => {
                               const behind = progress && progress.left > 0.004;
@@ -7962,7 +8067,7 @@ export default function BudgetApp() {
                                 )}
                               </>
                             )}
-                            {selected && (
+                            {selected && isMobile && (
                               <div data-testid="env-actions" style={{ gridColumn: '1 / -1', display: 'flex', alignItems: 'center', gap: isMobile ? '14px' : '10px', flexWrap: 'wrap', paddingTop: '2px' }}>
                                 {(() => {
                                   const needed = getNeeded(env, row);
