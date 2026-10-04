@@ -3848,8 +3848,10 @@ export default function BudgetApp() {
     setSfBusy(false);
   };
   const sfLink = (bankId, accId) => setAccounts(prev => prev.map(a => (a.sfId === bankId && a.id !== accId ? { ...a, sfId: '' } : (a.id === accId ? { ...a, sfId: bankId } : a))));
-  const sfImport = () => {
-    if (!sfData) return;
+  // What a sync would add: skips ones already imported before, and ones that match money you already have
+  // (typed by hand, from a CSV or YNAB, including both sides of a transfer).
+  const sfPlan = () => {
+    if (!sfData) return null;
     const stamp = Date.now();
     const mine = transactions.filter(t => !t.isDeleted);
     const knownIds = new Set(mine.map(t => t.sfId).filter(Boolean));
@@ -3857,31 +3859,48 @@ export default function BudgetApp() {
     const isoOf = (posted) => new Date(Number(posted) * 1000).toISOString().slice(0, 10);
     const dayNum = (iso) => Math.round(new Date(iso + 'T00:00:00Z').getTime() / 86400000);
     const added = [];
-    let skippedSame = 0, skippedLike = 0, linked = 0;
+    const per = {};
+    let linked = 0;
     (sfData.accounts || []).forEach(b => {
       const acc = accounts.find(a => a.sfId === b.id && !a.isDeleted);
+      const row = per[b.id] = { fresh: 0, had: 0, linked: !!acc };
       if (!acc) return;
       linked++;
-      (b.transactions || []).forEach((bt, i) => {
-        if (!bt || bt.id == null || knownIds.has(bt.id)) { skippedSame++; return; }
+      (b.transactions || []).forEach((bt) => {
+        if (!bt || bt.id == null) return;
+        if (knownIds.has(bt.id)) { row.had++; return; }
         const amt = round2(Number(bt.amount));
         if (!isFinite(amt) || amt === 0) return;
         const date = isoOf(bt.posted);
         const type = amt < 0 ? 'expense' : 'income';
-        // Same money already in the register (typed by hand or from a CSV): don't double it
-        const twin = mine.find(t => !t.sfId && !used.has(t.id) && t.accountId === acc.id && t.type === type && !t.isTransfer && Math.abs(Number(t.amount) - Math.abs(amt)) < 0.005 && Math.abs(dayNum(t.date) - dayNum(date)) <= 4);
-        if (twin) { used.add(twin.id); skippedLike++; return; }
+        const twin = mine.find(t => !t.sfId && !used.has(t.id) && t.accountId === acc.id && t.type === type && Math.abs(Number(t.amount) - Math.abs(amt)) < 0.005 && Math.abs(dayNum(t.date) - dayNum(date)) <= 4);
+        if (twin) { used.add(twin.id); row.had++; return; }
+        row.fresh++;
         added.push({ id: `tx-sf${stamp}-${added.length}`, date, payee: String(bt.description || 'Bank transaction').replace(/\s+/g, ' ').trim(), amount: Math.abs(amt), type, accountId: acc.id, envelopeId: '', notes: '', isDeleted: false, cleared: true, reconciled: false, unapproved: true, sfId: bt.id });
       });
     });
-    if (!linked) { setSfMsg('Link at least one bank account to a budget account first.'); return; }
-    if (!added.length) { setSfMsg(`Nothing new. ${skippedSame + skippedLike} transaction${skippedSame + skippedLike === 1 ? ' was' : 's were'} already in your budget.`); return; }
+    return { added, per, linked };
+  };
+  const sfImport = () => {
+    const plan = sfPlan();
+    if (!plan) return;
+    if (!plan.linked) { setSfMsg('Link at least one bank account to a budget account first.'); return; }
+    if (!plan.added.length) { setSfMsg('Nothing new. Everything the bank sent is already in your budget.'); return; }
+    const added = plan.added;
     setTransactions(prev => [...added, ...prev]);
     const last = added[0].accountId;
     setSfData(null);
     setSelectedTxIds([]); setTxFilterAccount(last); setTxFilterStatus('attention'); setTxAccountId(last);
     openTab('transactions');
-    showNotification(`Imported ${added.length} bank transaction${added.length === 1 ? '' : 's'}${skippedLike ? ` (${skippedLike} matched ones you already had)` : ''}. Approve or categorize them below.`);
+    showNotification(`Imported ${added.length} bank transaction${added.length === 1 ? '' : 's'}. Approve or categorize them below.`);
+  };
+  // Take back bank-imported transactions you haven't approved yet
+  const sfUndoUnapproved = () => {
+    const n = transactions.filter(t => t.sfId && t.unapproved && !t.isDeleted).length;
+    if (!n) { setSfMsg('No unapproved bank transactions to remove.'); return; }
+    if (!window.confirm(`Remove ${n} bank-imported transaction${n === 1 ? '' : 's'} that you haven't approved yet?`)) return;
+    setTransactions(prev => prev.filter(t => !(t.sfId && t.unapproved && !t.isDeleted)));
+    setSfMsg(`Removed ${n}. Nothing you approved or typed was touched.`);
   };
 
   const handleConfirmImport = () => {
@@ -9768,6 +9787,7 @@ export default function BudgetApp() {
                 <div style={{ display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap' }}>
                   <label style={{ fontSize: '0.85rem' }}>Last <input aria-label="Days to fetch" inputMode="numeric" value={sfDays} onChange={e => setSfDays(e.target.value.replace(/\D/g, ''))} style={{ width: '52px', padding: '6px', borderRadius: '6px', border: '1px solid #d1d5db' }} /> days</label>
                   <button onClick={() => sfFetch(sfDays)} disabled={sfBusy} data-testid="sf-fetch" style={{ backgroundColor: '#2563eb', color: 'white', border: 'none', padding: '8px 14px', borderRadius: '6px', fontWeight: 'bold', cursor: sfBusy ? 'wait' : 'pointer' }}>{sfBusy ? 'Working…' : 'Fetch accounts'}</button>
+                  <button onClick={sfUndoUnapproved} data-testid="sf-undo" style={{ background: 'white', color: '#92400e', border: '1px solid #fcd34d', padding: '7px 12px', borderRadius: '6px', cursor: 'pointer' }}>Remove unapproved bank imports</button>
                   <button onClick={() => { if (window.confirm('Disconnect bank sync on this device?')) sfDisconnect(); }} style={{ background: 'white', color: '#b91c1c', border: '1px solid #fecaca', padding: '7px 12px', borderRadius: '6px', cursor: 'pointer' }}>Disconnect</button>
                   <button onClick={() => { try { navigator.clipboard.writeText(sfCfg.accessUrl); setSfMsg('Access URL copied. Paste it into "SimpleFIN setup token" on another device to connect it too. Keep it private.'); } catch (e) { setSfMsg('Could not copy.'); } }} style={{ background: 'white', color: '#2f6fb3', border: '1px solid #c9dcf0', padding: '7px 12px', borderRadius: '6px', cursor: 'pointer' }}>Copy access URL</button>
                 </div>
@@ -9778,6 +9798,7 @@ export default function BudgetApp() {
                       return (
                         <div key={b.id} style={{ border: '1px solid #e5e7eb', borderRadius: '8px', padding: '10px' }}>
                           <div style={{ fontWeight: 600 }}>{b.name} <span style={{ color: '#6b7280', fontWeight: 400 }}>· bank balance {formatMoney(Number(b.balance) || 0)} · {(b.transactions || []).length} transaction{(b.transactions || []).length === 1 ? '' : 's'}</span></div>
+                          {(() => { const pr = sfPlan(); const r = pr && pr.per[b.id]; return r && r.linked ? <div style={{ fontSize: '0.8rem', color: '#374151', marginTop: '2px' }}><strong>{r.fresh} new</strong> · {r.had} already in your budget</div> : null; })()}
                           <select aria-label={`Budget account for ${b.name}`} value={linked ? linked.id : ''} onChange={e => sfLink(b.id, e.target.value)} style={{ marginTop: '6px', width: '100%', padding: '7px', borderRadius: '6px', border: '1px solid #d1d5db' }}>
                             <option value="">Don't import this account</option>
                             {activeAccounts.map(a => (<option key={a.id} value={a.id}>{a.name}</option>))}
