@@ -1814,6 +1814,7 @@ export default function BudgetApp() {
   const [assignPop, setAssignPop] = useState(null); // desktop: env id whose Assigned box has its quick-fill dropdown open
   const [actPop, setActPop] = useState(null); // desktop: env id whose Activity list is open
   const [pwOpen, setPwOpen] = useState(false); // false | true | 'recovery'
+  const [overWarnOff, setOverWarnOff] = useState(''); // key of the overspent set the user already dismissed
   const [fixPop, setFixPop] = useState(null); // desktop: { x, y } while the 'Fix This' list for a negative Ready to Assign is open
   const [availPop, setAvailPop] = useState(null); // desktop: { envId, x, y, otherId, amount } cover / move dropdown
   const [ctxMenu, setCtxMenu] = useState(null); // desktop right-click menu: { kind: 'env'|'group', id, name, x, y }
@@ -5217,6 +5218,26 @@ export default function BudgetApp() {
     </div>
   );
 
+  // Warning bar at the top of the Plan when envelopes are overspent
+  const renderOverWarn = (dark) => {
+    const over = visibleEnvelopes.filter(e => envRow(e).end < -0.004);
+    if (!over.length) return null;
+    const key = budgetMonth + ':' + over.map(e => e.id).sort().join(',');
+    if (overWarnOff === key) return null;
+    const total = over.reduce((t, e) => t + envRow(e).end, 0);
+    const names = over.slice(0, 3).map(e => e.name).join(', ') + (over.length > 3 ? ` +${over.length - 3} more` : '');
+    return (
+      <div data-testid="overspent-warning" role="alert" style={{ display: 'flex', alignItems: 'center', gap: '12px', width: '100%', boxSizing: 'border-box', backgroundColor: dark ? '#5c1a1a' : '#ffe3df', color: dark ? '#ffd2cf' : '#7a1a14', border: '1px solid ' + (dark ? '#8a2a2a' : '#ffb4ab'), borderRadius: '10px', padding: '10px 14px', margin: dark ? '8px 16px 0' : '0 0 8px', ...(dark ? { width: 'auto' } : {}) }}>
+        <span aria-hidden="true" style={{ fontSize: '1.2rem' }}>⚠</span>
+        <div style={{ flex: 1, minWidth: 0, fontSize: '0.88rem', lineHeight: 1.3 }}>
+          <strong>{over.length === 1 ? '1 category is overspent' : `${over.length} categories are overspent`} ({formatMoney(total)})</strong>
+          <div style={{ opacity: 0.85, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{names}. Cover {over.length === 1 ? 'it' : 'them'} from another category.</div>
+        </div>
+        <button data-testid="overspent-review" onClick={() => { setEnvFilter('overspent'); }} style={{ backgroundColor: '#d70000', color: 'white', border: 'none', borderRadius: '8px', padding: '7px 14px', fontWeight: 700, cursor: 'pointer', whiteSpace: 'nowrap' }}>Review</button>
+        <button onClick={() => setOverWarnOff(key)} aria-label="Dismiss warning" style={{ background: 'none', border: 'none', color: 'inherit', fontSize: '1.1rem', cursor: 'pointer', padding: '2px 4px' }}>✕</button>
+      </div>
+    );
+  };
   // Desktop plan header: month switcher and the Ready to Assign card
   const rtaZero = Math.abs(rtaShown) < 0.004;
   const deskRtaTone = rtaShown < -0.004 ? { bg: '#ffd9e8', fg: '#a3124f', label: 'Over-assigned' } : rtaZero ? { bg: '#f4efe1', fg: '#6b665c', label: 'All Money Assigned' } : { bg: '#d9f5c8', fg: '#17603a', label: 'Ready to Assign' };
@@ -6300,6 +6321,7 @@ export default function BudgetApp() {
     const circleBtn = { background: 'none', border: '2px solid ' + MD.text, borderRadius: '50%', width: '30px', height: '30px', color: MD.text, cursor: 'pointer', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', padding: 0, fontSize: '0.9rem' };
     return (
       <div data-testid="mobile-plan" style={{ backgroundColor: MD.bg, color: MD.text, minHeight: '100vh', paddingBottom: envMenuId ? '420px' : '150px' }}>
+        {renderOverWarn(true)}
         <div style={{ position: 'sticky', top: 0, zIndex: 25, backgroundColor: MD.bg, padding: '10px 16px 6px', display: 'flex', alignItems: 'center', gap: '12px' }}>
           <button onClick={() => { setPickYear(null); setMonthPickerOpen(o => !o); }} aria-label="Choose month" data-testid="month-title" style={{ background: 'none', border: 'none', color: MD.text, fontWeight: 700, fontSize: '1.25rem', cursor: 'pointer', padding: 0, display: 'flex', alignItems: 'center', gap: '10px' }}>{monthLabel(budgetMonth)}<span style={{ backgroundColor: MD.text, color: MD.bg, borderRadius: '50%', width: '22px', height: '22px', fontSize: '0.75rem', display: 'inline-flex', alignItems: 'center', justifyContent: 'center' }}>⌄</span></button>
           <div style={{ flex: 1 }} />
@@ -7903,6 +7925,7 @@ export default function BudgetApp() {
                   </span>
                 </div>
               )}
+              {!isMobile && <div style={{ flexBasis: '100%', order: 0 }}>{renderOverWarn(false)}</div>}
               <div style={{ display: 'flex', gap: '6px', flexWrap: isMobile ? 'nowrap' : 'wrap', overflowX: isMobile ? 'auto' : 'visible', maxWidth: '100%', order: 1 }}>
                 {[['all', 'All'], ['underfunded', 'Underfunded'], ['overspent', isMobile ? 'Overspent' : 'Overspent'], ['available', isMobile ? 'Available' : 'Money Available']].map(([key, label]) => {
                   const n = key === 'all' ? null : envCounts[key];
