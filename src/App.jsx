@@ -24,6 +24,56 @@ const forgetLegacyBudgetId = () => {
   } catch (e) { /* ignore */ }
 };
 
+// Change-password dialog. In recovery mode (opened from a reset email) the current password is not asked for.
+const PasswordDialog = ({ email, recovery, onClose }) => {
+  const [cur, setCur] = useState('');
+  const [pw, setPw] = useState('');
+  const [pw2, setPw2] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState('');
+  const [done, setDone] = useState(false);
+  const submit = async (e) => {
+    e.preventDefault();
+    setErr('');
+    if (pw.length < 6) { setErr('Use at least 6 characters.'); return; }
+    if (pw !== pw2) { setErr('The two new passwords do not match.'); return; }
+    setBusy(true);
+    try {
+      if (!recovery) {
+        const { error: e1 } = await supabase.auth.signInWithPassword({ email, password: cur });
+        if (e1) throw new Error('Your current password is not right.');
+      }
+      const { error } = await supabase.auth.updateUser({ password: pw });
+      if (error) throw error;
+      setDone(true);
+    } catch (e2) { setErr((e2 && e2.message) || String(e2)); }
+    setBusy(false);
+  };
+  const input = { width: '100%', boxSizing: 'border-box', padding: '10px', border: '1px solid #d1d5db', borderRadius: '8px', fontSize: '1rem' };
+  return (
+    <div style={{ position: 'fixed', inset: 0, zIndex: 120, backgroundColor: 'rgba(17,24,39,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '16px' }}>
+      <form onSubmit={submit} data-testid="password-dialog" role="dialog" aria-label="Change password" style={{ width: '100%', maxWidth: '360px', backgroundColor: 'white', color: '#1f2937', borderRadius: '12px', padding: '22px', display: 'flex', flexDirection: 'column', gap: '10px', boxShadow: '0 12px 40px rgba(0,0,0,0.3)' }}>
+        <div style={{ fontWeight: 800, fontSize: '1.15rem' }}>{recovery ? 'Set a new password' : 'Change password'}</div>
+        {done ? (
+          <>
+            <div role="status" style={{ fontSize: '0.9rem', color: '#17603a', backgroundColor: '#cdeed6', padding: '10px', borderRadius: '8px' }}>Password updated.</div>
+            <button type="button" onClick={onClose} style={{ padding: '10px', borderRadius: '8px', border: 'none', backgroundColor: '#2f6fb3', color: 'white', fontWeight: 700, cursor: 'pointer' }}>Done</button>
+          </>
+        ) : (
+          <>
+            {!recovery && <input type="password" required autoComplete="current-password" placeholder="Current password" aria-label="Current password" value={cur} onChange={e => setCur(e.target.value)} style={input} />}
+            <input type="password" required minLength={6} autoComplete="new-password" placeholder="New password" aria-label="New password" value={pw} onChange={e => setPw(e.target.value)} style={input} />
+            <input type="password" required minLength={6} autoComplete="new-password" placeholder="Confirm new password" aria-label="Confirm new password" value={pw2} onChange={e => setPw2(e.target.value)} style={input} />
+            {err && <div role="alert" style={{ fontSize: '0.82rem', color: '#b42318', backgroundColor: '#fde2e0', padding: '8px 10px', borderRadius: '8px' }}>{err}</div>}
+            <button type="submit" disabled={busy} style={{ padding: '10px', borderRadius: '8px', border: 'none', backgroundColor: '#2f6fb3', color: 'white', fontWeight: 700, cursor: busy ? 'wait' : 'pointer' }}>{busy ? 'Please wait…' : 'Save password'}</button>
+            <button type="button" onClick={onClose} style={{ background: 'none', border: 'none', color: '#6b7280', cursor: 'pointer', padding: 0 }}>Cancel</button>
+          </>
+        )}
+      </form>
+    </div>
+  );
+};
+
 // Sign-in screen: email + password, or an emailed sign-in link.
 const AuthScreen = () => {
   const [mode, setMode] = useState('password'); // 'password' | 'link'
@@ -55,6 +105,17 @@ const AuthScreen = () => {
     }
     setBusy(false);
   };
+  const forgot = async () => {
+    setErr(''); setMsg('');
+    if (!email.trim()) { setErr('Type your email above first, then press Forgot password.'); return; }
+    setBusy(true);
+    try {
+      const { error } = await supabase.auth.resetPasswordForEmail(email.trim(), { redirectTo: back });
+      if (error) throw error;
+      setMsg('Check your email for a link to set a new password.');
+    } catch (e2) { setErr((e2 && e2.message) || String(e2)); }
+    setBusy(false);
+  };
   const input = { width: '100%', boxSizing: 'border-box', padding: '10px', border: '1px solid #d1d5db', borderRadius: '8px', fontSize: '0.95rem' };
   return (
     <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', backgroundColor: '#f4f5f7', fontFamily: 'system-ui, -apple-system, sans-serif', padding: '16px', boxSizing: 'border-box' }}>
@@ -76,6 +137,9 @@ const AuthScreen = () => {
           <button type="button" onClick={() => { setMode(mode === 'link' ? 'password' : 'link'); setErr(''); setMsg(''); }} style={{ background: 'none', border: 'none', color: '#2f6fb3', cursor: 'pointer', padding: 0 }}>
             {mode === 'link' ? 'Use a password instead' : 'Email me a sign-in link instead'}
           </button>
+          {mode === 'password' && !isSignUp && (
+            <button type="button" data-testid="forgot-password" onClick={forgot} style={{ background: 'none', border: 'none', color: '#2f6fb3', cursor: 'pointer', padding: 0 }}>Forgot password?</button>
+          )}
           {mode === 'password' && (
             <button type="button" onClick={() => { setIsSignUp(v => !v); setErr(''); setMsg(''); }} style={{ background: 'none', border: 'none', color: '#6b7280', cursor: 'pointer', padding: 0 }}>
               {isSignUp ? 'I have an account' : 'Create account'}
@@ -1749,6 +1813,8 @@ export default function BudgetApp() {
   const [tgtSub, setTgtSub] = useState(null); // 'each' | 'by' | 'iwant' | 'every'
   const [assignPop, setAssignPop] = useState(null); // desktop: env id whose Assigned box has its quick-fill dropdown open
   const [actPop, setActPop] = useState(null); // desktop: env id whose Activity list is open
+  const [pwOpen, setPwOpen] = useState(false); // false | true | 'recovery'
+  const [fixPop, setFixPop] = useState(null); // desktop: { x, y } while the 'Fix This' list for a negative Ready to Assign is open
   const [availPop, setAvailPop] = useState(null); // desktop: { envId, x, y, otherId, amount } cover / move dropdown
   const [ctxMenu, setCtxMenu] = useState(null); // desktop right-click menu: { kind: 'env'|'group', id, name, x, y }
   const [assignOpen, setAssignOpen] = useState(false);
@@ -1927,7 +1993,7 @@ export default function BudgetApp() {
   useEffect(() => {
     let alive = true;
     supabase.auth.getSession().then(({ data }) => { if (alive) setSession((data && data.session) || null); });
-    const { data: sub } = supabase.auth.onAuthStateChange((_event, sess) => { setSession(sess || null); });
+    const { data: sub } = supabase.auth.onAuthStateChange((_event, sess) => { setSession(sess || null); if (_event === 'PASSWORD_RECOVERY') setPwOpen('recovery'); });
     return () => { alive = false; sub.subscription.unsubscribe(); };
   }, []);
 
@@ -5063,6 +5129,7 @@ export default function BudgetApp() {
                 return <button role="menuitem" onClick={async () => { setBudgetMenuOpen(false); if (installEvt) { try { installEvt.prompt(); await installEvt.userChoice; } catch (err) { /* ignore */ } setInstallEvt(null); } else showNotification('On iPhone: tap the Share button, then "Add to Home Screen".'); }} style={{ display: 'block', width: '100%', textAlign: 'left', padding: '9px 16px', background: 'white', border: 'none', cursor: 'pointer', fontSize: '0.9rem' }}>Install app</button>;
               })()}
               <div style={{ height: '1px', backgroundColor: '#eef0f3', margin: '6px 0' }} />
+              <button role="menuitem" data-testid="change-password" onClick={() => { setBudgetMenuOpen(false); setPwOpen(true); }} style={{ display: 'block', width: '100%', textAlign: 'left', padding: '9px 16px', background: 'white', border: 'none', cursor: 'pointer', fontSize: '0.9rem', color: '#1f2937' }}>Change password</button>
               <button role="menuitem" onClick={() => supabase.auth.signOut()} style={{ display: 'block', width: '100%', textAlign: 'left', padding: '9px 16px', background: 'white', border: 'none', cursor: 'pointer', fontSize: '0.9rem', color: '#b42318' }}>Sign out</button>
             </div>
           </>
@@ -5172,6 +5239,15 @@ export default function BudgetApp() {
         )}
       </div>
       <button disabled={budgetMonth >= budgetLatest} aria-label="Next month" onClick={() => setBudgetMonth(addMonthKey(budgetMonth, 1))} style={circBtn(budgetMonth >= budgetLatest)}>›</button>
+      {rtaShown < -0.004 ? (
+        <div data-testid="rta-pill" style={{ display: 'flex', alignItems: 'center', gap: '18px', backgroundColor: '#ffa89f', color: '#26231c', borderRadius: '10px', padding: '10px 18px', marginLeft: '24px' }}>
+          <div style={{ minWidth: 0 }}>
+            <div style={{ fontSize: '1.45rem', fontWeight: 800, lineHeight: 1.1 }}>{formatMoney(rtaShown)}</div>
+            <div style={{ fontSize: '0.82rem', fontWeight: 500, whiteSpace: 'nowrap', lineHeight: 1.2 }}>You assigned more than you have</div>
+          </div>
+          <button data-testid="fix-this" onClick={(ev) => { const r = ev.currentTarget.getBoundingClientRect(); setFixPop({ x: Math.max(8, Math.min(r.right - 340, window.innerWidth - 356)), y: r.bottom + 8 }); }} style={{ backgroundColor: '#d70000', color: 'white', border: 'none', borderRadius: '8px', padding: '10px 18px', fontWeight: 700, fontSize: '0.95rem', cursor: 'pointer', whiteSpace: 'nowrap' }}>Fix This</button>
+        </div>
+      ) : (
       <div data-testid="rta-pill" style={{ display: 'flex', alignItems: 'center', gap: '16px', backgroundColor: deskRtaTone.bg, color: deskRtaTone.fg, borderRadius: '10px', padding: '8px 16px', marginLeft: '24px' }}>
         <div>
           <div style={{ fontSize: '1.3rem', fontWeight: 700, lineHeight: 1.1 }}>{formatMoney(rtaShown)}</div>
@@ -5179,6 +5255,7 @@ export default function BudgetApp() {
         </div>
         <span aria-hidden="true" style={{ width: '34px', height: '34px', borderRadius: '50%', backgroundColor: rtaZero ? '#6b6b6b' : 'rgba(0,0,0,0.12)', color: 'white', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', fontSize: '1.1rem' }}>{rtaZero ? '✓' : rtaShown < 0 ? '!' : '$'}</span>
       </div>
+      )}
     </div>
   );
 
@@ -6266,8 +6343,8 @@ export default function BudgetApp() {
           );
         })()}
         <div style={{ position: 'relative', padding: '0 16px 8px' }}>
-          <div data-testid="rta-pill" style={{ backgroundColor: rtaShown < -0.004 ? '#5c1a1a' : '#173a24', color: rtaShown < -0.004 ? '#ffb4b0' : '#9be7b4', borderRadius: '12px', padding: '6px 12px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '10px' }}>
-            <div><div style={{ fontSize: '1.1rem', fontWeight: 800, lineHeight: 1.1 }}>{formatMoney(rtaShown)}</div><div style={{ fontSize: '0.7rem', fontWeight: 600 }}>{rtaShown < -0.004 ? 'Over-assigned' : 'Ready to Assign'}{budgetMonth !== todayMonth ? ` · ${monthLabel(budgetMonth, true)}` : ''}</div></div>
+          <div data-testid="rta-pill" style={{ backgroundColor: rtaShown < -0.004 ? '#ffa89f' : '#173a24', color: rtaShown < -0.004 ? '#26231c' : '#9be7b4', borderRadius: '12px', padding: '6px 12px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '10px' }}>
+            <div><div style={{ fontSize: '1.1rem', fontWeight: 800, lineHeight: 1.1 }}>{formatMoney(rtaShown)}</div><div style={{ fontSize: '0.7rem', fontWeight: 600 }}>{rtaShown < -0.004 ? 'You assigned more than you have' : 'Ready to Assign'}{budgetMonth !== todayMonth ? ` · ${monthLabel(budgetMonth, true)}` : ''}</div></div>
             <button onClick={() => setAutoMenuOpen(o => !o)} aria-haspopup="menu" aria-expanded={autoMenuOpen} aria-label="Assign Money" style={{ backgroundColor: MD.btn, color: 'white', border: 'none', borderRadius: '999px', padding: '7px 14px', fontWeight: 700, fontSize: '0.8rem', cursor: 'pointer' }}>⚡ Assign Money</button>
           </div>
           {renderAutoMenu()}
@@ -7379,6 +7456,28 @@ export default function BudgetApp() {
         );
       }
     }
+    if (fixPop && rtaShown < -0.004) {
+      const over = round2(-rtaShown);
+      const srcs = visibleEnvelopes.filter(e => envRow(e).end > 0.004).sort((a, b) => envRow(b).end - envRow(a).end);
+      out.push(
+        <div key="fix" onClick={() => setFixPop(null)} style={{ position: 'fixed', inset: 0, zIndex: 70 }}>
+          <div data-testid="fix-pop" role="dialog" aria-label="Fix over-assigned" onClick={e => e.stopPropagation()} style={{ position: 'fixed', left: fixPop.x, top: fixPop.y, width: '340px', maxHeight: '60vh', overflowY: 'auto', backgroundColor: 'white', borderRadius: '12px', boxShadow: '0 10px 32px rgba(0,0,0,0.28)', padding: '16px' }}>
+            <div style={{ fontWeight: 700 }}>You assigned {formatMoney(over)} more than you have</div>
+            <div style={{ fontSize: '0.8rem', color: '#6b665c', margin: '4px 0 10px' }}>Take money back from a category to cover it.</div>
+            {srcs.length === 0 && <div style={{ fontSize: '0.85rem' }}>No category has money available. Lower an Assigned amount, or add income.</div>}
+            {srcs.map(e => {
+              const take = round2(Math.min(over, envRow(e).end));
+              return (
+                <button key={e.id} data-testid="fix-source" onClick={() => { confirmMove({ envId: e.id, mode: 'move', otherId: 'rta', amount: String(take) }); setFixPop(null); }} style={{ display: 'flex', justifyContent: 'space-between', gap: '10px', width: '100%', textAlign: 'left', background: 'none', border: 'none', borderTop: '1px solid #eee', padding: '9px 2px', cursor: 'pointer', fontSize: '0.88rem', color: '#26231c' }}>
+                  <span style={{ minWidth: 0 }}>{e.name}<span style={{ color: '#6b665c' }}> · {formatMoney(envRow(e).end)} available</span></span>
+                  <strong style={{ whiteSpace: 'nowrap', color: '#4b32c3' }}>Take {formatMoney(take)}</strong>
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      );
+    }
     if (availPop) {
       const env = envelopes.find(e => e.id === availPop.envId);
       if (env) {
@@ -7456,6 +7555,7 @@ export default function BudgetApp() {
       {!isMobile && (sidebarOpen ? deskSidebar : deskRail)}
       {!isMobile && renderCtxMenu()}
       {renderDeskPops()}
+      {pwOpen && session && session.user && <PasswordDialog email={session.user.email} recovery={pwOpen === 'recovery'} onClose={() => setPwOpen(false)} />}
       {isMobile && <aside
         style={{
           width: '240px',
@@ -7524,6 +7624,12 @@ export default function BudgetApp() {
           <div data-testid="signed-in-as" style={{ fontSize: '0.72rem', color: '#8fa0c0', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', marginBottom: '8px' }}>
             Signed in as {session && session.user ? session.user.email : ''}
           </div>
+          <button
+            onClick={() => setPwOpen(true)}
+            style={{ width: '100%', backgroundColor: 'transparent', color: '#cfe0f7', border: '1px solid rgba(255,255,255,0.28)', padding: '6px 8px', borderRadius: '6px', fontSize: '0.75rem', cursor: 'pointer', marginBottom: '6px' }}
+          >
+            Change password
+          </button>
           <button
             onClick={() => supabase.auth.signOut()}
             style={{ width: '100%', backgroundColor: 'transparent', color: '#cfe0f7', border: '1px solid rgba(255,255,255,0.28)', padding: '6px 8px', borderRadius: '6px', fontSize: '0.75rem', cursor: 'pointer', fontWeight: 600 }}
