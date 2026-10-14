@@ -575,7 +575,8 @@ const findDupPairs = (txs, maxDays = 3) => {
   const groups = new Map();
   txs.forEach(t => {
     if (!t || t.isDeleted || t.dupOk) return;
-    const key = `${t.accountId}|${t.type}|${Math.round(Number(t.amount) * 100)}`;
+    // signed effect on the account, so an expense of 29.04 and an 'inflow' of -29.04 count as the same amount
+    const key = `${t.accountId}|${Math.round((t.type === 'income' ? 1 : -1) * Number(t.amount) * 100)}`;
     (groups.get(key) || groups.set(key, []).get(key)).push(t);
   });
   const day = (iso) => Math.round(new Date((iso || '1970-01-01') + 'T00:00:00Z').getTime() / 86400000);
@@ -4007,7 +4008,7 @@ export default function BudgetApp() {
         if (!isFinite(amt) || amt === 0) return;
         const date = isoOf(bt.posted);
         const type = amt < 0 ? 'expense' : 'income';
-        const twin = mine.find(t => !t.sfId && !used.has(t.id) && t.accountId === acc.id && t.type === type && Math.abs(Number(t.amount) - Math.abs(amt)) < 0.005 && Math.abs(dayNum(t.date) - dayNum(date)) <= 5);
+        const twin = mine.find(t => !t.sfId && !used.has(t.id) && t.accountId === acc.id && Math.abs((t.type === 'income' ? 1 : -1) * Number(t.amount) - amt) < 0.005 && Math.abs(dayNum(t.date) - dayNum(date)) <= 5);
         if (twin) { used.add(twin.id); links.set(twin.id, bt.id); row.had++; return; }
         row.fresh++;
         added.push({ id: `tx-sf${stamp}-${added.length}`, date, payee: String(bt.description || 'Bank transaction').replace(/\s+/g, ' ').trim(), amount: Math.abs(amt), type, accountId: acc.id, envelopeId: '', notes: '', isDeleted: false, cleared: true, reconciled: false, unapproved: true, sfId: bt.id });
