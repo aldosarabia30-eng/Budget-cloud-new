@@ -3983,7 +3983,10 @@ export default function BudgetApp() {
     if (!sfData) return null;
     const stamp = Date.now();
     const mine = transactions.filter(t => !t.isDeleted);
-    const knownIds = new Set(mine.map(t => t.sfId).filter(Boolean));
+    // Every bank id ever imported counts as known, including ones you deleted, so they never come back
+    const knownIds = new Set(transactions.map(t => t.sfId).filter(Boolean));
+    const seenNow = new Set();
+    const links = new Map(); // your own transaction -> bank id it matched, so it is recognised on every later sync
     const used = new Set();
     const isoOf = (posted) => new Date(Number(posted) * 1000).toISOString().slice(0, 10);
     const dayNum = (iso) => Math.round(new Date(iso + 'T00:00:00Z').getTime() / 86400000);
@@ -3996,27 +3999,33 @@ export default function BudgetApp() {
       if (!acc) return;
       linked++;
       (b.transactions || []).forEach((bt) => {
-        if (!bt || bt.id == null) return;
+        if (!bt || bt.id == null || bt.pending) return;
+        if (seenNow.has(bt.id)) return;
+        seenNow.add(bt.id);
         if (knownIds.has(bt.id)) { row.had++; return; }
         const amt = round2(Number(bt.amount));
         if (!isFinite(amt) || amt === 0) return;
         const date = isoOf(bt.posted);
         const type = amt < 0 ? 'expense' : 'income';
-        const twin = mine.find(t => !t.sfId && !used.has(t.id) && t.accountId === acc.id && t.type === type && Math.abs(Number(t.amount) - Math.abs(amt)) < 0.005 && Math.abs(dayNum(t.date) - dayNum(date)) <= 4);
-        if (twin) { used.add(twin.id); row.had++; return; }
+        const twin = mine.find(t => !t.sfId && !used.has(t.id) && t.accountId === acc.id && t.type === type && Math.abs(Number(t.amount) - Math.abs(amt)) < 0.005 && Math.abs(dayNum(t.date) - dayNum(date)) <= 5);
+        if (twin) { used.add(twin.id); links.set(twin.id, bt.id); row.had++; return; }
         row.fresh++;
         added.push({ id: `tx-sf${stamp}-${added.length}`, date, payee: String(bt.description || 'Bank transaction').replace(/\s+/g, ' ').trim(), amount: Math.abs(amt), type, accountId: acc.id, envelopeId: '', notes: '', isDeleted: false, cleared: true, reconciled: false, unapproved: true, sfId: bt.id });
       });
     });
-    return { added, per, linked };
+    return { added, per, linked, links };
   };
   const sfImport = () => {
     const plan = sfPlan();
     if (!plan) return;
     if (!plan.linked) { setSfMsg('Link at least one bank account to a budget account first.'); return; }
-    if (!plan.added.length) { setSfMsg('Nothing new. Everything the bank sent is already in your budget.'); return; }
+    const links = plan.links;
+    if (!plan.added.length) {
+      if (links.size) setTransactions(prev => prev.map(t => (links.has(t.id) ? { ...t, sfId: links.get(t.id) } : t)));
+      setSfMsg('Nothing new. Everything the bank sent is already in your budget.'); return;
+    }
     const added = plan.added;
-    setTransactions(prev => [...added, ...prev]);
+    setTransactions(prev => [...added, ...prev.map(t => (links.has(t.id) ? { ...t, sfId: links.get(t.id) } : t))]);
     const last = added[0].accountId;
     setSfData(null);
     setSelectedTxIds([]); setTxFilterAccount(last); setTxFilterStatus('attention'); setTxAccountId(last);
