@@ -172,13 +172,14 @@ const snapshot = (d = {}) => stable({
   debts: d.debts ?? [],
   investments: d.investments ?? [],
   scheduled: d.scheduled ?? [],
-  moves: d.moves ?? []
+  moves: d.moves ?? [],
+  simplefin: d.simplefin ?? {}
 });
 
 const DATA_LISTS = ['accounts', 'envelopes', 'transactions', 'debts', 'investments', 'scheduled', 'moves'];
 const normData = (d = {}) => ({
   accounts: d.accounts ?? [], groups: d.groups ?? [], collapsedGroups: d.collapsedGroups ?? {}, collapsedAccountTx: d.collapsedAccountTx ?? {},
-  envelopes: d.envelopes ?? [], transactions: d.transactions ?? [], debts: d.debts ?? [], investments: d.investments ?? [], scheduled: d.scheduled ?? [], moves: d.moves ?? []
+  envelopes: d.envelopes ?? [], transactions: d.transactions ?? [], debts: d.debts ?? [], investments: d.investments ?? [], scheduled: d.scheduled ?? [], moves: d.moves ?? [], simplefin: d.simplefin ?? {}
 });
 // Three-way merge of two edited copies of the budget, using the last copy both sides agreed on as the base.
 // Whatever only one side changed is kept; if both changed the same item, "mine" wins.
@@ -201,6 +202,7 @@ const mergeBudgetData = (baseIn, mineIn, theirsIn) => {
   out.groups = same(base.groups, mine.groups) ? theirs.groups
     : same(base.groups, theirs.groups) ? mine.groups
     : [...mine.groups, ...theirs.groups.filter(g => !mine.groups.includes(g))];
+  out.simplefin = same(base.simplefin, mine.simplefin) ? theirs.simplefin : mine.simplefin;
   ['collapsedGroups', 'collapsedAccountTx'].forEach(k => {
     const o = {};
     new Set([...Object.keys(mine[k]), ...Object.keys(theirs[k])]).forEach(key => {
@@ -1792,7 +1794,7 @@ export default function BudgetApp() {
   const [collapsedSplits, setCollapsedSplits] = useState([]);
   const [moveHover, setMoveHover] = useState(false);
   const [planEdit, setPlanEdit] = useState(false);
-  // Bank sync (SimpleFIN). The access URL stays on this device (localStorage); account links live on the accounts as sfId.
+  // Bank sync (SimpleFIN). The Worker URL and access URL are saved with your budget (so every device has them) and mirrored in localStorage; account links live on the accounts as sfId.
   const [sfCfg, setSfCfg] = useState(() => { try { return JSON.parse(localStorage.getItem('budget-simplefin') || '{}') || {}; } catch (e) { return {}; } });
   const [sfWorker, setSfWorker] = useState('');
   const [sfToken, setSfToken] = useState('');
@@ -1956,7 +1958,7 @@ export default function BudgetApp() {
   const histRef = useRef({ undo: [], redo: [], prev: null, prevKey: '', lastPush: 0, skip: false, reset: false, resetUntil: 0 });
   const [, setHistTick] = useState(0);
   const [syncTick, setSyncTick] = useState(0); // bumps once the first load finishes
-  localRef.current = normData({ accounts, groups, collapsedGroups, collapsedAccountTx, envelopes, transactions, debts, investments, scheduled, moves });
+  localRef.current = normData({ accounts, groups, collapsedGroups, collapsedAccountTx, envelopes, transactions, debts, investments, scheduled, moves, simplefin: sfCfg });
 
   // Make the app installable (home-screen icon, full-screen window)
   useEffect(() => {
@@ -2035,6 +2037,8 @@ export default function BudgetApp() {
       setInvestments(d.investments ?? []);
       setScheduled(d.scheduled ?? []);
       setMoves(d.moves ?? []);
+      // Bank link settings follow you across devices; an empty server copy never wipes this device's link
+      if (d.simplefin && Object.keys(d.simplefin).length) { setSfCfg(d.simplefin); try { localStorage.setItem('budget-simplefin', JSON.stringify(d.simplefin)); } catch (e) { /* storage unavailable */ } }
     };
 
     applyRemoteRef.current = applyRemote;
@@ -2104,7 +2108,7 @@ export default function BudgetApp() {
   // Save budget changes to Supabase (debounced, skipped when nothing actually changed)
   useEffect(() => {
     if (!userId || !loadedRef.current) return;
-    const dataToSave = { accounts, groups, collapsedGroups, collapsedAccountTx, envelopes, transactions, debts, investments, scheduled, moves };
+    const dataToSave = { accounts, groups, collapsedGroups, collapsedAccountTx, envelopes, transactions, debts, investments, scheduled, moves, simplefin: sfCfg };
     const json = snapshot(dataToSave);
     if (json === lastJsonRef.current) return;
 
@@ -2154,7 +2158,7 @@ export default function BudgetApp() {
     }, 400);
 
     return () => clearTimeout(timer);
-  }, [userId, syncTick, accounts, groups, collapsedGroups, collapsedAccountTx, envelopes, transactions, debts, investments, scheduled, moves]);
+  }, [userId, syncTick, accounts, groups, collapsedGroups, collapsedAccountTx, envelopes, transactions, debts, investments, scheduled, moves, sfCfg]);
 
   // ----- Undo / redo -----
   // Every change to the budget data is remembered. Edits made within ~1.2 s of each other (typing in a box) count as one step.
@@ -3950,7 +3954,7 @@ export default function BudgetApp() {
     } catch (e) { setSfMsg(String(e.message || e)); }
     setSfBusy(false);
   };
-  const sfDisconnect = () => { sfSave({}); setSfData(null); setSfMsg('Disconnected from this device. Your accounts and transactions were not changed.'); };
+  const sfDisconnect = () => { sfSave({ off: true }); setSfData(null); setSfMsg('Disconnected from this device. Your accounts and transactions were not changed.'); };
   const sfFetch = async (days) => {
     setSfBusy(true); setSfMsg('');
     try {
