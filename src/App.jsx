@@ -1731,7 +1731,9 @@ export default function BudgetApp() {
   const [transactions, setTransactions] = useState([]);
   const [debts, setDebts] = useState([]);
 
-  const [activeTab, setActiveTab] = useState('budget');
+  const [activeTab, setActiveTab] = useState(() => (isMobileNow() ? 'home' : 'budget'));
+  const [pinEdit, setPinEdit] = useState(null); // phone Home: pin picker { q } while open
+  const [homeOpen, setHomeOpen] = useState({ pinned: true, goal: false });
   const [notification, setNotification] = useState('');
 
   const [reconcilingAccId, setReconcilingAccId] = useState(null);
@@ -1824,6 +1826,8 @@ export default function BudgetApp() {
   const [assignOpen, setAssignOpen] = useState(false);
   const [mTxId, setMTxId] = useState(null);
   const [mTxMenu, setMTxMenu] = useState(null); // 'type' | 'cat' | 'flag' | null
+  const [catSel, setCatSel] = useState(null); // phone category picker: null = single pick, array = Split multi-select
+  const [catQ, setCatQ] = useState('');
   const [mTxMore, setMTxMore] = useState(false);
   const [mSearchOpen, setMSearchOpen] = useState(false);
   const [txClearedNew, setTxClearedNew] = useState(false);
@@ -1976,13 +1980,13 @@ export default function BudgetApp() {
       const icon192 = makeIcon(192), icon512 = makeIcon(512);
       const head = document.head;
       const put = (tag, attrs) => { const sel = tag === 'link' ? `link[rel="${attrs.rel}"]` : `meta[name="${attrs.name}"]`; let el = head.querySelector(sel); if (!el) { el = document.createElement(tag); head.appendChild(el); } Object.entries(attrs).forEach(([k, v]) => el.setAttribute(k, v)); };
-      put('meta', { name: 'theme-color', content: '#1f2f4f' });
+      put('meta', { name: 'theme-color', content: '#0a0a14' });
       put('meta', { name: 'apple-mobile-web-app-capable', content: 'yes' });
       put('meta', { name: 'mobile-web-app-capable', content: 'yes' });
       put('meta', { name: 'apple-mobile-web-app-title', content: 'Budget' });
       if (icon192) put('link', { rel: 'apple-touch-icon', href: icon192 });
       if (icon192 && !head.querySelector('link[rel="manifest"]')) {
-        const manifest = { name: 'Envelope Budgeting', short_name: 'Budget', start_url: window.location.href.split('#')[0], scope: window.location.href.split('#')[0].replace(/[^/]*$/, ''), display: 'standalone', background_color: '#f4f5f7', theme_color: '#1f2f4f', icons: [{ src: icon192, sizes: '192x192', type: 'image/png' }, { src: icon512, sizes: '512x512', type: 'image/png' }] };
+        const manifest = { name: 'Envelope Budgeting', short_name: 'Budget', start_url: window.location.href.split('#')[0], scope: window.location.href.split('#')[0].replace(/[^/]*$/, ''), display: 'standalone', background_color: '#0a0a14', theme_color: '#0a0a14', icons: [{ src: icon192, sizes: '192x192', type: 'image/png' }, { src: icon512, sizes: '512x512', type: 'image/png' }] };
         put('link', { rel: 'manifest', href: URL.createObjectURL(new Blob([JSON.stringify(manifest)], { type: 'application/manifest+json' })) });
       }
     } catch (err) { /* installability is a nice-to-have */ }
@@ -1992,6 +1996,19 @@ export default function BudgetApp() {
     window.addEventListener('appinstalled', onInstalled);
     return () => { window.removeEventListener('beforeinstallprompt', onPrompt); window.removeEventListener('appinstalled', onInstalled); };
   }, []);
+
+  // Colour of the phone's status bar follows the screen: dark on the dark screens, the old blue elsewhere
+  useEffect(() => {
+    const dark = isMobile && (activeTab === 'home' || activeTab === 'budget' || activeTab === 'transactions' || activeTab === 'reports' || (activeTab === 'accounts' && !manageAccounts));
+    const color = dark ? '#0a0a14' : '#1f2f4f';
+    try {
+      let el = document.head.querySelector('meta[name="theme-color"]');
+      if (!el) { el = document.createElement('meta'); el.setAttribute('name', 'theme-color'); document.head.appendChild(el); }
+      el.setAttribute('content', color);
+      document.documentElement.style.backgroundColor = dark ? '#0a0a14' : '';
+      document.body.style.backgroundColor = dark ? '#0a0a14' : '';
+    } catch (e) { /* ignore */ }
+  }, [isMobile, activeTab, manageAccounts]);
 
   // Who is signed in
   useEffect(() => {
@@ -2364,7 +2381,9 @@ export default function BudgetApp() {
       [ax, () => setAx(null)], [schedForm, () => setSchedForm(null)], [invFormOpen, () => setInvFormOpen(false)],
       [showCsv, () => setShowCsv(false)], [selectMode, () => setSelectMode(false)], [editingTxId, () => setEditingTxId(null)],
       [isMobile && sidebarOpen, () => setSidebarOpen(false)], [manageAccounts, () => setManageAccounts(false)],
-      [activeTab !== 'budget', () => setActiveTab('budget')]
+      [pinEdit, () => setPinEdit(null)],
+      [catSel !== null && mTxMenu === 'cat', () => setCatSel(null)],
+      [activeTab !== (isMobile ? 'home' : 'budget'), () => setActiveTab(isMobile ? 'home' : 'budget')]
     ];
     const hit = steps.find(([open]) => !!open);
     if (hit) hit[1]();
@@ -5641,6 +5660,7 @@ export default function BudgetApp() {
       <div data-testid="approve-banner" style={dark ? { margin: '6px 16px 8px', backgroundColor: '#2a2a5c', color: MD.text, borderRadius: '14px', padding: '10px 12px', display: 'flex', alignItems: 'center', gap: '10px', fontSize: '0.88rem' } : { margin: '0 -24px', backgroundColor: '#c9c6f5', color: '#1f1b4d', padding: '9px 16px', display: 'flex', alignItems: 'center', gap: '10px', fontSize: '0.95rem' }}>
         <span style={{ width: '16px', height: '16px', borderRadius: '50%', backgroundColor: dark ? MD.accent : '#1f1b4d', color: dark ? '#0a0a14' : '#c9c6f5', fontSize: '0.65rem', fontWeight: 800, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>i</span>
         <span style={{ flex: 1 }}>{text}</span>
+        {dark && nNew > 0 && <button data-testid="approve-all" onClick={() => { if (window.confirm(`Approve ${nNew} transaction${nNew === 1 ? '' : 's'}?`)) approveTxs(scope.filter(t => t.unapproved).map(t => t.id)); }} style={{ backgroundColor: 'transparent', color: MD.text, border: '1.5px solid ' + MD.accent, borderRadius: '8px', padding: '7px 10px', fontWeight: 700, cursor: 'pointer' }}>Approve all</button>}
         <button data-testid="approve-view" onClick={() => { setSelectedTxIds([]); setTxFilterStatus(on ? '' : 'attention'); }} style={{ backgroundColor: dark ? MD.btn : '#3b22d6', color: 'white', border: 'none', borderRadius: '8px', padding: dark ? '7px 14px' : '8px 20px', fontWeight: 700, cursor: 'pointer' }}>{on ? 'Show all' : 'View'}</button>
       </div>
     );
@@ -6113,7 +6133,7 @@ export default function BudgetApp() {
     setEnvMenuId(null);
   };
   const commitKp = () => {
-    if (kpDraft !== null && envMenuId) { const v = kpDraft === '' ? 0 : evalAmount(kpDraft); if (!isNaN(v)) handleAssignMonth(envMenuId, Math.max(0, round2(v))); }
+    if (kpDraft !== null && envMenuId) { const v = kpDraft === '' ? 0 : evalAmount(kpDraft); if (!isNaN(v)) handleAssignMonth(envMenuId, round2(v)); }
   };
   const selectKpEnv = (env) => {
     if (envMenuId !== env.id) commitKp();
@@ -6462,7 +6482,7 @@ export default function BudgetApp() {
           const prevRow = (budgetView.rowsByEnv[menuEnv.id] && budgetView.rowsByEnv[menuEnv.id].get(addMonthKey(budgetMonth, -1))) || null;
           const lastAssigned = prevRow ? Math.max(0, prevRow.budgeted) : 0;
           const lastSpent = prevRow ? Math.max(0, prevRow.spent) : 0;
-          const setTo = (n) => { handleAssignMonth(menuEnv.id, Math.max(0, round2(n))); setKpDraft(null); setKpAuto(false); };
+          const setTo = (n) => { handleAssignMonth(menuEnv.id, round2(n)); setKpDraft(null); setKpAuto(false); };
           const press = (k) => {
             setKpDraft(d => {
               const base = d === null ? '' : d;
@@ -6474,7 +6494,7 @@ export default function BudgetApp() {
               return base;
             });
           };
-          const done = () => { const src = kpDraft === null ? null : kpDraft; if (src !== null) { const v = src === '' ? 0 : evalAmount(src); if (!isNaN(v)) handleAssignMonth(menuEnv.id, Math.max(0, round2(v))); } setKpDraft(null); setKpAuto(false); setEnvMenuId(null); };
+          const done = () => { const src = kpDraft === null ? null : kpDraft; if (src !== null) { const v = src === '' ? 0 : evalAmount(src); if (!isNaN(v)) handleAssignMonth(menuEnv.id, round2(v)); } setKpDraft(null); setKpAuto(false); setEnvMenuId(null); };
           const key = (label, onClick, extra) => (<button key={label} onClick={onClick} aria-label={label === '⌫' ? 'Backspace' : label} style={{ height: '52px', borderRadius: '14px', border: 'none', background: 'none', color: MD.text, fontSize: '1.5rem', cursor: 'pointer', ...extra }}>{label}</button>);
           const op = { backgroundColor: '#3a3a52', color: MD.muted };
           const topBtn = (icon, label, fn, testId) => (<div style={{ flex: 1, textAlign: 'center' }}><button onClick={fn} data-testid={testId} aria-label={label} style={{ width: '100%', height: '44px', borderRadius: '999px', border: 'none', backgroundColor: '#2f2f46', color: '#b9b9d6', fontSize: '1.2rem', cursor: 'pointer' }}>{icon}</button><div style={{ fontSize: '0.8rem', color: MD.muted, marginTop: '4px' }}>{label}</div></div>);
@@ -6826,7 +6846,7 @@ export default function BudgetApp() {
     const spent = row.spent;
     const remaining = row.end;
     const cur = Number(row.budgeted) || 0;
-    const setTo = (n) => handleAssignMonth(env.id, Math.max(0, round2(n)));
+    const setTo = (n) => handleAssignMonth(env.id, round2(n));
     const prevRow = (budgetView.rowsByEnv[env.id] && budgetView.rowsByEnv[env.id].get(addMonthKey(budgetMonth, -1))) || null;
     const lastAssigned = prevRow ? Math.max(0, prevRow.budgeted) : 0;
     const mon = monthLabel(budgetMonth, true);
@@ -7047,7 +7067,9 @@ export default function BudgetApp() {
                         : env ? chip(env.name + (env.isDeleted ? ' (deleted)' : ''), 'cat')
                         : chip('Uncategorized', 'warn')}
                     </div>
-                    {!tx.isTransfer && <span style={{ color: MD.muted, fontSize: '0.85rem', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: '45%' }}>{acc ? acc.name : ''}</span>}
+                    {tx.unapproved
+                      ? <button type="button" data-testid="m-approve" onClick={(e) => { e.stopPropagation(); approveTxs([tx.id]); }} aria-label={`Approve ${tx.payee}`} style={{ backgroundColor: MD.btn, color: 'white', border: 'none', borderRadius: '999px', padding: '6px 16px', fontWeight: 700, fontSize: '0.85rem', cursor: 'pointer', flexShrink: 0 }}>Approve</button>
+                      : (!tx.isTransfer && <span style={{ color: MD.muted, fontSize: '0.85rem', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: '45%' }}>{acc ? acc.name : ''}</span>)}
                   </div>
                 </div>
               );
@@ -7185,7 +7207,7 @@ export default function BudgetApp() {
               </div>
             );
           })}
-          <button onClick={addSplitLine} data-testid="split-add" style={{ width: '100%', backgroundColor: '#1d1d38', color: MD.accent, border: 'none', borderRadius: '999px', padding: '14px', fontWeight: 700, fontSize: '1rem', cursor: 'pointer' }}>+ Add split</button>
+          <button onClick={addSplitLine} data-testid="split-add" style={{ width: '100%', backgroundColor: '#1d1d38', color: MD.accent, border: 'none', borderRadius: '999px', padding: '14px', fontWeight: 700, fontSize: '1rem', cursor: 'pointer' }}>+ Add a Category</button>
         </div>
         {splitPick !== null && (<>
           <div onClick={() => setSplitPick(null)} style={{ position: 'fixed', inset: 0, backgroundColor: 'rgba(0,0,0,0.6)', zIndex: 70 }} />
@@ -7257,6 +7279,7 @@ export default function BudgetApp() {
           )}
         </div>
         {lockedNote}
+        {tx.unapproved && <button type="button" data-testid="m-detail-approve" onClick={() => { approveTxs([tx.id]); showNotification('Approved.'); }} style={{ width: '100%', backgroundColor: MD.btn, color: 'white', border: 'none', borderRadius: '999px', padding: '14px', fontWeight: 700, fontSize: '1.05rem', cursor: 'pointer', marginBottom: '14px' }}>Approve</button>}
         <div style={card}>
           {rowBox('⇄', 'Payee', tx.isTransfer ? <div style={{ fontWeight: 600, fontSize: '1.05rem' }}>{tx.payee}</div> : <input aria-label="Payee" list="payee-suggestions" key={tx.id + ':p'} defaultValue={tx.payee} disabled={locked} onBlur={e => { const v = e.target.value.trim(); if (v && v !== tx.payee) patchTx(tx.id, { payee: v }); }} style={field} />)}
           {rowBox('▣', 'Category',
@@ -7299,23 +7322,66 @@ export default function BudgetApp() {
           <button onClick={() => { handleSoftDeleteTransaction(tx.id); close(); }} disabled={locked} style={{ width: '100%', backgroundColor: '#6b1522', color: '#fff', border: 'none', borderRadius: '999px', padding: '16px', fontWeight: 700, fontSize: '1rem', cursor: 'pointer', marginBottom: '14px', opacity: locked ? 0.4 : 1 }}>Delete Transaction</button>
           <button onClick={() => setMTxMore(false)} style={{ display: 'flex', alignItems: 'center', gap: '14px', width: '100%', background: 'none', border: 'none', color: MD.text, fontWeight: 700, cursor: 'pointer', margin: '6px 0' }}><span style={{ flex: 1, borderTop: '1px solid ' + MD.line }} />Show less<span style={{ flex: 1, borderTop: '1px solid ' + MD.line }} /></button>
         </>)}
-        {mTxMenu === 'cat' && (
-          <>
-            <div onClick={() => setMTxMenu(null)} style={{ position: 'fixed', inset: 0, backgroundColor: 'rgba(0,0,0,0.6)', zIndex: 70 }} />
-            <div data-testid="tx-cat-sheet" role="dialog" aria-label="Choose category" style={{ position: 'fixed', left: 0, right: 0, bottom: 0, maxHeight: '75vh', overflowY: 'auto', zIndex: 71, backgroundColor: MD.card, borderRadius: '18px 18px 0 0', padding: '14px 0 calc(16px + env(safe-area-inset-bottom))' }}>
-              <div style={{ fontWeight: 800, padding: '4px 18px 10px', fontSize: '1.05rem' }}>Category</div>
-              <button data-testid="cat-split" onClick={() => { setMTxMenu(null); openSplit(tx, true); }} style={{ display: 'block', width: '100%', textAlign: 'left', background: 'none', border: 'none', borderBottom: '1px solid ' + MD.line, color: MD.accent, padding: '12px 18px', fontSize: '1rem', fontWeight: 700, cursor: 'pointer' }}>{income ? 'Send to several envelopes…' : 'Split…'}</button>
-              {income && <button onClick={() => { setIncomeEnv(''); setMTxMenu(null); }} style={{ display: 'block', width: '100%', textAlign: 'left', background: incAl.length === 0 ? '#23235a' : 'none', border: 'none', color: '#b6f08a', padding: '12px 18px', fontSize: '1rem', cursor: 'pointer' }}>Ready to Assign</button>}
-              {!income && tx.envelopeId && <button onClick={() => { handleAssignTxEnvelope(tx.id, ''); setMTxMenu(null); }} style={{ display: 'block', width: '100%', textAlign: 'left', background: 'none', border: 'none', color: '#ffcf70', padding: '12px 18px', fontSize: '1rem', cursor: 'pointer' }}>Uncategorized</button>}
-              {envelopeChoices.map(c => (
-                <div key={c.label}>
-                  <div style={{ padding: '10px 18px 4px', fontSize: '0.78rem', fontWeight: 700, color: MD.muted, textTransform: 'uppercase', letterSpacing: '0.04em' }}>{c.label}</div>
-                  {c.list.map(e => (<button key={e.id} onClick={() => { if (income) setIncomeEnv(e.id); else handleAssignTxEnvelope(tx.id, e.id); setMTxMenu(null); }} style={{ display: 'flex', justifyContent: 'space-between', width: '100%', textAlign: 'left', background: tx.envelopeId === e.id ? '#23235a' : 'none', border: 'none', color: MD.text, padding: '12px 18px', fontSize: '1rem', cursor: 'pointer' }}><span>{e.name}</span>{tx.envelopeId === e.id && <span>✓</span>}</button>))}
-                </div>
-              ))}
+        {mTxMenu === 'cat' && (() => {
+          const q = catQ.trim().toLowerCase();
+          const multi = catSel !== null;
+          const chosen = income ? '' : tx.envelopeId;
+          const closePick = () => { setMTxMenu(null); setCatSel(null); setCatQ(''); };
+          const pickOne = (id) => { if (income) setIncomeEnv(id); else handleAssignTxEnvelope(tx.id, id); closePick(); };
+          const toggle = (id) => setCatSel(prev => (prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id]));
+          const goSplit = () => {
+            const ids = catSel;
+            closePick();
+            if (ids.length === 1) { pickOne(ids[0]); return; }
+            openSplit(tx, true);
+            setSplitDraft(ids.map(id => ({ envelopeId: id, amount: '' })));
+          };
+          const lastForPayee = !income && tx.payee ? [...transactions].reverse().find(t => t.id !== tx.id && !t.isDeleted && t.payee === tx.payee && t.envelopeId && envelopes.some(e => e.id === t.envelopeId && !e.isDeleted && !e.isHidden)) : null;
+          const sugg = lastForPayee ? envelopes.find(e => e.id === lastForPayee.envelopeId) : null;
+          const pinnedList = visibleEnvelopes.filter(e => e.pinned && (!q || e.name.toLowerCase().includes(q)));
+          const mark = (id) => multi
+            ? <span style={{ width: '22px', height: '22px', borderRadius: '4px', border: '2px solid ' + (catSel.includes(id) ? MD.accent : MD.text), backgroundColor: catSel.includes(id) ? MD.accent : 'transparent', color: MD.head, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', fontSize: '0.9rem', fontWeight: 800, flexShrink: 0 }}>{catSel.includes(id) ? '✓' : ''}</span>
+            : <span style={{ width: '22px', height: '22px', borderRadius: '50%', border: '2px solid ' + (chosen === id ? MD.accent : MD.muted), backgroundColor: chosen === id ? MD.accent : 'transparent', flexShrink: 0 }} />;
+          const rowFor = (e, sub, i, k) => {
+            const end = envRow(e).end;
+            return (
+              <div key={k + e.id} role={multi ? 'checkbox' : 'button'} aria-checked={multi ? catSel.includes(e.id) : undefined} aria-label={`Category ${e.name}`} data-testid="cat-row" onClick={() => (multi ? toggle(e.id) : pickOne(e.id))} style={{ display: 'flex', alignItems: 'center', gap: '16px', padding: '20px', borderTop: i ? '1px solid ' + MD.line : 'none', cursor: 'pointer' }}>
+                {mark(e.id)}
+                <span style={{ flex: 1, minWidth: 0, fontSize: '1.05rem' }}>{e.name}{sub && <div style={{ color: MD.muted, fontSize: '0.95rem' }}>{sub}</div>}</span>
+                <span style={{ color: end < -0.004 ? '#ff7b7f' : end > 0.004 ? MD.text : MD.muted, fontWeight: 600 }}>{formatMoney(end)}</span>
+              </div>
+            );
+          };
+          const box = { margin: '0 16px', backgroundColor: MD.row, borderRadius: '28px', overflow: 'hidden' };
+          const head = (t) => <div style={{ padding: '22px 24px 8px', fontWeight: 700 }}>{t}</div>;
+          return (
+            <div data-testid="tx-cat-sheet" role="dialog" aria-label="Choose category" style={{ position: 'fixed', inset: 0, zIndex: 71, backgroundColor: MD.head, color: MD.text, overflowY: 'auto', paddingBottom: 'calc(40px + env(safe-area-inset-bottom))' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '16px', padding: '16px' }}>
+                <button onClick={() => (multi ? setCatSel(null) : closePick())} aria-label="Back" style={{ background: 'none', border: 'none', color: MD.text, fontSize: '1.7rem', cursor: 'pointer' }}>←</button>
+                <span style={{ fontSize: '1.4rem', flex: 1 }}>{multi ? (income ? 'Split Envelopes' : 'Split Categories') : 'Category'}</span>
+                {multi
+                  ? <button data-testid="cat-next" disabled={catSel.length === 0} onClick={goSplit} style={{ background: catSel.length ? MD.btn : '#33334d', color: '#fff', border: 'none', borderRadius: '999px', padding: '12px 22px', fontWeight: 700, fontSize: '1rem', cursor: catSel.length ? 'pointer' : 'default' }}>Next</button>
+                  : <button data-testid="cat-split" aria-label="Split" onClick={() => setCatSel(chosen ? [chosen] : [])} style={{ background: 'none', border: 'none', color: MD.text, fontSize: '1.05rem', fontWeight: 700, cursor: 'pointer' }}>⑂ Split</button>}
+              </div>
+              <div style={{ padding: '4px 16px 12px' }}>
+                <input aria-label="Search categories" placeholder="Search Categories" value={catQ} onChange={e => setCatQ(e.target.value)} style={{ width: '100%', boxSizing: 'border-box', background: 'none', border: 'none', borderBottom: '1px solid ' + MD.line, color: MD.text, fontSize: '1.2rem', padding: '12px 0', outline: 'none' }} />
+              </div>
+              {!q && !multi && income && (
+                <div role="button" onClick={() => { setIncomeEnv(''); closePick(); }} style={{ ...box, display: 'flex', alignItems: 'center', gap: '16px', padding: '20px', marginBottom: '8px', cursor: 'pointer' }}>{mark('')}<span style={{ flex: 1, color: '#b6f08a' }}>Ready to Assign</span></div>
+              )}
+              {!q && !multi && !income && chosen && (
+                <div role="button" onClick={() => pickOne('')} style={{ ...box, padding: '20px', marginBottom: '8px', color: '#ffcf70', cursor: 'pointer' }}>Uncategorized</div>
+              )}
+              {!q && sugg && (<>{head('Suggested')}<div style={box}>{rowFor(sugg, sugg.group, 0, 's')}</div></>)}
+              {pinnedList.length > 0 && (<>{head('Pinned')}<div style={box}>{pinnedList.map((e, i) => rowFor(e, null, i, 'p'))}</div></>)}
+              {envelopeChoices.map(c => {
+                const list = c.list.filter(e => !q || e.name.toLowerCase().includes(q));
+                if (!list.length) return null;
+                return (<div key={c.label}>{head(c.label)}<div style={box}>{list.map((e, i) => rowFor(e, null, i, 'g'))}</div></div>);
+              })}
             </div>
-          </>
-        )}
+          );
+        })()}
       </div>
     );
   };
@@ -7569,7 +7635,129 @@ export default function BudgetApp() {
     );
   };
 
-  const MOBILE_TABS = [['budget', 'Plan', '◔'], ['transactions', 'Spending', '$'], ['accounts', 'Accounts', '▦'], ['reports', 'Reflect', '◭']];
+  // ----- Phone Home: to-do list, pinned envelopes and current goals -----
+  const homeOverspent = visibleEnvelopes.filter(e => envRow(e).end < -0.004);
+  const homeNewTx = activeTransactions.filter(t => t.unapproved).length;
+  const homeTodoCount = homeOverspent.length;
+  const togglePin = (id) => setEnvelopes(prev => prev.map(e => (e.id === id ? { ...e, pinned: !e.pinned } : e)));
+  const renderMobileHome = () => {
+    const user = session && session.user;
+    const meta = (user && user.user_metadata) || {};
+    let nm = meta.name || meta.full_name || '';
+    try { nm = localStorage.getItem('home-name') || nm; } catch (e) { /* storage unavailable */ }
+    const todos = [];
+    if (homeOverspent.length) todos.push({ key: 'over', badge: String(homeOverspent.length), tone: 'red', label: homeOverspent.length === 1 ? 'Overspent category' : 'Overspent categories', action: 'Cover', go: () => { setEnvFilter('overspent'); openTab('budget'); } });
+    if (rtaShown < -0.004) todos.push({ key: 'rta', badge: formatMoney(rtaShown), tone: 'red', label: 'Over assigned', action: 'Correct', go: () => { setEnvFilter('all'); openTab('budget'); } });
+    if (homeNewTx) todos.push({ key: 'new', badge: String(homeNewTx), tone: 'blue', label: homeNewTx === 1 ? 'New transaction' : 'New transactions', action: 'Approve', go: () => { setTxFilterAccount(''); setTxFilterStatus('attention'); setSelectedEnvId(null); setMTxId(null); openTab('transactions'); } });
+    if (rtaShown > 0.004) todos.push({ key: 'ready', badge: formatMoney(rtaShown), tone: 'green', label: 'Ready to assign', action: 'Assign', go: () => { setEnvFilter('all'); openTab('budget'); } });
+    const pinned = visibleEnvelopes.filter(e => e.pinned);
+    const goals = visibleEnvelopes.filter(e => { const pr = getTargetProgress(e, envRow(e)); return pr && pr.left > 0.004; });
+    const card = { margin: '0 16px 16px', backgroundColor: MD.row, borderRadius: '28px', padding: '8px 18px 12px' };
+    const pillBg = (tone) => (tone === 'red' ? '#a3182b' : tone === 'green' ? '#173a24' : '#2a2a66');
+    const secHead = (key, title, right) => (
+      <div style={{ display: 'flex', alignItems: 'center', gap: '12px', padding: '14px 0' }}>
+        <button onClick={() => setHomeOpen(o => ({ ...o, [key]: !o[key] }))} aria-expanded={!!homeOpen[key]} style={{ display: 'flex', alignItems: 'center', gap: '16px', flex: 1, background: 'none', border: 'none', color: MD.text, fontSize: '1.35rem', fontWeight: 700, cursor: 'pointer', padding: 0, textAlign: 'left' }}>
+          <span style={{ fontSize: '1.1rem' }}>{homeOpen[key] ? '⌄' : '›'}</span>{title}
+        </button>
+        {right}
+      </div>
+    );
+    return (
+      <div data-testid="mobile-home" style={{ backgroundColor: MD.bg, color: MD.text, minHeight: '100vh', paddingBottom: '150px', background: 'linear-gradient(180deg, #4a2fb0 0%, #1d6f86 22%, #0f2a3a 40%, #0a0a14 62%)' }}>
+        <div style={{ display: 'flex', alignItems: 'center', padding: '14px 16px 12px', gap: '12px' }}>
+          <div style={{ fontWeight: 600, fontSize: '1.5rem', flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>My Budget</div>
+          <button onClick={() => setSidebarOpen(true)} aria-label="Menu" style={{ background: 'none', border: 'none', color: MD.text, fontSize: '1.5rem', cursor: 'pointer', padding: '0 4px', lineHeight: 1 }}>⋮</button>
+        </div>
+        <div data-testid="home-todo" style={{ ...card, backgroundColor: '#12122a', padding: '18px 18px 16px', marginTop: '14px' }}>
+          <div onClick={() => { const v = window.prompt('What should Home call you?', nm); if (v !== null) { try { localStorage.setItem('home-name', v.trim()); } catch (e) { /* storage unavailable */ } setHomeOpen(o => ({ ...o })); } }} style={{ fontWeight: 700, fontSize: '1.3rem', cursor: 'pointer' }}>{nm ? `Rise and assign, ${nm}` : 'Rise and assign'}</div>
+          <div style={{ color: MD.muted, fontSize: '1.05rem', margin: '4px 0 14px' }}>{todos.length ? (todos.length > 2 ? 'Just a few things to do' : 'A couple of things to do') : "You're all caught up"}</div>
+          {todos.map(t => (
+            <div key={t.key} data-testid={'todo-' + t.key} style={{ display: 'flex', alignItems: 'center', gap: '10px', backgroundColor: MD.card, borderRadius: '22px', padding: '12px 12px 12px 16px', marginBottom: '10px' }}>
+              <span style={{ backgroundColor: pillBg(t.tone), color: t.tone === 'green' ? '#9be7b4' : 'white', borderRadius: '999px', padding: '3px 10px', fontWeight: 700, fontSize: '0.95rem' }}>{t.badge}</span>
+              <span style={{ flex: 1, minWidth: 0, fontSize: '1.05rem' }}>{t.label}</span>
+              <button onClick={t.go} style={{ backgroundColor: '#25255a', color: MD.accent, border: 'none', borderRadius: '999px', padding: '12px 26px', fontWeight: 700, fontSize: '1rem', cursor: 'pointer' }}>{t.action}</button>
+            </div>
+          ))}
+        </div>
+        <div data-testid="home-pinned" style={{ ...card, backgroundColor: '#12122a' }}>
+          {secHead('pinned', 'Pinned', <button data-testid="pin-edit" onClick={() => setPinEdit({ q: '' })} style={{ backgroundColor: '#25253f', color: MD.accent, border: 'none', borderRadius: '999px', padding: '12px 22px', fontWeight: 700, fontSize: '1rem', cursor: 'pointer' }}>Edit</button>)}
+          {homeOpen.pinned && (pinned.length === 0
+            ? <div style={{ color: MD.muted, padding: '4px 0 12px' }}>Nothing pinned yet. Tap Edit and pick the envelopes you watch most.</div>
+            : pinned.map((e, i) => {
+                const row = envRow(e);
+                return (
+                  <div key={e.id} role="button" data-testid="pinned-row" onClick={() => { setSelectedEnvId(null); openTab('budget'); setEnvMenuId(e.id); setKpDraft(null); setKpAuto(false); }} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '10px', padding: '22px 6px', borderTop: i ? '1px solid ' + MD.line : 'none', cursor: 'pointer' }}>
+                    <span style={{ fontSize: '1.15rem', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{e.name}</span>
+                    <AvailPill value={row.end} row={row} ynab underfunded={getNeeded(e, row) > 0.004} label={`Available ${e.name}`} />
+                  </div>
+                );
+              }))}
+        </div>
+        <div data-testid="home-goals" style={{ ...card, backgroundColor: '#12122a' }}>
+          {secHead('goal', 'Current Goal')}
+          {homeOpen.goal && (goals.length === 0
+            ? <div style={{ color: MD.muted, padding: '4px 0 12px' }}>Every target is funded.</div>
+            : goals.map((e, i) => {
+                const pr = getTargetProgress(e, envRow(e));
+                return (
+                  <div key={e.id} style={{ padding: '14px 6px', borderTop: i ? '1px solid ' + MD.line : 'none' }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', gap: '10px' }}><span style={{ fontSize: '1.05rem' }}>{e.name}</span><span style={{ color: '#ffcf70', fontWeight: 600 }}>{formatMoney(getNeeded(e, envRow(e)) || pr.left)} more needed</span></div>
+                    <div style={{ height: '6px', borderRadius: '3px', backgroundColor: '#26263f', marginTop: '8px', overflow: 'hidden' }}><div style={{ width: pr.pct + '%', height: '100%', backgroundColor: '#ffcd00' }} /></div>
+                  </div>
+                );
+              }))}
+        </div>
+      </div>
+    );
+  };
+  const renderPinPicker = () => {
+    const q = (pinEdit.q || '').trim().toLowerCase();
+    const groupsList = [...new Set(visibleEnvelopes.map(e => e.group))];
+    return (
+      <div data-testid="pin-picker" style={{ position: 'fixed', inset: 0, zIndex: 64, backgroundColor: MD.head, color: MD.text, overflowY: 'auto', paddingBottom: 'calc(110px + env(safe-area-inset-bottom))' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '16px', padding: '16px' }}>
+          <button onClick={() => setPinEdit(null)} aria-label="Close" style={{ background: 'none', border: 'none', color: MD.text, fontSize: '1.6rem', cursor: 'pointer' }}>✕</button>
+          <span style={{ fontSize: '1.5rem', flex: 1 }}>Pinned</span>
+          <button onClick={() => setPinEdit(null)} data-testid="pin-done" style={{ backgroundColor: MD.btn, color: 'white', border: 'none', borderRadius: '999px', padding: '12px 22px', fontWeight: 700, fontSize: '1rem', cursor: 'pointer' }}>Done</button>
+        </div>
+        <div style={{ padding: '4px 16px 8px' }}>
+          <input aria-label="Search categories" placeholder="Search Categories" value={pinEdit.q} onChange={e => setPinEdit({ q: e.target.value })} style={{ width: '100%', boxSizing: 'border-box', background: 'none', border: 'none', borderBottom: '1px solid ' + MD.line, color: MD.text, fontSize: '1.2rem', padding: '12px 0', outline: 'none' }} />
+        </div>
+        {!q && (
+          <>
+            <div style={{ padding: '18px 24px 8px', fontWeight: 700 }}>Inflow</div>
+            <div style={{ margin: '0 16px', backgroundColor: MD.row, borderRadius: '28px', padding: '18px 20px', display: 'flex', alignItems: 'center', gap: '16px', opacity: 0.6 }}>
+              <span style={{ width: '22px', height: '22px', border: '2px solid ' + MD.muted, borderRadius: '4px' }} />
+              <span style={{ flex: 1 }}>Income: Ready to Assign</span><span>{formatMoney(rtaShown)}</span>
+            </div>
+          </>
+        )}
+        {groupsList.map(g => {
+          const list = visibleEnvelopes.filter(e => e.group === g && (!q || e.name.toLowerCase().includes(q)));
+          if (!list.length) return null;
+          return (
+            <div key={g}>
+              <div style={{ padding: '22px 24px 8px', fontWeight: 700 }}>{g}</div>
+              <div style={{ margin: '0 16px', backgroundColor: MD.row, borderRadius: '28px', overflow: 'hidden' }}>
+                {list.map((e, i) => {
+                  const end = envRow(e).end;
+                  return (
+                    <div key={e.id} role="checkbox" aria-checked={!!e.pinned} aria-label={`Pin ${e.name}`} data-testid="pin-row" onClick={() => togglePin(e.id)} style={{ display: 'flex', alignItems: 'center', gap: '16px', padding: '20px', borderTop: i ? '1px solid ' + MD.line : 'none', cursor: 'pointer' }}>
+                      <span style={{ width: '22px', height: '22px', borderRadius: '4px', border: '2px solid ' + (e.pinned ? MD.accent : MD.text), backgroundColor: e.pinned ? MD.accent : 'transparent', color: MD.head, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', fontSize: '0.9rem', fontWeight: 800, flexShrink: 0 }}>{e.pinned ? '✓' : ''}</span>
+                      <span style={{ flex: 1, minWidth: 0, fontSize: '1.05rem' }}>{e.name}</span>
+                      <span style={{ color: end < -0.004 ? '#ff7b7f' : end > 0.004 ? '#8ee05a' : MD.muted, fontWeight: 600 }}>{formatMoney(end)}</span>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    );
+  };
+
+  const MOBILE_TABS = [['home', 'Home', '⌂'], ['budget', 'Plan', '◔'], ['transactions', 'Spending', '$'], ['accounts', 'Accounts', '▦'], ['reports', 'Reflect', '◭']];
 
   if (session === undefined) {
     return <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', fontFamily: 'system-ui, sans-serif', color: '#6b7280', backgroundColor: '#f4f5f7' }}>Loading…</div>;
@@ -7577,7 +7765,7 @@ export default function BudgetApp() {
   if (!session) return <AuthScreen />;
 
   return (
-    <div style={{ display: 'flex', minHeight: '100vh', fontFamily: 'system-ui, -apple-system, sans-serif', color: '#1f2937', backgroundColor: isMobile ? ((activeTab === 'budget' || activeTab === 'transactions' || activeTab === 'reports' || (activeTab === 'accounts' && !manageAccounts)) ? '#0a0a14' : '#f4f5f7') : (activeTab === 'budget' || activeTab === 'transactions' || activeTab === 'reports' ? '#ffffff' : '#f4f5f7') }}>
+    <div style={{ display: 'flex', minHeight: '100vh', fontFamily: 'system-ui, -apple-system, sans-serif', color: '#1f2937', backgroundColor: isMobile ? ((activeTab === 'home' || activeTab === 'budget' || activeTab === 'transactions' || activeTab === 'reports' || (activeTab === 'accounts' && !manageAccounts)) ? '#0a0a14' : '#f4f5f7') : (activeTab === 'home' || activeTab === 'budget' || activeTab === 'transactions' || activeTab === 'reports' ? '#ffffff' : '#f4f5f7') }}>
 
       {/* Mobile overlay behind the drawer */}
       {isMobile && sidebarOpen && (
@@ -7677,10 +7865,10 @@ export default function BudgetApp() {
 
       {/* Main content */}
       <div style={{ flex: 1, minWidth: 0 }}>
-        <div style={{ width: '100%', maxWidth: (!isMobile && ((isWide && activeTab === 'budget') || activeTab === 'reports' || activeTab === 'transactions')) ? 'none' : '1040px', margin: (!isMobile && ((isWide && activeTab === 'budget') || activeTab === 'reports' || activeTab === 'transactions')) ? '0' : '0 auto', padding: isMobile ? ((activeTab === 'budget' || activeTab === 'transactions' || activeTab === 'reports' || (activeTab === 'accounts' && !manageAccounts)) ? '0 0 0' : '10px 10px 96px') : ((isWide && activeTab === 'budget') ? '16px 356px 16px 24px' : (activeTab === 'reports' || activeTab === 'transactions') ? '0 24px 24px' : '16px 20px'), boxSizing: 'border-box' }}>
+        <div style={{ width: '100%', maxWidth: (!isMobile && ((isWide && activeTab === 'budget') || activeTab === 'reports' || activeTab === 'transactions')) ? 'none' : '1040px', margin: (!isMobile && ((isWide && activeTab === 'budget') || activeTab === 'reports' || activeTab === 'transactions')) ? '0' : '0 auto', padding: isMobile ? ((activeTab === 'home' || activeTab === 'budget' || activeTab === 'transactions' || activeTab === 'reports' || (activeTab === 'accounts' && !manageAccounts)) ? '0 0 0' : '10px 10px 96px') : ((isWide && activeTab === 'budget') ? '16px 356px 16px 24px' : (activeTab === 'reports' || activeTab === 'transactions') ? '0 24px 24px' : '16px 20px'), boxSizing: 'border-box' }}>
 
       {/* Top bar */}
-      <header style={{ position: 'relative', display: (isMobile && (activeTab === 'budget' || activeTab === 'transactions' || activeTab === 'reports' || (activeTab === 'accounts' && !manageAccounts))) ? 'none' : 'flex', justifyContent: isMobile ? 'center' : 'space-between', alignItems: 'center', gap: '10px', marginBottom: '14px', flexWrap: 'wrap' }}>
+      <header style={{ position: 'relative', display: (isMobile && (activeTab === 'home' || activeTab === 'budget' || activeTab === 'transactions' || activeTab === 'reports' || (activeTab === 'accounts' && !manageAccounts))) ? 'none' : 'flex', justifyContent: isMobile ? 'center' : 'space-between', alignItems: 'center', gap: '10px', marginBottom: '14px', flexWrap: 'wrap' }}>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: isMobile ? (activeTab === 'budget' ? 'flex-start' : 'center') : 'flex-start', gap: '10px', minWidth: 0, width: isMobile ? '100%' : 'auto' }}>
           {false && (
             <button
@@ -7853,6 +8041,8 @@ export default function BudgetApp() {
       )}
 
       {/* BUDGET TAB */}
+      {isMobile && activeTab === 'home' && renderMobileHome()}
+      {isMobile && pinEdit && renderPinPicker()}
       {isMobile && activeTab === 'budget' && renderMobilePlan()}
       {isMobile && activeTab === 'budget' && renderMobileEnvDetails()}
       {isMobile && activeTab === 'budget' && planEdit && renderEditPlan()}
@@ -8136,7 +8326,7 @@ export default function BudgetApp() {
                                   const lastAssigned = prevRow ? Math.max(0, prevRow.budgeted) : 0;
                                   const lastSpent = prevRow ? Math.max(0, prevRow.spent) : 0;
                                   const cur = Number(row.budgeted) || 0;
-                                  const setTo = (n) => handleAssignMonth(env.id, Math.max(0, round2(n)));
+                                  const setTo = (n) => handleAssignMonth(env.id, round2(n));
                                   const items = [
                                     needed > 0.004 && [`Underfunded`, formatMoney(needed), () => setTo(cur + needed)],
                                     [`Assigned Last Month`, formatMoney(lastAssigned), () => setTo(lastAssigned)],
@@ -8218,7 +8408,7 @@ export default function BudgetApp() {
                                   const lastAssigned = prevRow ? Math.max(0, prevRow.budgeted) : 0;
                                   const lastSpent = prevRow ? Math.max(0, prevRow.spent) : 0;
                                   const cur = Number(row.budgeted) || 0;
-                                  const setTo = (n) => handleAssignMonth(env.id, Math.max(0, round2(n)));
+                                  const setTo = (n) => handleAssignMonth(env.id, round2(n));
                                   const chips = [
                                     needed > 0.004 && [`Fund goal ${formatMoney(needed)}`, cur + needed],
                                     lastAssigned > 0.004 && Math.abs(lastAssigned - cur) > 0.004 && [`Last month ${formatMoney(lastAssigned)}`, lastAssigned],
@@ -10557,7 +10747,7 @@ export default function BudgetApp() {
       )}
       {isMobile && (
         <>
-        {!txSheetOpen && !selectedEnvId && !mTxId && !envMenuId && (activeTab === 'budget' || activeTab === 'transactions') && (
+        {!txSheetOpen && !selectedEnvId && !mTxId && !envMenuId && (activeTab === 'home' || activeTab === 'budget' || activeTab === 'transactions') && (
           <button data-testid="fab-add" onClick={() => { cancelEditTx(); if (txFilterAccount) setTxAccountId(txFilterAccount); setTxSheetOpen(true); }} aria-label="Add transaction" style={{ position: 'fixed', right: '16px', bottom: 'calc(64px + env(safe-area-inset-bottom))', zIndex: 31, backgroundColor: '#5b5bff', color: 'white', border: 'none', borderRadius: '14px', padding: '12px 20px', fontWeight: 700, fontSize: '0.95rem', boxShadow: '0 8px 22px rgba(0,0,0,0.5)', cursor: 'pointer' }}>＋ Transaction</button>
         )}
         <nav data-testid="mobile-tabs" style={{ position: 'fixed', left: 0, right: 0, bottom: 0, height: 'calc(54px + env(safe-area-inset-bottom))', paddingBottom: 'env(safe-area-inset-bottom)', display: 'flex', backgroundColor: '#0a0a14', borderTop: '1px solid #26263f', zIndex: 30 }}>
@@ -10569,7 +10759,7 @@ export default function BudgetApp() {
                 onClick={() => { if (tab === 'transactions') setTxFilterAccount(''); if (tab === 'accounts') setManageAccounts(false); setSelectedEnvId(null); setMTxId(null); openTab(tab); }}
                 style={{ flex: 1, background: 'none', border: 'none', cursor: 'pointer', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: '1px', color: active ? '#fff' : '#a4a4bf', fontWeight: active ? 700 : 500, fontSize: '0.64rem' }}
               >
-                <span style={{ fontSize: '1rem', lineHeight: 1, padding: '3px 18px', borderRadius: '999px', backgroundColor: active ? '#2a2a66' : 'transparent' }}>{glyph}</span>
+                <span style={{ position: 'relative', fontSize: '1rem', lineHeight: 1, padding: '3px 18px', borderRadius: '999px', backgroundColor: active ? '#2a2a66' : 'transparent' }}>{glyph}{tab === 'home' && homeTodoCount > 0 && <span data-testid="home-badge" style={{ position: 'absolute', top: '-6px', right: '4px', minWidth: '16px', height: '16px', borderRadius: '8px', backgroundColor: '#c1121f', color: 'white', fontSize: '0.62rem', fontWeight: 700, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', padding: '0 3px' }}>{homeTodoCount}</span>}</span>
                 {label}
               </button>
             );
