@@ -358,6 +358,22 @@ const evalAmount = (raw) => {
   const total = (s.match(/[+-]?(\d+\.?\d*|\.\d+)/g) || []).reduce((sum, n) => sum + parseFloat(n), 0);
   return Math.round(total * 100) / 100;
 };
+// Phone keypad shows money like a calculator: digits slide in from the cents (5 -> 0.05, 52 -> 0.52, 5234 -> 52.34).
+const kpFmt = (d) => String(d == null ? '' : d).replace(/\d+\.\d{2}/g, m => Number(m).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }));
+const kpDigit = (d, k) => {
+  const m = String(d).match(/^(.*[+-])?([\d.]*)$/) || [];
+  const prefix = m[1] || '';
+  const digits = ((m[2] || '').replace('.', '') + k).replace(/^0+/, '').slice(0, 11).padStart(3, '0');
+  return prefix + digits.slice(0, -2) + '.' + digits.slice(-2);
+};
+const kpBack = (d) => {
+  const m = String(d).match(/^(.*[+-])?([\d.]*)$/);
+  if (!m) return d;
+  const prefix = m[1] || '';
+  if (m[2] === '' ) return prefix.slice(0, -1);
+  const digits = m[2].replace('.', '').slice(0, -1).replace(/^0+/, '');
+  return digits === '' ? prefix : prefix + digits.padStart(3, '0').slice(0, -2) + '.' + digits.padStart(3, '0').slice(-2);
+};
 const isSumText = (raw) => /\d[+-]/.test(String(raw == null ? '' : raw).replace(/[$,\s]/g, ''));
 
 // Amount box for a split line: type a number or a sum. It shows the running total and settles to it on Enter/blur.
@@ -6431,7 +6447,7 @@ export default function BudgetApp() {
                 return (
                   <button key={env.id} id={'m-env-' + env.id} data-testid="env-row" onClick={() => selectKpEnv(env)} style={{ display: 'grid', gridTemplateColumns: 'minmax(0,1fr) 84px 88px', alignItems: 'center', columnGap: '8px', width: '100%', textAlign: 'left', backgroundColor: envMenuId === env.id ? '#1d1d4a' : MD.row, color: MD.text, border: 'none', borderTop: '1px solid ' + MD.line, padding: '12px 16px', cursor: 'pointer', fontSize: '0.92rem' }}>
                     <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{env.name}{env.isHidden && <span style={{ marginLeft: '8px', fontSize: '0.7rem', color: MD.muted }}>hidden</span>}</span>
-                    <span data-testid="env-assigned" style={{ textAlign: 'right', ...(envMenuId === env.id ? { color: '#8f8fff', fontWeight: 700 } : {}) }}>{envMenuId === env.id && kpDraft !== null ? '$' + (kpDraft || '0') : formatMoney((Number(row.budgeted) || 0) + (Number(row.income) || 0))}</span>
+                    <span data-testid="env-assigned" style={{ textAlign: 'right', ...(envMenuId === env.id ? { color: '#8f8fff', fontWeight: 700 } : {}) }}>{envMenuId === env.id && kpDraft !== null ? '$' + kpFmt(kpDraft || '0.00') : formatMoney((Number(row.budgeted) || 0) + (Number(row.income) || 0))}</span>
                     <span style={{ textAlign: 'right' }}>{darkPill(env, row)}</span>
                   </button>
                 );
@@ -6486,11 +6502,11 @@ export default function BudgetApp() {
           const press = (k) => {
             setKpDraft(d => {
               const base = d === null ? '' : d;
-              if (/^[0-9.]$/.test(k)) return (d === null ? '' : d) + k;
-              if (k === '⌫') return d === null ? '' : d.slice(0, -1);
+              if (/^[0-9]$/.test(k)) return kpDigit(d === null ? '' : d, k);
+              if (k === '⌫') return d === null ? '' : kpBack(d);
               if (k === 'C') return '';
-              if (k === '−' || k === '+') { const b2 = d === null ? String(cur) : d; return b2 === '' ? b2 : (/[+\-]$/.test(b2) ? b2.slice(0, -1) : b2) + (k === '−' ? '-' : '+'); }
-              if (k === '=') { const v = evalAmount(base === '' && d === null ? String(cur) : base); return isNaN(v) ? base : String(round2(v)); }
+              if (k === '−' || k === '+') { const b2 = d === null ? Number(cur).toFixed(2) : d; return b2 === '' ? b2 : (/[+\-]$/.test(b2) ? b2.slice(0, -1) : b2) + (k === '−' ? '-' : '+'); }
+              if (k === '=') { const v = evalAmount(base === '' && d === null ? String(cur) : base); return isNaN(v) ? base : round2(v).toFixed(2); }
               return base;
             });
           };
@@ -6519,7 +6535,7 @@ export default function BudgetApp() {
                 {key('7', () => press('7'))}{key('8', () => press('8'))}{key('9', () => press('9'))}{key('−', () => press('−'), op)}
                 {key('4', () => press('4'))}{key('5', () => press('5'))}{key('6', () => press('6'))}{key('+', () => press('+'), op)}
                 {key('1', () => press('1'))}{key('2', () => press('2'))}{key('3', () => press('3'))}{key('=', () => press('='), op)}
-                {key('.', () => press('.'))}{key('0', () => press('0'))}{key('⌫', () => press('⌫'), { color: '#8f8fff' })}
+                {key('✕', () => press('C'), { color: MD.muted })}{key('0', () => press('0'))}{key('⌫', () => press('⌫'), { color: '#8f8fff' })}
                 <button onClick={done} data-testid="kp-done" style={{ height: '52px', borderRadius: '999px', border: 'none', backgroundColor: '#5b5bff', color: 'white', fontWeight: 700, fontSize: '1.1rem', cursor: 'pointer' }}>Done</button>
               </div>
             </div>
@@ -7668,7 +7684,7 @@ export default function BudgetApp() {
           <div style={{ fontWeight: 600, fontSize: '1.5rem', flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>My Budget</div>
           <button onClick={() => setSidebarOpen(true)} aria-label="Menu" style={{ background: 'none', border: 'none', color: MD.text, fontSize: '1.5rem', cursor: 'pointer', padding: '0 4px', lineHeight: 1 }}>⋮</button>
         </div>
-        <div data-testid="home-todo" style={{ ...card, backgroundColor: '#12122a', padding: '18px 18px 16px', marginTop: '14px' }}>
+        {todos.length > 0 && <div data-testid="home-todo" style={{ ...card, backgroundColor: '#12122a', padding: '18px 18px 16px', marginTop: '14px' }}>
           <div onClick={() => { const v = window.prompt('What should Home call you?', nm); if (v !== null) { try { localStorage.setItem('home-name', v.trim()); } catch (e) { /* storage unavailable */ } setHomeOpen(o => ({ ...o })); } }} style={{ fontWeight: 700, fontSize: '1.3rem', cursor: 'pointer' }}>{nm ? `Rise and assign, ${nm}` : 'Rise and assign'}</div>
           <div style={{ color: MD.muted, fontSize: '1.05rem', margin: '4px 0 14px' }}>{todos.length ? (todos.length > 2 ? 'Just a few things to do' : 'A couple of things to do') : "You're all caught up"}</div>
           {todos.map(t => (
@@ -7678,8 +7694,8 @@ export default function BudgetApp() {
               <button onClick={t.go} style={{ backgroundColor: '#25255a', color: MD.accent, border: 'none', borderRadius: '999px', padding: '12px 26px', fontWeight: 700, fontSize: '1rem', cursor: 'pointer' }}>{t.action}</button>
             </div>
           ))}
-        </div>
-        <div data-testid="home-pinned" style={{ ...card, backgroundColor: '#12122a' }}>
+        </div>}
+        <div data-testid="home-pinned" style={{ ...card, backgroundColor: '#12122a', marginTop: todos.length ? undefined : '14px' }}>
           {secHead('pinned', 'Pinned', <button data-testid="pin-edit" onClick={() => setPinEdit({ q: '' })} style={{ backgroundColor: '#25253f', color: MD.accent, border: 'none', borderRadius: '999px', padding: '12px 22px', fontWeight: 700, fontSize: '1rem', cursor: 'pointer' }}>Edit</button>)}
           {homeOpen.pinned && (pinned.length === 0
             ? <div style={{ color: MD.muted, padding: '4px 0 12px' }}>Nothing pinned yet. Tap Edit and pick the envelopes you watch most.</div>
