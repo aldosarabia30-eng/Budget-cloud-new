@@ -1748,6 +1748,7 @@ export default function BudgetApp() {
   const [debts, setDebts] = useState([]);
 
   const [activeTab, setActiveTab] = useState(() => (isMobileNow() ? 'home' : 'budget'));
+  const [colW, setColW] = useState(() => { try { return JSON.parse(localStorage.getItem('reg-colw') || '{}') || {}; } catch (e) { return {}; } }); // desktop register: dragged column widths (px)
   const [pinEdit, setPinEdit] = useState(null); // phone Home: pin picker { q } while open
   const [homeOpen, setHomeOpen] = useState({ pinned: true, goal: false });
   const [notification, setNotification] = useState('');
@@ -5684,7 +5685,21 @@ export default function BudgetApp() {
 
   const renderDesktopRegister = () => {
     const allMode = !txFilterAccount;
-    const cols = `38px 30px 34px ${allMode ? '150px ' : ''}110px minmax(0,1.1fr) minmax(0,2.2fr) minmax(0,1.2fr) 104px 104px 40px 58px`;
+    const cw = (k, def) => (colW[k] ? colW[k] + 'px' : def);
+    const cols = `38px 30px 34px ${allMode ? cw('acct', '150px') + ' ' : ''}${cw('date', '110px')} ${cw('payee', 'minmax(0,1.1fr)')} ${cw('cat', 'minmax(0,2.2fr)')} ${cw('memo', 'minmax(0,1.2fr)')} 104px 104px 40px 58px`;
+    // Drag the right edge of a heading to resize that column; double-click to reset it.
+    const grip = (k) => (
+      <span data-testid={'col-grip-' + k} title="Drag to resize, double-click to reset" onDoubleClick={() => setColW(prev => { const n = { ...prev }; delete n[k]; try { localStorage.setItem('reg-colw', JSON.stringify(n)); } catch (e) { /* storage unavailable */ } return n; })}
+        onMouseDown={(ev) => {
+          ev.preventDefault(); ev.stopPropagation();
+          const startX = ev.clientX; const startW = ev.currentTarget.parentElement.getBoundingClientRect().width;
+          let last = startW;
+          const move = (e2) => { last = Math.max(60, Math.min(900, Math.round(startW + e2.clientX - startX))); setColW(prev => ({ ...prev, [k]: last })); };
+          const up = () => { window.removeEventListener('mousemove', move); window.removeEventListener('mouseup', up); setColW(prev => { try { localStorage.setItem('reg-colw', JSON.stringify(prev)); } catch (e) { /* storage unavailable */ } return prev; }); };
+          window.addEventListener('mousemove', move); window.addEventListener('mouseup', up);
+        }}
+        style={{ position: 'absolute', top: 0, bottom: 0, right: '-4px', width: '9px', cursor: 'col-resize', zIndex: 3 }} />
+    );
     const flat = sortedTransactionDates.flatMap(d => groupedTransactions[d]);
     const inp = { padding: '7px 9px', border: '1px solid #d1d5db', borderRadius: '8px', fontSize: '0.85rem', backgroundColor: 'white' };
     const tbtn = { background: 'none', border: 'none', color: '#3b22a7', fontWeight: 600, fontSize: '0.9rem', cursor: 'pointer', padding: '6px 4px', display: 'inline-flex', alignItems: 'center', gap: '6px' };
@@ -5779,8 +5794,8 @@ export default function BudgetApp() {
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center' }}><input type="checkbox" aria-label="Select all transactions" checked={selectedTxIds.length === visibleTransactions.length && visibleTransactions.length > 0} onChange={handleSelectAllTx} style={{ cursor: 'pointer' }} /></div>
             <div style={hcell({ justifyContent: 'center', padding: 0 })} title="New transactions waiting for approval">ⓘ</div>
             <div style={hcell({ justifyContent: 'center', padding: 0 })} title="Flag">⚑</div>
-            {allMode && <div style={hcell()}>ACCOUNT</div>}
-            <div style={hcell()}>DATE&nbsp;▾</div><div style={hcell()}>PAYEE</div><div style={hcell()}>CATEGORY</div><div style={hcell()}>MEMO</div>
+            {allMode && <div style={hcell({ position: 'relative' })}>ACCOUNT{grip('acct')}</div>}
+            <div style={hcell({ position: 'relative' })}>DATE&nbsp;▾{grip('date')}</div><div style={hcell({ position: 'relative' })}>PAYEE{grip('payee')}</div><div style={hcell({ position: 'relative' })}>CATEGORY{grip('cat')}</div><div style={hcell({ position: 'relative' })}>MEMO{grip('memo')}</div>
             <div style={hcell({ justifyContent: 'flex-end' })}>OUTFLOW</div><div style={hcell({ justifyContent: 'flex-end' })}>INFLOW</div>
             <div style={hcell({ justifyContent: 'center', padding: 0 })}>©</div><div style={hcell()} />
           </div>
