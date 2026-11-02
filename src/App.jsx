@@ -3697,7 +3697,7 @@ export default function BudgetApp() {
       const replacing = editing && !(editing.isTransfer && oldPartner) ? editing.id : null;
       setTransactions(prev => [outLeg, inLeg, ...prev.filter(t => t.id !== replacing)]);
       cancelEditTx();
-      setTxDate(getTodayISO());
+      setTxDate(editing ? getTodayISO() : date);
       showNotification(`Transferred $${amt.toFixed(2)} from ${from.name} to ${to.name}.`);
       return;
     }
@@ -3809,7 +3809,7 @@ export default function BudgetApp() {
     setTxAmount('');
     setTxNotes('');
     setTxSplitLines(null);
-    setTxDate(getTodayISO());
+    // keep the chosen date so a run of back-dated entries doesn't need it re-picked each time
     setTxClearedNew(false);
     setTxFlagNew(null);
     showNotification(splits ? `Transaction recorded, split across ${splits.length} envelopes.`
