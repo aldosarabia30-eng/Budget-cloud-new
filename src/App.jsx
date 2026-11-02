@@ -504,7 +504,7 @@ const AssignedInput = ({ value, onCommit, ariaLabel, width = '92px', big = false
       width={width}
       inputStyle={big ? { textAlign: 'center', fontSize: '1.6rem', fontWeight: 700, padding: '10px', boxSizing: 'border-box', width: '100%', minWidth: 0 } : { textAlign: 'right' }}
       placeholder="0.00"
-      onFocus={() => setDraft(null)}
+      onFocus={(e) => { setDraft(null); const el = e.target; setTimeout(() => { try { el.select(); } catch (err) { /* not selectable */ } }, 0); }}
       onChange={v => {
         setDraft(v);
         const n = v.trim() === '' ? 0 : evalAmount(v);
@@ -513,6 +513,19 @@ const AssignedInput = ({ value, onCommit, ariaLabel, width = '92px', big = false
       onBlur={() => setDraft(null)}
     />
   );
+};
+// Weekly / every-other-week targets are measured against the month being planned: the amount times the number of that
+// weekday in the month (every other week: half of them, rounded up).
+const goalMonthTarget = (env, monthKey) => {
+  const amt = Number(env.targetAmount);
+  if (!(amt > 0) || env.goalType !== 'repeating') return amt;
+  if (env.cadence !== 'weekly' && env.cadence !== 'biweekly') return amt;
+  const [y, m] = String(monthKey).split('-').map(Number);
+  if (!y || !m) return amt;
+  const dow = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'].indexOf(env.repeatDayOfWeek || 'Monday');
+  let n = 0;
+  for (let d = new Date(y, m - 1, 1); d.getMonth() === m - 1; d.setDate(d.getDate() + 1)) if (d.getDay() === (dow < 0 ? 1 : dow)) n++;
+  return Math.round(amt * (env.cadence === 'biweekly' ? Math.ceil(n / 2) : n) * 100) / 100;
 };
 // Shows a transaction's effect on its account, e.g. "-$12.50" or "+$5.00" (refunds are expenses with a negative amount)
 const signedMoney = (tx) => {
@@ -2783,7 +2796,7 @@ export default function BudgetApp() {
   // so money taken out shows up as needed again.
   const getTargetProgress = (env, row) => {
     if (!env.goalType || env.goalType === 'none') return null;
-    const target = Number(env.targetAmount);
+    const target = goalMonthTarget(env, budgetMonth);
     if (!(target > 0)) return null;
     const funded = (env.goalType === 'target_by_date' || env.goalType === 'savings_balance') ? row.end : (env.goalMode === 'setaside' ? row.budgeted + row.income : row.start + row.budgeted + row.income);
     const left = Math.max(0, target - funded);
