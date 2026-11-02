@@ -417,6 +417,63 @@ const availColors = (end, row) => {
   if (end > 0.004) return { bg: '#cdeed6', fg: '#17603a' };
   return { bg: '#e9ecf1', fg: '#5a6372' };
 };
+// Desktop envelope picker: a searchable dropdown grouped by envelope group (replaces the long native <select>).
+const EnvDropdown = ({ value, onChange, groups: choices, envelopes: envList, placeholder, noneLabel, ariaLabel, style }) => {
+  const [open, setOpen] = useState(false);
+  const [q, setQ] = useState('');
+  const [pos, setPos] = useState(null);
+  const btnRef = useRef(null);
+  const sel = envList.find(e => e.id === value);
+  const openIt = () => {
+    const r = btnRef.current.getBoundingClientRect();
+    const room = window.innerHeight - r.bottom - 12;
+    const h = Math.min(380, Math.max(room, 220));
+    setPos({ left: r.left, width: Math.max(r.width, 260), top: room >= 220 ? r.bottom + 4 : Math.max(8, r.top - h - 4), h });
+    setQ(''); setOpen(true);
+  };
+  useEffect(() => {
+    if (!open) return undefined;
+    const close = () => setOpen(false);
+    const key = (e) => { if (e.key === 'Escape') setOpen(false); };
+    window.addEventListener('resize', close); window.addEventListener('keydown', key);
+    return () => { window.removeEventListener('resize', close); window.removeEventListener('keydown', key); };
+  }, [open]);
+  const pick = (id) => { onChange(id); setOpen(false); };
+  const ql = q.trim().toLowerCase();
+  const row = (active, color) => ({ display: 'block', width: '100%', textAlign: 'left', background: active ? '#ece8fb' : 'none', border: 'none', padding: '10px 16px', fontSize: '0.92rem', cursor: 'pointer', color: color || '#26231c', fontFamily: 'inherit' });
+  return (
+    <>
+      <button ref={btnRef} type="button" aria-label={ariaLabel} aria-haspopup="listbox" aria-expanded={open} onClick={openIt} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '8px', textAlign: 'left', backgroundColor: 'white', cursor: 'pointer', fontFamily: 'inherit', ...style }}>
+        <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: sel ? '#111827' : '#6b7280' }}>{sel ? `${sel.group} › ${sel.name}` : placeholder}</span>
+        <span style={{ color: '#6b7280', fontSize: '0.7rem' }}>▾</span>
+      </button>
+      {open && pos && (
+        <>
+          <div onClick={() => setOpen(false)} style={{ position: 'fixed', inset: 0, zIndex: 80 }} />
+          <div role="listbox" data-testid="env-dropdown" style={{ position: 'fixed', left: pos.left, top: pos.top, width: pos.width, maxHeight: pos.h, zIndex: 81, backgroundColor: 'white', borderRadius: '12px', boxShadow: '0 12px 36px rgba(0,0,0,0.28)', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+            <div style={{ padding: '10px 12px', borderBottom: '1px solid #ece9f6' }}>
+              <input autoFocus aria-label="Search envelopes" placeholder="Search envelopes" value={q} onChange={e => setQ(e.target.value)} onKeyDown={e => { if (e.key === 'Enter') { const f = choices.flatMap(c => c.list).find(x => x.name.toLowerCase().includes(ql)); if (f) pick(f.id); } }} style={{ width: '100%', boxSizing: 'border-box', padding: '8px 10px', border: '1px solid #d1d5db', borderRadius: '8px', fontSize: '0.9rem' }} />
+            </div>
+            <div style={{ overflowY: 'auto', paddingBottom: '6px' }}>
+              {!ql && <button type="button" role="option" aria-selected={!value} onClick={() => pick('')} style={row(!value, '#6b7280')}>{noneLabel}</button>}
+              {choices.map(c => {
+                const list = c.list.filter(e => !ql || e.name.toLowerCase().includes(ql));
+                if (!list.length) return null;
+                return (
+                  <div key={c.label}>
+                    <div style={{ padding: '10px 16px 4px', fontSize: '0.7rem', fontWeight: 700, letterSpacing: '0.05em', color: '#6b7280', textTransform: 'uppercase' }}>{c.label}</div>
+                    {list.map(e => (<button key={e.id} type="button" role="option" aria-selected={e.id === value} onClick={() => pick(e.id)} style={{ ...row(e.id === value), display: 'flex', justifyContent: 'space-between' }}><span>{e.name}</span>{e.id === value && <span style={{ color: '#3b22a7' }}>✓</span>}</button>))}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        </>
+      )}
+    </>
+  );
+};
+
 const AvailPill = ({ value, row, onClick, label, ynab, underfunded }) => {
   let c = availColors(value, row);
   let icon = '';
@@ -6074,16 +6131,20 @@ export default function BudgetApp() {
                 </button>
               )}
               {txType === 'expense' && !txSplitLines && !(editingTxId && isSplitTx(transactions.find(t => t.id === editingTxId))) && (
-                <select
-                  value={txEnvelopeId}
-                  onChange={e => setTxEnvelopeId(e.target.value)}
-                  style={{ padding: '8px', border: '1px solid #d1d5db', borderRadius: '6px', fontSize: '0.9rem', gridColumn: 'span 2' }}
-                >
-                  <option value="">Select Envelope (Optional)</option>
-                  {activeEnvelopes.filter(env => !env.isHidden || env.id === txEnvelopeId).map(env => (
-                    <option key={env.id} value={env.id}>{env.group} &gt; {env.name}{env.isHidden ? ' (hidden)' : ''}</option>
-                  ))}
-                </select>
+                isMobile ? (
+                  <select
+                    value={txEnvelopeId}
+                    onChange={e => setTxEnvelopeId(e.target.value)}
+                    style={{ padding: '8px', border: '1px solid #d1d5db', borderRadius: '6px', fontSize: '0.9rem', gridColumn: 'span 2' }}
+                  >
+                    <option value="">Select Envelope (Optional)</option>
+                    {activeEnvelopes.filter(env => !env.isHidden || env.id === txEnvelopeId).map(env => (
+                      <option key={env.id} value={env.id}>{env.group} &gt; {env.name}{env.isHidden ? ' (hidden)' : ''}</option>
+                    ))}
+                  </select>
+                ) : (
+                  <EnvDropdown ariaLabel="Envelope" value={txEnvelopeId} onChange={setTxEnvelopeId} groups={groupEnvelopeChoices(activeEnvelopes.filter(env => !env.isHidden || env.id === txEnvelopeId))} envelopes={activeEnvelopes} placeholder="Select Envelope (Optional)" noneLabel="No envelope" style={{ padding: '8px', border: '1px solid #d1d5db', borderRadius: '6px', fontSize: '0.9rem', gridColumn: 'span 2' }} />
+                )
               )}
               {editingTxId && (() => {
                 const et = transactions.find(t => t.id === editingTxId);
