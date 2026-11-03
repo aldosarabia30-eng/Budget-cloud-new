@@ -8281,7 +8281,7 @@ export default function BudgetApp() {
 
           {/* Column headings */}
           {!isMobile && groups.length > 0 && (
-            <div style={{ display: 'grid', gridTemplateColumns: '22px minmax(0,1fr) 118px 104px 124px', columnGap: '10px', padding: '6px 14px', fontSize: '0.7rem', fontWeight: 700, letterSpacing: '0.06em', color: '#6b6b6b', marginBottom: '-12px', borderBottom: '1px solid #ece8e0' }}>
+            <div style={{ display: 'grid', gridTemplateColumns: '22px minmax(150px,1fr) minmax(84px,118px) minmax(72px,104px) minmax(84px,124px)', columnGap: '10px', padding: '6px 14px', fontSize: '0.7rem', fontWeight: 700, letterSpacing: '0.06em', color: '#6b6b6b', marginBottom: '-12px', borderBottom: '1px solid #ece8e0' }}>
               <span /><div>CATEGORY</div><div style={{ textAlign: 'right' }}>ASSIGNED</div><div style={{ textAlign: 'right' }}>ACTIVITY</div><div style={{ textAlign: 'right' }}>AVAILABLE</div>
             </div>
           )}
@@ -8325,7 +8325,7 @@ export default function BudgetApp() {
                 ref={el => { groupRefs.current[groupName] = el; }}
                 style={{ backgroundColor: 'white', borderRadius: '8px', padding: 0, border: '1px solid #e3e6eb', overflow: 'hidden', ...dragStyle }}
               >
-                <div onContextMenu={isMobile ? undefined : (e) => { e.preventDefault(); const r = e.currentTarget.getBoundingClientRect(); setCtxMenu({ kind: 'group', id: groupName, name: groupName, x: Math.min(Math.max(8, e.clientX - 40), window.innerWidth - 400), y: r.bottom }); }} style={{ display: 'grid', gridTemplateColumns: isMobile ? 'minmax(0,1fr) auto' : '22px minmax(0,1fr) 118px 104px 124px', alignItems: 'center', columnGap: '10px', backgroundColor: isMobile ? '#f1f3f6' : '#f9f6f2', padding: isMobile ? '8px 12px' : '9px 14px', borderBottom: '1px solid #ece8e0' }}>
+                <div onContextMenu={isMobile ? undefined : (e) => { e.preventDefault(); const r = e.currentTarget.getBoundingClientRect(); setCtxMenu({ kind: 'group', id: groupName, name: groupName, x: Math.min(Math.max(8, e.clientX - 40), window.innerWidth - 400), y: r.bottom }); }} style={{ display: 'grid', gridTemplateColumns: isMobile ? 'minmax(0,1fr) auto' : '22px minmax(150px,1fr) minmax(84px,118px) minmax(72px,104px) minmax(84px,124px)', alignItems: 'center', columnGap: '10px', backgroundColor: isMobile ? '#f1f3f6' : '#f9f6f2', padding: isMobile ? '8px 12px' : '9px 14px', borderBottom: '1px solid #ece8e0' }}>
                   {!isMobile && <input type="checkbox" aria-label={`Select group ${groupName}`} style={{ accentColor: '#4b32c3', cursor: 'pointer' }} readOnly />}
                   <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', minWidth: 0, gap: '2px 4px' }}>
                   {groups.length > 1 && (
@@ -8397,15 +8397,15 @@ export default function BudgetApp() {
 
                         const selected = selectedEnvId === env.id;
                         return (
-                          <div key={env.id} data-testid="env-row" onContextMenu={isMobile ? undefined : (e) => { e.preventDefault(); const r = e.currentTarget.getBoundingClientRect(); setSelectedEnvId(env.id); setCtxMenu({ kind: 'env', id: env.id, name: env.name, x: Math.min(Math.max(8, e.clientX - 40), window.innerWidth - 400), y: r.bottom }); }} style={{ display: 'grid', gridTemplateColumns: isMobile ? 'minmax(0,1fr) auto' : '22px minmax(0,1fr) 118px 104px 124px', alignItems: 'center', columnGap: '10px', rowGap: '8px', padding: isMobile ? '10px 12px' : '8px 14px', backgroundColor: selected ? (isMobile ? '#eef4fb' : '#e2e0ff') : env.isHidden ? '#f3f4f6' : 'white', opacity: env.isHidden ? 0.75 : 1, borderBottom: isMobile ? '1px solid #eef0f3' : '1px solid #f0ece4' }}>
+                          <div key={env.id} data-testid="env-row" onContextMenu={isMobile ? undefined : (e) => { e.preventDefault(); const r = e.currentTarget.getBoundingClientRect(); setSelectedEnvId(env.id); setCtxMenu({ kind: 'env', id: env.id, name: env.name, x: Math.min(Math.max(8, e.clientX - 40), window.innerWidth - 400), y: r.bottom }); }} style={{ display: 'grid', gridTemplateColumns: isMobile ? 'minmax(0,1fr) auto' : '22px minmax(150px,1fr) minmax(84px,118px) minmax(72px,104px) minmax(84px,124px)', alignItems: 'center', columnGap: '10px', rowGap: '8px', padding: isMobile ? '10px 12px' : '8px 14px', backgroundColor: selected ? (isMobile ? '#eef4fb' : '#e2e0ff') : env.isHidden ? '#f3f4f6' : 'white', opacity: env.isHidden ? 0.75 : 1, borderBottom: isMobile ? '1px solid #eef0f3' : '1px solid #f0ece4' }}>
                             {!isMobile && <input type="checkbox" checked={selected} onChange={() => setSelectedEnvId(selected ? null : env.id)} aria-label={`Select ${env.name}`} style={{ accentColor: '#4b32c3', cursor: 'pointer' }} />}
-                            <div onClick={() => setSelectedEnvId(selected ? null : env.id)} style={{ minWidth: 0, cursor: 'pointer' }}>
-                              <div style={{ fontWeight: isMobile ? '600' : '500', fontSize: '0.95rem', display: isMobile ? 'block' : 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: '10px' }}>
-                                <span>
+                            <div onClick={() => setSelectedEnvId(selected ? null : env.id)} style={{ minWidth: 0, cursor: 'pointer', paddingRight: isMobile ? 0 : '6px', boxSizing: 'border-box' }}>
+                              <div style={{ fontWeight: isMobile ? '600' : '500', fontSize: '0.95rem', display: isMobile ? 'block' : 'flex', flexWrap: 'wrap', justifyContent: 'space-between', alignItems: 'baseline', gap: '0 10px' }}>
+                                <span style={{ minWidth: 0, overflowWrap: 'break-word' }}>
                                   {env.name}
                                   {env.isHidden && <span data-testid="hidden-badge" style={{ marginLeft: '8px', fontSize: '0.7rem', fontWeight: 600, color: '#6b7280', backgroundColor: '#e5e7eb', borderRadius: '999px', padding: '1px 8px' }}>hidden</span>}
                                 </span>
-                                {!isMobile && status && <span data-testid="row-status" style={{ fontSize: '0.8rem', fontWeight: 600, color: status.color, whiteSpace: 'nowrap' }}>{status.text}</span>}
+                                {!isMobile && status && <span data-testid="row-status" style={{ fontSize: '0.8rem', fontWeight: 600, color: status.color, minWidth: 0, marginLeft: 'auto', textAlign: 'right' }}>{status.text}</span>}
                               </div>
                               {!isMobile && status && (
                                 <div style={{ height: '4px', backgroundColor: '#ece8e0', borderRadius: '2px', overflow: 'hidden', marginTop: '5px' }}>
