@@ -514,12 +514,23 @@ const AssignedInput = ({ value, onCommit, ariaLabel, width = '92px', big = false
     />
   );
 };
+const MONTH_NAMES = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+// A yearly target saves up toward its due date: the balance counts as progress, and the money is spread over the months left.
+const isYearlyGoal = (env) => env.goalType === 'repeating' && env.cadence === 'yearly';
+const yearlyDue = (env, monthKey) => {
+  const mi = Math.max(0, MONTH_NAMES.indexOf(env.repeatMonth || 'January'));
+  const [by, bm] = String(monthKey).split('-').map(Number);
+  let y = Number(env.repeatYear) || by;
+  while (y * 12 + mi + 1 < by * 12 + bm) y++; // already passed: next one
+  return [y, mi + 1];
+};
 // Weekly / every-other-week targets are measured against the month being planned: the amount times the number of that
 // weekday in the month (every other week: half of them, rounded up).
 const goalMonthTarget = (env, monthKey) => {
   const amt = Number(env.targetAmount);
   if (!(amt > 0) || env.goalType !== 'repeating') return amt;
   if (env.cadence !== 'weekly' && env.cadence !== 'biweekly') return amt;
+  if (env.goalMode === 'refill') return amt; // "refill up to" stays one period's amount
   const [y, m] = String(monthKey).split('-').map(Number);
   if (!y || !m) return amt;
   const dow = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'].indexOf(env.repeatDayOfWeek || 'Monday');
@@ -2798,7 +2809,7 @@ export default function BudgetApp() {
     if (!env.goalType || env.goalType === 'none') return null;
     const target = goalMonthTarget(env, budgetMonth);
     if (!(target > 0)) return null;
-    const funded = (env.goalType === 'target_by_date' || env.goalType === 'savings_balance') ? row.end : (env.goalMode === 'setaside' ? row.budgeted + row.income : row.start + row.budgeted + row.income);
+    const funded = (env.goalType === 'target_by_date' || env.goalType === 'savings_balance' || isYearlyGoal(env)) ? row.end : (env.goalMode === 'setaside' ? row.budgeted + row.income : row.start + row.budgeted + row.income);
     const left = Math.max(0, target - funded);
     const pct = Math.min(100, Math.max(0, (funded / target) * 100));
     return { target, funded, left, pct };
@@ -3094,8 +3105,9 @@ export default function BudgetApp() {
   const getNeeded = (env, row) => {
     const prog = getTargetProgress(env, row);
     if (!prog || prog.left <= 0.004) return 0;
-    if (env.goalType === 'target_by_date' && /^\d{4}-\d{2}/.test(env.targetDate || '')) {
-      const [ty, tm] = effectiveDue(env, budgetMonth);
+    const yearly = isYearlyGoal(env);
+    if (yearly || (env.goalType === 'target_by_date' && /^\d{4}-\d{2}/.test(env.targetDate || ''))) {
+      const [ty, tm] = yearly ? yearlyDue(env, budgetMonth) : effectiveDue(env, budgetMonth);
       const [by, bm] = budgetMonth.split('-').map(Number);
       const monthsLeft = Math.max(1, (ty - by) * 12 + (tm - bm) + 1);
       const perMonth = (prog.target - row.start) / monthsLeft;
@@ -8095,7 +8107,7 @@ export default function BudgetApp() {
                           Assign <span style={{ backgroundColor: '#ffe680', borderRadius: '4px', padding: '1px 5px', fontWeight: 700 }}>{formatMoney(needNow)}</span> to meet your target
                         </button>
                       )}
-                      {sline('Needed This Month', selProg.target)}
+                      {sline(isYearlyGoal(selEnv) ? 'Total Needed' : 'Needed This Month', selProg.target)}
                       {sline('Funded', Math.min(selProg.target, Math.max(0, selProg.funded)))}
                       <div style={{ height: '1px', backgroundColor: '#ece8e0', margin: '4px 0' }} />
                       {sline('To Go', selProg.left)}
@@ -8366,7 +8378,7 @@ export default function BudgetApp() {
                         // Status line shown to the right of the name (desktop): goal progress, or how much of the money was spent
                         const funds = (Number(row.start) || 0) + (Number(row.budgeted) || 0) + (Number(row.income) || 0);
                         let status = null;
-                        const byWhen = env.targetDate ? ` by ${formatDate(env.targetDate, 'readable')}` : (env.goalType === 'repeating' ? ' this month' : '');
+                        const byWhen = env.targetDate ? ` by ${formatDate(env.targetDate, 'readable')}` : (isYearlyGoal(env) ? (() => { const [dy, dm] = yearlyDue(env, budgetMonth); return ` by ${MONTH_NAMES[dm - 1].slice(0, 3)} ${env.repeatDayOfMonth || 1}, ${dy}`; })() : (env.goalType === 'repeating' ? ' this month' : ''));
                         if (progress) status = progress.left <= 0.004 ? { text: 'Funded', color: '#166534', pct: 100, bar: '#4ec51f' } : { text: `${formatMoney(progress.left)} more needed${byWhen}`, color: '#4b4636', pct: progress.pct, bar: '#ffcd00' };
                         else if (spent > 0.004 && funds > 0.004) status = remaining <= 0.004 ? { text: 'Fully Spent', color: '#6b7280', pct: 100, bar: '#b9b4a8' } : { text: `Spent ${formatMoney(spent)} of ${formatMoney(funds)}`, color: '#6b7280', pct: Math.min(100, (spent / funds) * 100), bar: '#4ec51f' };
 
