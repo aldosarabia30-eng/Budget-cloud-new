@@ -8327,7 +8327,7 @@ export default function BudgetApp() {
               >
                 <div onContextMenu={isMobile ? undefined : (e) => { e.preventDefault(); const r = e.currentTarget.getBoundingClientRect(); setCtxMenu({ kind: 'group', id: groupName, name: groupName, x: Math.min(Math.max(8, e.clientX - 40), window.innerWidth - 400), y: r.bottom }); }} style={{ display: 'grid', gridTemplateColumns: isMobile ? 'minmax(0,1fr) auto' : '22px minmax(0,1fr) 118px 104px 124px', alignItems: 'center', columnGap: '10px', backgroundColor: isMobile ? '#f1f3f6' : '#f9f6f2', padding: isMobile ? '8px 12px' : '9px 14px', borderBottom: '1px solid #ece8e0' }}>
                   {!isMobile && <input type="checkbox" aria-label={`Select group ${groupName}`} style={{ accentColor: '#4b32c3', cursor: 'pointer' }} readOnly />}
-                  <div style={{ display: 'flex', alignItems: 'center', minWidth: 0, gap: '4px' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', minWidth: 0, gap: '2px 4px' }}>
                   {groups.length > 1 && (
                     <button
                       onPointerDown={e => startGroupDrag(e, groupName)}
@@ -8341,7 +8341,7 @@ export default function BudgetApp() {
                   )}
                   <button
                     onClick={() => toggleGroupCollapse(groupName)}
-                    style={{ background: 'none', border: 'none', fontWeight: 700, fontSize: '0.92rem', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '6px', color: '#1f2937', padding: 0, textAlign: 'left' }}
+                    style={{ background: 'none', border: 'none', fontWeight: 700, fontSize: '0.92rem', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '6px', color: '#1f2937', padding: 0, textAlign: 'left', overflowWrap: 'break-word' }}
                   >
                     <span style={{ fontSize: '0.7rem', color: '#6b7280' }}>{isCollapsed ? '▶' : '▼'}</span> {groupName}
                   </button>
@@ -8365,7 +8365,7 @@ export default function BudgetApp() {
                   )}
                   <button
                     onClick={() => handleRemoveGroup(groupName)}
-                    style={{ background: 'none', border: 'none', color: '#9ca3af', cursor: 'pointer', fontSize: '0.72rem', marginLeft: '8px' }}
+                    style={{ background: 'none', border: 'none', color: '#9ca3af', cursor: 'pointer', fontSize: '0.72rem', marginLeft: '8px', whiteSpace: 'nowrap' }}
                   >
                     Delete Group
                   </button>
