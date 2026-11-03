@@ -2671,6 +2671,20 @@ export default function BudgetApp() {
     return MONTH_RE.test(k) ? k : todayMonth;
   };
 
+  // Money coming INTO a bank account (interest, deposits) that an import stored as a negative expense in an envelope
+  // is really income. Turn it into an inflow that is sent to the same envelope, so envelope balances stay the same.
+  useEffect(() => {
+    if (!loadedRef.current) return;
+    const bad = (t) => t && !t.isDeleted && t.type === 'expense' && !t.isTransfer && Number(t.amount) < 0 && t.envelopeId && !isSplitTx(t)
+      && (() => { const a = accounts.find(x => x.id === t.accountId); return !!a && !isCreditCard(a); })();
+    if (!transactions.some(bad)) return;
+    setTransactions(prev => prev.map(t => {
+      if (!bad(t)) return t;
+      const amt = Math.abs(Number(t.amount));
+      return { ...t, type: 'income', amount: amt, envelopeId: '', allocations: [{ envelopeId: t.envelopeId, amount: amt }] };
+    }));
+  }, [transactions, accounts]);
+
   const budgetView = useMemo(() => {
     const key = budgetMonth;
     const spend = {};
