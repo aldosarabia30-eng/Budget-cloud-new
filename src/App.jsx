@@ -420,6 +420,61 @@ const availColors = (end, row) => {
   if (end > 0.004) return { bg: '#cdeed6', fg: '#17603a' };
   return { bg: '#e9ecf1', fg: '#5a6372' };
 };
+// Home-screen widget setup: makes a secret link that a widget app (KWGT) reads. The app keeps a small summary up to date.
+const newWidgetToken = () => {
+  const a = new Uint8Array(24);
+  (window.crypto || window.msCrypto).getRandomValues(a);
+  return Array.from(a, b => 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789'[b % 62]).join('');
+};
+const WidgetDialog = ({ userId, token, onToken, workerUrl, getSummary, onClose }) => {
+  const [err, setErr] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [copied, setCopied] = useState(false);
+  const base = String(workerUrl || '').trim().replace(/\/$/, '');
+  const link = token && base ? `${base}/widget?token=${token}` : '';
+  const enable = async () => {
+    setBusy(true); setErr('');
+    try {
+      const t = newWidgetToken();
+      const { error } = await supabase.from('widget_feed').upsert({ user_id: userId, token: t, summary: getSummary(), updated_at: new Date().toISOString() }, { onConflict: 'user_id' });
+      if (error) throw new Error(/relation|does not exist|schema cache/i.test(error.message || '') ? 'The widget table is not set up yet. Run widget-setup.sql in Supabase first.' : error.message);
+      onToken(t);
+    } catch (e) { setErr((e && e.message) || String(e)); }
+    setBusy(false);
+  };
+  const disable = async () => {
+    if (!window.confirm('Turn the widget link off? Any widget using it will stop updating.')) return;
+    setBusy(true); setErr('');
+    try { const { error } = await supabase.from('widget_feed').delete().eq('user_id', userId); if (error) throw error; onToken(null); }
+    catch (e) { setErr((e && e.message) || String(e)); }
+    setBusy(false);
+  };
+  const copy = () => { try { navigator.clipboard.writeText(link); setCopied(true); setTimeout(() => setCopied(false), 1500); } catch (e) { /* clipboard blocked */ } };
+  const btn = { padding: '10px', borderRadius: '8px', border: 'none', fontWeight: 700, cursor: busy ? 'wait' : 'pointer' };
+  return (
+    <div style={{ position: 'fixed', inset: 0, zIndex: 120, backgroundColor: 'rgba(17,24,39,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '16px' }}>
+      <div data-testid="widget-dialog" role="dialog" aria-label="Home-screen widget" style={{ width: '100%', maxWidth: '420px', maxHeight: '90vh', overflowY: 'auto', backgroundColor: 'white', color: '#1f2937', borderRadius: '12px', padding: '20px', display: 'flex', flexDirection: 'column', gap: '12px', boxShadow: '0 20px 50px rgba(0,0,0,0.35)' }}>
+        <div style={{ fontWeight: 800, fontSize: '1.15rem' }}>Home-screen widget</div>
+        <div style={{ fontSize: '0.88rem', color: '#4b5563' }}>Shows Ready to Assign, overspent categories, new transactions and your pinned envelopes on your Android home screen through a widget app such as KWGT. Only those few numbers are shared, and only through the secret link below.</div>
+        {!base && <div role="alert" style={{ fontSize: '0.85rem', color: '#92400e', backgroundColor: '#fef3c7', padding: '8px 10px', borderRadius: '8px' }}>Set your Worker URL first (Accounts &rarr; bank sync), so the link can be built.</div>}
+        {token ? (
+          <>
+            <div style={{ fontSize: '0.8rem', fontWeight: 700 }}>Your widget link</div>
+            <input readOnly aria-label="Widget link" value={link || '(set the Worker URL first)'} onFocus={e => e.target.select()} style={{ width: '100%', boxSizing: 'border-box', padding: '10px', border: '1px solid #d1d5db', borderRadius: '8px', fontSize: '0.8rem' }} />
+            <button type="button" onClick={copy} disabled={!link} style={{ ...btn, backgroundColor: '#2f6fb3', color: 'white' }}>{copied ? 'Copied' : 'Copy link'}</button>
+            <div style={{ fontSize: '0.78rem', color: '#6b7280' }}>Keep this link private. Anyone who has it can see those numbers. Turning it off and on again makes a new link.</div>
+            <button type="button" onClick={disable} disabled={busy} style={{ ...btn, backgroundColor: '#fde2e0', color: '#b42318' }}>Turn link off</button>
+          </>
+        ) : (
+          <button type="button" data-testid="widget-enable" onClick={enable} disabled={busy} style={{ ...btn, backgroundColor: '#2f6fb3', color: 'white' }}>Create widget link</button>
+        )}
+        {err && <div role="alert" style={{ fontSize: '0.82rem', color: '#b42318', backgroundColor: '#fde2e0', padding: '8px 10px', borderRadius: '8px' }}>{err}</div>}
+        <button type="button" onClick={onClose} style={{ background: 'none', border: 'none', color: '#6b7280', cursor: 'pointer', padding: 0 }}>Close</button>
+      </div>
+    </div>
+  );
+};
+
 // Desktop envelope picker: a searchable dropdown grouped by envelope group (replaces the long native <select>).
 const EnvDropdown = ({ value, onChange, groups: choices, envelopes: envList, placeholder, noneLabel, ariaLabel, style }) => {
   const [open, setOpen] = useState(false);
@@ -1930,6 +1985,8 @@ export default function BudgetApp() {
   const [assignPop, setAssignPop] = useState(null); // desktop: env id whose Assigned box has its quick-fill dropdown open
   const [actPop, setActPop] = useState(null); // desktop: env id whose Activity list is open
   const [pwOpen, setPwOpen] = useState(false); // false | true | 'recovery'
+  const [widgetOpen, setWidgetOpen] = useState(false);
+  const [widgetTok, setWidgetTok] = useState(null); // secret token of the home-screen widget feed (null = off)
   const [overWarnOff, setOverWarnOff] = useState(''); // key of the overspent set the user already dismissed
   const [fixPop, setFixPop] = useState(null); // desktop: { x, y } while the 'Fix This' list for a negative Ready to Assign is open
   const [availPop, setAvailPop] = useState(null); // desktop: { envId, x, y, otherId, amount } cover / move dropdown
@@ -2711,6 +2768,34 @@ export default function BudgetApp() {
   const rtaShown = Math.abs(budgetView.rta) < 0.005 ? 0 : budgetView.rta;
   const EMPTY_ENV_ROW = { start: 0, budgeted: 0, income: 0, spent: 0, end: 0, overspend: 0 };
   const envRow = (env) => (budgetView.rowsByEnv[env.id] && budgetView.rowsByEnv[env.id].get(budgetMonth)) || EMPTY_ENV_ROW;
+
+  // ----- Home-screen widget feed: keep a tiny summary current while the link is on -----
+  const widgetSummary = () => {
+    const pinnedList = visibleEnvelopes.filter(e => e.pinned).map(e => ({ name: e.name, available: round2(envRow(e).end) }));
+    const over = visibleEnvelopes.filter(e => envRow(e).end < -0.004);
+    const newTx = activeTransactions.filter(t => t.unapproved).length;
+    const rta = round2(rtaShown);
+    const lines = [`Ready to Assign ${formatMoney(rta)}`];
+    if (over.length) lines.push(`${over.length} overspent: ${over.slice(0, 3).map(e => e.name).join(', ')}${over.length > 3 ? '…' : ''}`);
+    if (newTx) lines.push(`${newTx} new transaction${newTx === 1 ? '' : 's'}`);
+    pinnedList.forEach(x => lines.push(`${x.name} ${formatMoney(x.available)}`));
+    return { rta, rtaText: formatMoney(rta), overspent: over.length, newTx, pinned: pinnedList.map(x => ({ ...x, text: formatMoney(x.available) })), lines, month: budgetMonth };
+  };
+  const widgetKey = widgetTok && budgetMonth === todayMonth ? JSON.stringify(widgetSummary()) : '';
+  useEffect(() => {
+    if (!userId) { setWidgetTok(null); return undefined; }
+    let alive = true;
+    supabase.from('widget_feed').select('token').eq('user_id', userId).limit(1)
+      .then(({ data, error }) => { if (alive && !error && data && data[0]) setWidgetTok(data[0].token); });
+    return () => { alive = false; };
+  }, [userId]);
+  useEffect(() => {
+    if (!widgetTok || !widgetKey || !userId) return undefined;
+    const h = setTimeout(() => {
+      supabase.from('widget_feed').update({ summary: JSON.parse(widgetKey), updated_at: new Date().toISOString() }).eq('user_id', userId).then(() => {});
+    }, 3000);
+    return () => clearTimeout(h);
+  }, [widgetKey, widgetTok, userId]);
 
   // Months you can browse: back to your earliest data, forward one year for planning ahead
   const budgetEarliest = (() => {
@@ -5275,6 +5360,7 @@ export default function BudgetApp() {
                 return <button role="menuitem" onClick={async () => { setBudgetMenuOpen(false); if (installEvt) { try { installEvt.prompt(); await installEvt.userChoice; } catch (err) { /* ignore */ } setInstallEvt(null); } else showNotification('On iPhone: tap the Share button, then "Add to Home Screen".'); }} style={{ display: 'block', width: '100%', textAlign: 'left', padding: '9px 16px', background: 'white', border: 'none', cursor: 'pointer', fontSize: '0.9rem' }}>Install app</button>;
               })()}
               <div style={{ height: '1px', backgroundColor: '#eef0f3', margin: '6px 0' }} />
+              <button role="menuitem" data-testid="open-widget" onClick={() => { setBudgetMenuOpen(false); setWidgetOpen(true); }} style={{ display: 'block', width: '100%', textAlign: 'left', padding: '9px 16px', background: 'white', border: 'none', cursor: 'pointer', fontSize: '0.9rem', color: '#1f2937' }}>Home-screen widget</button>
               <button role="menuitem" data-testid="change-password" onClick={() => { setBudgetMenuOpen(false); setPwOpen(true); }} style={{ display: 'block', width: '100%', textAlign: 'left', padding: '9px 16px', background: 'white', border: 'none', cursor: 'pointer', fontSize: '0.9rem', color: '#1f2937' }}>Change password</button>
               <button role="menuitem" onClick={() => supabase.auth.signOut()} style={{ display: 'block', width: '100%', textAlign: 'left', padding: '9px 16px', background: 'white', border: 'none', cursor: 'pointer', fontSize: '0.9rem', color: '#b42318' }}>Sign out</button>
             </div>
@@ -7909,6 +7995,7 @@ export default function BudgetApp() {
       {!isMobile && (sidebarOpen ? deskSidebar : deskRail)}
       {!isMobile && renderCtxMenu()}
       {renderDeskPops()}
+      {widgetOpen && userId && <WidgetDialog userId={userId} token={widgetTok} onToken={setWidgetTok} workerUrl={sfCfg.workerUrl || sfWorker} getSummary={widgetSummary} onClose={() => setWidgetOpen(false)} />}
       {pwOpen && session && session.user && <PasswordDialog email={session.user.email} recovery={pwOpen === 'recovery'} onClose={() => setPwOpen(false)} />}
       {isMobile && <aside
         style={{
@@ -7978,6 +8065,13 @@ export default function BudgetApp() {
           <div data-testid="signed-in-as" style={{ fontSize: '0.72rem', color: '#8fa0c0', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', marginBottom: '8px' }}>
             Signed in as {session && session.user ? session.user.email : ''}
           </div>
+          <button
+            data-testid="open-widget-m"
+            onClick={() => setWidgetOpen(true)}
+            style={{ width: '100%', backgroundColor: 'transparent', color: '#cfe0f7', border: '1px solid rgba(255,255,255,0.28)', padding: '6px 8px', borderRadius: '6px', fontSize: '0.75rem', cursor: 'pointer', marginBottom: '6px' }}
+          >
+            Home-screen widget
+          </button>
           <button
             onClick={() => setPwOpen(true)}
             style={{ width: '100%', backgroundColor: 'transparent', color: '#cfe0f7', border: '1px solid rgba(255,255,255,0.28)', padding: '6px 8px', borderRadius: '6px', fontSize: '0.75rem', cursor: 'pointer', marginBottom: '6px' }}
