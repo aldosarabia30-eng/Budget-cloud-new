@@ -2655,7 +2655,11 @@ export default function BudgetApp() {
     const acc = accounts.find(a => a.id === tx.accountId);
     // Card accounts normally never feed Ready to Assign. Imported income-category entries on a card (opening
     // balances, cash back) are flagged budgetIncome so the budget matches the app they came from.
-    return !!acc && !acc.isDeleted && (!isCreditCard(acc) || !!tx.budgetIncome);
+    if (!acc || acc.isDeleted) return false;
+    if (!isCreditCard(acc) || tx.budgetIncome) return true;
+    // Money coming into a card that is not a payment (cash back, statement credits, rewards) is real income, like
+    // YNAB's Ready to Assign inflow on a card. Card payments that were not paired as transfers stay out.
+    return !tx.transferAccountId && !/payment|autopay|thank you|pymt/i.test(String(tx.payee || ''));
   };
 
   // ----- Monthly budgeting -----
