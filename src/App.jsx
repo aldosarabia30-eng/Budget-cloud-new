@@ -377,7 +377,7 @@ const kpBack = (d) => {
 const isSumText = (raw) => /\d[+-]/.test(String(raw == null ? '' : raw).replace(/[$,\s]/g, ''));
 
 // Amount box for a split line: type a number or a sum. It shows the running total and settles to it on Enter/blur.
-const SplitAmountInput = ({ value, onChange, ariaLabel, width, placeholder, onFocus, onBlur, wrapStyle, inputStyle }) => {
+const SplitAmountInput = ({ value, onChange, ariaLabel, width, placeholder, onFocus, onBlur, wrapStyle, inputStyle, blurOnEnter }) => {
   const settle = () => {
     if (isSumText(value)) {
       const n = evalAmount(value);
@@ -396,7 +396,10 @@ const SplitAmountInput = ({ value, onChange, ariaLabel, width, placeholder, onFo
         onFocus={onFocus}
         onBlur={() => { settle(); if (onBlur) onBlur(); }}
         onKeyDown={e => {
-          if (e.key === 'Enter' && isSumText(value)) { e.preventDefault(); settle(); }
+          if (e.key === 'Enter') {
+            if (isSumText(value)) { e.preventDefault(); settle(); }
+            if (blurOnEnter) { e.preventDefault(); e.currentTarget.blur(); } // Enter locks the amount in
+          }
         }}
         aria-label={ariaLabel}
         placeholder={placeholder || '0.00 or 12+3.50'}
@@ -504,6 +507,7 @@ const AssignedInput = ({ value, onCommit, ariaLabel, width = '92px', big = false
       width={width}
       inputStyle={big ? { textAlign: 'center', fontSize: '1.6rem', fontWeight: 700, padding: '10px', boxSizing: 'border-box', width: '100%', minWidth: 0 } : { textAlign: 'right' }}
       placeholder="0.00"
+      blurOnEnter
       onFocus={(e) => { setDraft(null); const el = e.target; setTimeout(() => { try { el.select(); } catch (err) { /* not selectable */ } }, 0); }}
       onChange={v => {
         setDraft(v);
