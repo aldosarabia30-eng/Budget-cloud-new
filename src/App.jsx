@@ -7197,6 +7197,17 @@ export default function BudgetApp() {
     const other = tx.isTransfer ? accounts.find(a => a.id === tx.transferAccountId) : null;
     return { acc, env, other };
   };
+  // Balance of each account right after each transaction (oldest first; on the same day the list's top row is the newest).
+  const runningBal = useMemo(() => {
+    const m = new Map();
+    accounts.forEach(a => {
+      let bal = Number(a.initialBalance) || 0;
+      transactions.map((t, i) => ({ t, i })).filter(x => x.t.accountId === a.id && !x.t.isDeleted)
+        .sort((x, y) => String(x.t.date || '').localeCompare(String(y.t.date || '')) || y.i - x.i)
+        .forEach(({ t }) => { bal = round2(bal + (t.type === 'income' ? 1 : -1) * (Number(t.amount) || 0)); m.set(t.id, bal); });
+    });
+    return m;
+  }, [accounts, transactions]);
   const renderMobileSpending = () => {
     const acct = txFilterAccount ? accounts.find(a => a.id === txFilterAccount && !a.isDeleted) : null;
     const flat = sortedTransactionDates.map(d => [d, groupedTransactions[d]]);
@@ -7287,7 +7298,10 @@ export default function BudgetApp() {
                       </>) : tx.payee}
                     </div>
                     <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexShrink: 0 }}>
-                      <span style={{ fontWeight: 700, fontSize: '0.9rem', color: income && !tx.isTransfer ? '#a8e65a' : MD.text }}>{(income ? '' : '−') + formatMoney(Math.abs(Number(tx.amount) || 0))}</span>
+                      <div style={{ textAlign: 'right' }}>
+                        <div style={{ fontWeight: 700, fontSize: '0.9rem', color: income && !tx.isTransfer ? '#a8e65a' : MD.text }}>{(income ? '' : '−') + formatMoney(Math.abs(Number(tx.amount) || 0))}</div>
+                        {runningBal.has(tx.id) && <div data-testid="m-tx-balance" style={{ color: MD.muted, fontSize: '0.78rem', fontWeight: 500, marginTop: '2px' }}>{formatMoney(runningBal.get(tx.id))}</div>}
+                      </div>
                       {hasLock ? <span title="Locked" style={{ color: MD.muted, fontSize: '0.9rem' }}>🔒</span>
                         : <button onClick={(e) => { e.stopPropagation(); handleToggleCleared(tx.id); }} aria-label={`${cleared ? 'Cleared' : 'Uncleared'}: ${tx.payee}`} style={{ width: '20px', height: '20px', borderRadius: '50%', border: '2px solid ' + (cleared ? '#7cc427' : '#55556f'), backgroundColor: cleared ? '#7cc427' : 'transparent', color: cleared ? '#0d1a00' : '#8a8aa5', fontSize: '0.6rem', fontWeight: 800, cursor: 'pointer', padding: 0, lineHeight: 1 }}>C</button>}
                     </div>
