@@ -5885,7 +5885,7 @@ export default function BudgetApp() {
   const renderDesktopRegister = () => {
     const allMode = !txFilterAccount;
     const cw = (k, def) => (colW[k] ? colW[k] + 'px' : def);
-    const cols = `38px 30px 34px ${allMode ? cw('acct', '150px') + ' ' : ''}${cw('date', '110px')} ${cw('payee', 'minmax(0,1.1fr)')} ${cw('cat', 'minmax(0,2.2fr)')} ${cw('memo', 'minmax(0,1.2fr)')} 104px 104px 40px 58px`;
+    const cols = `38px 30px 34px ${allMode ? cw('acct', '150px') + ' ' : ''}${cw('date', '110px')} ${cw('payee', 'minmax(0,1.1fr)')} ${cw('cat', 'minmax(0,2.2fr)')} ${cw('memo', 'minmax(0,1.2fr)')} 104px 104px 112px 40px 58px`;
     // Drag the right edge of a heading to resize that column; double-click to reset it.
     const grip = (k) => (
       <span data-testid={'col-grip-' + k} title="Drag to resize, double-click to reset" onDoubleClick={() => setColW(prev => { const n = { ...prev }; delete n[k]; try { localStorage.setItem('reg-colw', JSON.stringify(n)); } catch (e) { /* storage unavailable */ } return n; })}
@@ -5995,7 +5995,7 @@ export default function BudgetApp() {
             <div style={hcell({ justifyContent: 'center', padding: 0 })} title="Flag">⚑</div>
             {allMode && <div style={hcell({ position: 'relative' })}>ACCOUNT{grip('acct')}</div>}
             <div style={hcell({ position: 'relative' })}>DATE&nbsp;▾{grip('date')}</div><div style={hcell({ position: 'relative' })}>PAYEE{grip('payee')}</div><div style={hcell({ position: 'relative' })}>CATEGORY{grip('cat')}</div><div style={hcell({ position: 'relative' })}>MEMO{grip('memo')}</div>
-            <div style={hcell({ justifyContent: 'flex-end' })}>OUTFLOW</div><div style={hcell({ justifyContent: 'flex-end' })}>INFLOW</div>
+            <div style={hcell({ justifyContent: 'flex-end' })}>OUTFLOW</div><div style={hcell({ justifyContent: 'flex-end' })}>INFLOW</div><div style={hcell({ justifyContent: 'flex-end' })} title="Account balance after this transaction">BALANCE</div>
             <div style={hcell({ justifyContent: 'center', padding: 0 })}>©</div><div style={hcell()} />
           </div>
         </div>
@@ -6055,6 +6055,7 @@ export default function BudgetApp() {
                   <div style={cell({ fontSize: '0.85rem', color: '#6b7280', display: 'block', lineHeight: '36px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' })} title={tx.notes || ''}>{tx.notes || ''}</div>
                   {amt(v < 0, plainMoney(Math.abs(v)))}
                   {amt(v >= 0, plainMoney(Math.abs(v)))}
+                  <div data-testid="reg-balance" style={cell({ justifyContent: 'flex-end', fontSize: '0.88rem', color: runningBal.has(tx.id) && runningBal.get(tx.id) < 0 ? '#b91c1c' : '#4b5563', fontVariantNumeric: 'tabular-nums' })}>{runningBal.has(tx.id) ? formatMoney(runningBal.get(tx.id)) : ''}</div>
                   <div style={cell({ justifyContent: 'center', padding: 0 })}>
                     {hasLock ? (
                       <button onClick={() => (locked ? unlockTx(tx) : relockTx(tx))} title={locked ? 'Reconciled and locked. Click to unlock.' : 'Unlocked. Click to lock again.'} aria-label={locked ? 'Unlock transaction' : 'Lock transaction'} style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 0, fontSize: '0.9rem' }}>{locked ? '🔒' : '🔓'}</button>
@@ -6077,7 +6078,7 @@ export default function BudgetApp() {
                       <div style={cell({ fontSize: '0.9rem', paddingLeft: '28px', color: sp.envelopeId ? '#1f2937' : '#b45309' })}>{se ? envFullName(se) : 'No envelope'}</div>
                       <div style={cell()} />
                       {tx.type === 'income' ? <><div style={cell()} /><div style={cell({ justifyContent: 'flex-end', fontSize: '0.9rem', fontVariantNumeric: 'tabular-nums' })}>{plainMoney(sp.amount)}</div></> : <><div style={cell({ justifyContent: 'flex-end', fontSize: '0.9rem', fontVariantNumeric: 'tabular-nums' })}>{plainMoney(sp.amount)}</div><div style={cell()} /></>}
-                      <div /><div />
+                      <div style={cell()} /><div /><div />
                     </div>
                   );
                 })}
