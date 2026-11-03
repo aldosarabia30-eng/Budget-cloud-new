@@ -520,6 +520,15 @@ const AssignedInput = ({ value, onCommit, ariaLabel, width = '92px', big = false
 };
 const MONTH_NAMES = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
 // A yearly target saves up toward its due date: the balance counts as progress, and the money is spread over the months left.
+// Where to put a popup of height h next to the element at rect r without covering it: below if it fits, else above,
+// else on whichever side has more room (squeezed inside the window).
+const popY = (r, h, gap = 4) => {
+  const below = window.innerHeight - r.bottom - gap - 8;
+  const above = r.top - gap - 8;
+  if (below >= h) return r.bottom + gap;
+  if (above >= h) return r.top - gap - h;
+  return below >= above ? r.bottom + gap : Math.max(8, r.top - gap - h);
+};
 const isYearlyGoal = (env) => env.goalType === 'repeating' && env.cadence === 'yearly';
 const yearlyDue = (env, monthKey) => {
   const mi = Math.max(0, MONTH_NAMES.indexOf(env.repeatMonth || 'January'));
@@ -5402,7 +5411,7 @@ export default function BudgetApp() {
             <div style={{ fontSize: '1.45rem', fontWeight: 800, lineHeight: 1.1 }}>{formatMoney(rtaShown)}</div>
             <div style={{ fontSize: '0.82rem', fontWeight: 500, whiteSpace: 'nowrap', lineHeight: 1.2 }}>You assigned more than you have</div>
           </div>
-          <button data-testid="fix-this" onClick={(ev) => { const r = ev.currentTarget.getBoundingClientRect(); setFixPop({ x: Math.max(8, Math.min(r.right - 340, window.innerWidth - 356)), y: r.bottom + 8 }); }} style={{ backgroundColor: '#d70000', color: 'white', border: 'none', borderRadius: '8px', padding: '10px 18px', fontWeight: 700, fontSize: '0.95rem', cursor: 'pointer', whiteSpace: 'nowrap' }}>Fix This</button>
+          <button data-testid="fix-this" onClick={(ev) => { const r = ev.currentTarget.getBoundingClientRect(); setFixPop({ x: Math.max(8, Math.min(r.right - 340, window.innerWidth - 356)), y: popY(r, 300, 8) }); }} style={{ backgroundColor: '#d70000', color: 'white', border: 'none', borderRadius: '8px', padding: '10px 18px', fontWeight: 700, fontSize: '0.95rem', cursor: 'pointer', whiteSpace: 'nowrap' }}>Fix This</button>
         </div>
       ) : (
       <div data-testid="rta-pill" style={{ display: 'flex', alignItems: 'center', gap: '16px', backgroundColor: deskRtaTone.bg, color: deskRtaTone.fg, borderRadius: '10px', padding: '8px 16px', marginLeft: '24px' }}>
@@ -8435,7 +8444,7 @@ export default function BudgetApp() {
                             </div>
                             {!isMobile && (
                               <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
-                                <div style={{ position: 'relative' }} onFocus={(ev) => { const r = ev.currentTarget.getBoundingClientRect(); setAssignPop({ id: env.id, x: Math.max(8, r.right - 250), y: Math.min(r.bottom + 4, window.innerHeight - 290) }); }} onBlur={() => setAssignPop(null)}>
+                                <div style={{ position: 'relative' }} onFocus={(ev) => { const r = ev.currentTarget.getBoundingClientRect(); setAssignPop({ id: env.id, x: Math.max(8, r.right - 250), y: popY(r, 250) }); }} onBlur={() => setAssignPop(null)}>
                                 <AssignedInput
                                   value={row.budgeted}
                                   ariaLabel={`Assigned ${env.name}`}
@@ -8475,7 +8484,7 @@ export default function BudgetApp() {
                               </div>
                             )}
                             <div style={{ textAlign: 'right' }}>
-                              <AvailPill value={remaining} row={row} label={`Available ${env.name}`} ynab={!isMobile} underfunded={!isMobile && getNeeded(env, row) > 0.004} onClick={(ev) => { if (isMobile || (Math.abs(remaining) < 0.005)) { setSelectedEnvId(selected ? null : env.id); return; } const r = ev.currentTarget.getBoundingClientRect(); setSelectedEnvId(env.id); setAvailPop({ envId: env.id, x: Math.max(8, Math.min(r.right - 320, window.innerWidth - 336)), y: Math.min(r.bottom + 6, window.innerHeight - 260), otherId: '', amount: String(Math.abs(round2(remaining))) , mode: remaining < 0 ? 'cover' : 'move' }); }} />
+                              <AvailPill value={remaining} row={row} label={`Available ${env.name}`} ynab={!isMobile} underfunded={!isMobile && getNeeded(env, row) > 0.004} onClick={(ev) => { if (isMobile || (Math.abs(remaining) < 0.005)) { setSelectedEnvId(selected ? null : env.id); return; } const r = ev.currentTarget.getBoundingClientRect(); setSelectedEnvId(env.id); setAvailPop({ envId: env.id, x: Math.max(8, Math.min(r.right - 320, window.innerWidth - 336)), y: popY(r, 260, 6), otherId: '', amount: String(Math.abs(round2(remaining))) , mode: remaining < 0 ? 'cover' : 'move' }); }} />
                             </div>
                             {isMobile && funds > 0.004 && (() => {
                               const behind = progress && progress.left > 0.004;
