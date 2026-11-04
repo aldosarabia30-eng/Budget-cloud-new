@@ -2659,7 +2659,9 @@ export default function BudgetApp() {
     if (!isCreditCard(acc) || tx.budgetIncome) return true;
     // Money coming into a card that is not a payment (cash back, statement credits, rewards) is real income, like
     // YNAB's Ready to Assign inflow on a card. Card payments that were not paired as transfers stay out.
-    return !tx.transferAccountId && !/payment|autopay|thank you|pymt/i.test(String(tx.payee || ''));
+    const pay = String(tx.payee || '');
+    if (/cash ?back|reward|statement credit|bonus/i.test(pay)) return !tx.transferAccountId;
+    return !tx.transferAccountId && !/payment|autopay|thank you|pymt/i.test(pay);
   };
 
   // ----- Monthly budgeting -----
