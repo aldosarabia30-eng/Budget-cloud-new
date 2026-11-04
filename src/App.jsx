@@ -8521,7 +8521,8 @@ export default function BudgetApp() {
                         const funds = (Number(row.start) || 0) + (Number(row.budgeted) || 0) + (Number(row.income) || 0);
                         let status = null;
                         const byWhen = env.targetDate ? ` by ${formatDate(env.targetDate, 'readable')}` : (isYearlyGoal(env) ? (() => { const [dy, dm] = yearlyDue(env, budgetMonth); return ` by ${MONTH_NAMES[dm - 1].slice(0, 3)} ${env.repeatDayOfMonth || 1}, ${dy}`; })() : (env.goalType === 'repeating' ? ' this month' : ''));
-                        if (progress) status = progress.left <= 0.004 ? { text: 'Funded', color: '#166534', pct: 100, bar: '#4ec51f' } : { text: `${formatMoney(progress.left)} more needed${byWhen}`, color: '#4b4636', pct: progress.pct, bar: '#ffcd00' };
+                        const monthlyNeed = progress && progress.left > 0.004 && (isYearlyGoal(env) || env.goalType === 'target_by_date') ? getNeeded(env, row) : 0;
+                        if (progress) status = progress.left <= 0.004 ? { text: 'Funded', color: '#166534', pct: 100, bar: '#4ec51f' } : { text: monthlyNeed > 0.004 ? `${formatMoney(monthlyNeed)} needed this month · ${formatMoney(progress.left)} more${byWhen}` : `On track this month · ${formatMoney(progress.left)} more${byWhen}`, color: '#4b4636', pct: progress.pct, bar: '#ffcd00' };
                         else if (spent > 0.004 && funds > 0.004) status = remaining <= 0.004 ? { text: 'Fully Spent', color: '#6b7280', pct: 100, bar: '#b9b4a8' } : { text: `Spent ${formatMoney(spent)} of ${formatMoney(funds)}`, color: '#6b7280', pct: Math.min(100, (spent / funds) * 100), bar: '#4ec51f' };
 
                         const selected = selectedEnvId === env.id;
@@ -8546,7 +8547,7 @@ export default function BudgetApp() {
                                   {getScheduleText(env)} {env.targetAmount > 0 ? `(Target: $${Number(env.targetAmount).toFixed(2)})` : ''} {env.targetDate ? `by ${formatDate(env.targetDate, 'us')}` : ''}
                                 </div>
                               )}
-                              {(env.goalType === 'target_by_date' || env.goalType === 'savings_balance') && getNeeded(env, row) > 0.004 && (
+                              {(env.goalType === 'target_by_date' || env.goalType === 'savings_balance' || isYearlyGoal(env)) && getNeeded(env, row) > 0.004 && (
                                 <div data-testid="needed-note" style={{ fontSize: '0.72rem', color: '#8a4b00', marginTop: '3px' }}>
                                   Needs {formatMoney(getNeeded(env, row))} more {env.goalType === 'savings_balance' ? 'to reach your goal' : 'this month to stay on track'}
                                 </div>
