@@ -488,7 +488,7 @@ const WidgetDialog = ({ userId, token, onToken, workerUrl, getSummary, onClose }
 };
 
 // Desktop envelope picker: a searchable dropdown grouped by envelope group (replaces the long native <select>).
-const EnvDropdown = ({ value, onChange, groups: choices, envelopes: envList, placeholder, noneLabel, ariaLabel, style }) => {
+const EnvDropdown = ({ value, onChange, groups: choices, envelopes: envList, placeholder, noneLabel, ariaLabel, style, extras }) => {
   const [open, setOpen] = useState(false);
   const [q, setQ] = useState('');
   const [pos, setPos] = useState(null);
@@ -514,7 +514,7 @@ const EnvDropdown = ({ value, onChange, groups: choices, envelopes: envList, pla
   return (
     <>
       <button ref={btnRef} type="button" aria-label={ariaLabel} aria-haspopup="listbox" aria-expanded={open} onClick={openIt} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '8px', textAlign: 'left', backgroundColor: 'white', cursor: 'pointer', fontFamily: 'inherit', ...style }}>
-        <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: sel ? '#111827' : '#6b7280' }}>{sel ? `${sel.group} › ${sel.name}` : placeholder}</span>
+        <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: sel ? '#111827' : '#6b7280' }}>{sel ? `${sel.group} › ${sel.name}` : ((extras || []).find(x => x[0] === value) || [])[1] || placeholder}</span>
         <span style={{ color: '#6b7280', fontSize: '0.7rem' }}>▾</span>
       </button>
       {open && pos && (
@@ -526,6 +526,7 @@ const EnvDropdown = ({ value, onChange, groups: choices, envelopes: envList, pla
             </div>
             <div style={{ overflowY: 'auto', paddingBottom: '6px' }}>
               {!ql && <button type="button" role="option" aria-selected={!value} onClick={() => pick('')} style={row(!value, '#6b7280')}>{noneLabel}</button>}
+              {!ql && (extras || []).map(x => <button key={x[0]} type="button" role="option" aria-selected={x[0] === value} onClick={() => pick(x[0])} style={row(x[0] === value, '#6b7280')}>{x[1]}</button>)}
               {choices.map(c => {
                 const list = c.list.filter(e => !ql || e.name.toLowerCase().includes(ql));
                 if (!list.length) return null;
@@ -6043,12 +6044,16 @@ export default function BudgetApp() {
                 <option value="">All accounts</option>
                 {activeAccounts.map(a => (<option key={a.id} value={a.id}>{a.name}{a.isHidden ? ' (hidden)' : ''}</option>))}
               </select>
-              <select value={txFilterEnvelope} onChange={e => setTxFilterEnvelope(e.target.value)} aria-label="Filter by envelope" style={inp}>
+              {isMobile ? (
+<select value={txFilterEnvelope} onChange={e => setTxFilterEnvelope(e.target.value)} aria-label="Filter by envelope" style={inp}>
                 <option value="">All envelopes</option>
                 <option value="__has__">Has an envelope</option>
                 <option value="__none__">No envelope (uncategorized)</option>
                 {envelopeChoicesAll.map(c => (<optgroup key={c.label} label={c.label}>{c.list.map(e => (<option key={e.id} value={e.id}>{e.name}</option>))}</optgroup>))}
               </select>
+              ) : (
+              <EnvDropdown ariaLabel="Filter by envelope" value={txFilterEnvelope} onChange={setTxFilterEnvelope} groups={envelopeChoicesAll} envelopes={activeEnvelopes} placeholder="All envelopes" noneLabel="All envelopes" extras={[['__has__', 'Has an envelope'], ['__none__', 'No envelope (uncategorized)']]} style={{ ...inp, width: '100%' }} />
+              )}
               <select value={txFilterType} onChange={e => setTxFilterType(e.target.value)} aria-label="Filter by type" style={inp}>
                 <option value="">All types</option><option value="expense">Expenses</option><option value="income">Income</option><option value="transfer">Transfers</option>
               </select>
@@ -10388,7 +10393,8 @@ export default function BudgetApp() {
                 <option value="">All accounts</option>
                 {activeAccounts.map(a => (<option key={a.id} value={a.id}>{a.name}{a.isHidden ? ' (hidden)' : ''}</option>))}
               </select>
-              <select value={txFilterEnvelope} onChange={e => setTxFilterEnvelope(e.target.value)} aria-label="Filter by envelope" style={{ flex: '1 1 110px', padding: '7px', border: '1px solid #d1d5db', borderRadius: '6px', fontSize: '0.85rem' }}>
+              {isMobile ? (
+<select value={txFilterEnvelope} onChange={e => setTxFilterEnvelope(e.target.value)} aria-label="Filter by envelope" style={{ flex: '1 1 110px', padding: '7px', border: '1px solid #d1d5db', borderRadius: '6px', fontSize: '0.85rem' }}>
                 <option value="">All envelopes</option>
                 <option value="__has__">Has an envelope</option>
                 <option value="__none__">No envelope (uncategorized)</option>
@@ -10398,6 +10404,9 @@ export default function BudgetApp() {
                   </optgroup>
                 ))}
               </select>
+              ) : (
+              <div style={{ flex: '1 1 110px', minWidth: 0 }}><EnvDropdown ariaLabel="Filter by envelope" value={txFilterEnvelope} onChange={setTxFilterEnvelope} groups={envelopeChoicesAll} envelopes={activeEnvelopes} placeholder="All envelopes" noneLabel="All envelopes" extras={[['__has__', 'Has an envelope'], ['__none__', 'No envelope (uncategorized)']]} style={{ padding: '7px', border: '1px solid #d1d5db', borderRadius: '6px', fontSize: '0.85rem', width: '100%' }} /></div>
+              )}
               <select value={txFilterType} onChange={e => setTxFilterType(e.target.value)} aria-label="Filter by type" style={{ flex: '1 1 100px', padding: '7px', border: '1px solid #d1d5db', borderRadius: '6px', fontSize: '0.85rem' }}>
                 <option value="">All types</option>
                 <option value="expense">Expenses</option>
