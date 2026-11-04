@@ -344,6 +344,18 @@ const incomeAllocs = (t) => {
     .filter(a => a && a.envelopeId && Number(a.amount) > 0)
     .map(a => ({ envelopeId: a.envelopeId, amount: Number(a.amount) }));
 };
+// Where a transaction came from, worked out from how it was created (older entries need no migration).
+const txSource = (t) => {
+  const id = String((t && t.id) || '');
+  if (t && (t.sfId || /^tx-sf/.test(id))) return 'Bank sync';
+  if (/-imp\d/.test(id)) return 'File import';
+  if (/^tx-\d+-\d+$/.test(id)) return 'File import';
+  if (/^tx-\d+-d\d+$/.test(id)) return 'Copied';
+  if (/^tx-\d+(-[oi])?$/.test(id)) return t && t.isTransfer ? 'Manual transfer' : 'Manual';
+  return '';
+};
+const payeeKey = (s) => String(s || '').toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 9);
+const PAYMENT_WORDS = /payment|autopay|thank you|pymt|transfer/i;
 // New (imported) transactions wait for approval. Anything spent without a category also needs a look.
 // Loan accounts never need categories (interest and adjustments are not envelope spending); the app keeps this set current.
 let LOAN_ACC_IDS = new Set();
@@ -1986,6 +1998,7 @@ export default function BudgetApp() {
   const [actPop, setActPop] = useState(null); // desktop: env id whose Activity list is open
   const [pwOpen, setPwOpen] = useState(false); // false | true | 'recovery'
   const [widgetOpen, setWidgetOpen] = useState(false);
+  const [checkOpen, setCheckOpen] = useState(false);
   const [widgetTok, setWidgetTok] = useState(null); // secret token of the home-screen widget feed (null = off)
   const [overWarnOff, setOverWarnOff] = useState(''); // key of the overspent set the user already dismissed
   const [fixPop, setFixPop] = useState(null); // desktop: { x, y } while the 'Fix This' list for a negative Ready to Assign is open
@@ -2788,6 +2801,58 @@ export default function BudgetApp() {
   const rtaShown = Math.abs(budgetView.rta) < 0.005 ? 0 : budgetView.rta;
   const EMPTY_ENV_ROW = { start: 0, budgeted: 0, income: 0, spent: 0, end: 0, overspend: 0 };
   const envRow = (env) => (budgetView.rowsByEnv[env.id] && budgetView.rowsByEnv[env.id].get(budgetMonth)) || EMPTY_ENV_ROW;
+
+  // Money coming into a credit card from a store you bought from earlier looks like a refund: it belongs back in the
+  // envelope the purchase came out of, not in Ready to Assign.
+  const refundHints = useMemo(() => {
+    const latest = new Map();
+    transactions.filter(t => !t.isDeleted && t.type === 'expense' && !t.isTransfer).forEach(t => {
+      const part = txParts(t)[0];
+      const k = payeeKey(t.payee);
+      if (!part || k.length < 5) return;
+      const env = envelopes.find(e => e.id === part.envelopeId && !e.isDeleted);
+      if (!env) return;
+      const prev = latest.get(k);
+      if (!prev || String(t.date || '') > prev.date) latest.set(k, { envelopeId: env.id, envName: env.name, amount: Number(t.amount) || 0, date: String(t.date || '') });
+    });
+    const out = new Map();
+    transactions.filter(t => !t.isDeleted && t.type === 'income' && !t.isTransfer && !t.transferAccountId && !incomeAllocs(t).length).forEach(t => {
+      if (!isCreditCard(accounts.find(a => a.id === t.accountId))) return;
+      if (PAYMENT_WORDS.test(String(t.payee || '')) || /cash ?back|reward|bonus/i.test(String(t.payee || ''))) return;
+      const h = latest.get(payeeKey(t.payee));
+      if (h) out.set(t.id, h);
+    });
+    return out;
+  }, [transactions, envelopes, accounts]);
+  const sendRefund = (tx, envId) => {
+    const e = envelopes.find(x => x.id === envId);
+    setTransactions(prev => prev.map(t => (t.id === tx.id ? { ...t, allocations: [{ envelopeId: envId, amount: Number(t.amount) || 0 }] } : t)));
+    showNotification(`Sent ${formatMoney(Number(tx.amount) || 0)} back to '${e ? e.name : 'envelope'}'.`);
+  };
+
+  // "Does my budget add up?": cash and card balances minus every envelope should equal Ready to Assign.
+  const budgetCheck = () => {
+    const today = getTodayISO();
+    const cash = activeAccounts.filter(a => !isCreditCard(a) && !isLoanAcc(a)).reduce((t, a) => t + getAccountBalance(a.id), 0);
+    const cards = activeAccounts.filter(isCreditCard).reduce((t, a) => t + getAccountBalance(a.id), 0);
+    const env = activeEnvelopes.reduce((t, e) => t + envRow(e).end, 0);
+    const expected = round2(cash + cards - env);
+    const diff = round2(rtaShown - expected);
+    const sum = (list) => round2(list.reduce((t, x) => t + (x.type === 'income' ? 1 : -1) * (Number(x.amount) || 0), 0));
+    const loanIds = new Set(accounts.filter(a => isLoanAcc(a)).map(a => a.id));
+    const unc = activeTransactions.filter(t => isUncategorizedSpend(t) && !loanIds.has(t.accountId));
+    const future = activeTransactions.filter(t => String(t.date || '') > today);
+    const unappr = activeTransactions.filter(t => t.unapproved);
+    const refunds = activeTransactions.filter(t => refundHints.has(t.id));
+    const cardIn = activeTransactions.filter(t => t.type === 'income' && !t.isTransfer && countsTowardRTA(t) && isCreditCard(accounts.find(a => a.id === t.accountId)) && txMonth(t) === budgetMonth);
+    const causes = [];
+    if (unc.length) causes.push({ label: 'Spending with no envelope', note: 'Cash left your accounts but no envelope went down, so Ready to Assign is too high by this amount.', n: unc.length, amt: Math.abs(sum(unc)), filter: 'attention' });
+    if (refunds.length) causes.push({ label: 'Card refunds sitting in Ready to Assign', note: 'Looks like refunds of earlier purchases. Send each back to its envelope.', n: refunds.length, amt: sum(refunds) });
+    if (future.length) causes.push({ label: 'Dated after today', note: 'Counted in the app, but not in your bank balance yet. Compare with the bank after they post.', n: future.length, amt: sum(future) });
+    if (unappr.length) causes.push({ label: 'New transactions waiting for approval', note: 'Approve them so they get an envelope.', n: unappr.length, amt: sum(unappr) });
+    if (cardIn.length) causes.push({ label: 'Card credits counted as income this month', note: 'Cash back and similar credits. Fine if they are real income.', n: cardIn.length, amt: sum(cardIn) });
+    return { cash: round2(cash), cards: round2(cards), env: round2(env), expected, diff, causes, otherMonth: budgetMonth !== todayMonth };
+  };
 
   // ----- Home-screen widget feed: keep a tiny summary current while the link is on -----
   const widgetSummary = () => {
@@ -4378,7 +4443,8 @@ export default function BudgetApp() {
                                   </div>
                                   {splitDraft.map((line, i) => (
                                     <div key={i} style={{ display: 'flex', gap: '6px', marginBottom: isMobile ? '12px' : '6px', alignItems: 'center', flexWrap: isMobile ? 'wrap' : 'nowrap' }}>
-                                      <select
+                                      {isMobile ? (
+<select
                                         value={line.envelopeId}
                                         onChange={e => updateSplitLine(i, { envelopeId: e.target.value })}
                                         aria-label={`Split line ${i + 1} envelope`}
@@ -4396,6 +4462,9 @@ export default function BudgetApp() {
                                           </optgroup>
                                         ))}
                                       </select>
+                                      ) : (
+                                      <div style={{ flex: '1 1 auto', minWidth: 0 }}><EnvDropdown ariaLabel={`Split line ${i + 1} envelope`} value={line.envelopeId} onChange={v => updateSplitLine(i, { envelopeId: v })} groups={envelopeChoices} envelopes={activeEnvelopes} placeholder={inc ? 'Choose envelope' : 'No envelope'} noneLabel={inc ? 'Choose envelope' : 'No envelope'} style={{ padding: '5px', border: '1px solid #d1d5db', borderRadius: '6px', fontSize: '0.8rem', width: '100%' }} /></div>
+                                      )}
                                       <SplitAmountInput value={line.amount} onChange={v => updateSplitLine(i, { amount: v })} ariaLabel={`Split line ${i + 1} amount`} width="110px" />
                                       <button
                                         type="button"
@@ -4455,7 +4524,8 @@ export default function BudgetApp() {
       <div data-testid="form-split" style={{ gridColumn: '1 / -1', padding: '10px', backgroundColor: '#f9fafb', border: '1px solid #e5e7eb', borderRadius: '8px' }}>
         {draft.map((line, i) => (
           <div key={i} style={{ display: 'flex', gap: '6px', marginBottom: '6px', alignItems: 'center' }}>
-            <select
+            {isMobile ? (
+<select
               value={line.envelopeId}
               onChange={e => set(i, { envelopeId: e.target.value })}
               aria-label={`New split line ${i + 1} envelope`}
@@ -4468,6 +4538,9 @@ export default function BudgetApp() {
                 </optgroup>
               ))}
             </select>
+            ) : (
+            <div style={{ flex: '1 1 auto', minWidth: 0 }}><EnvDropdown ariaLabel={`New split line ${i + 1} envelope`} value={line.envelopeId} onChange={v => set(i, { envelopeId: v })} groups={envelopeChoices} envelopes={activeEnvelopes} placeholder={income ? 'Choose envelope' : 'No envelope'} noneLabel={income ? 'Choose envelope' : 'No envelope'} style={{ padding: '6px', border: '1px solid #d1d5db', borderRadius: '6px', fontSize: '0.85rem', width: '100%' }} /></div>
+            )}
             <SplitAmountInput value={line.amount} onChange={v => set(i, { amount: v })} ariaLabel={`New split line ${i + 1} amount`} width="110px" />
             <button
               type="button"
@@ -5380,6 +5453,7 @@ export default function BudgetApp() {
                 return <button role="menuitem" onClick={async () => { setBudgetMenuOpen(false); if (installEvt) { try { installEvt.prompt(); await installEvt.userChoice; } catch (err) { /* ignore */ } setInstallEvt(null); } else showNotification('On iPhone: tap the Share button, then "Add to Home Screen".'); }} style={{ display: 'block', width: '100%', textAlign: 'left', padding: '9px 16px', background: 'white', border: 'none', cursor: 'pointer', fontSize: '0.9rem' }}>Install app</button>;
               })()}
               <div style={{ height: '1px', backgroundColor: '#eef0f3', margin: '6px 0' }} />
+              <button role="menuitem" data-testid="open-check" onClick={() => { setBudgetMenuOpen(false); setCheckOpen(true); }} style={{ display: 'block', width: '100%', textAlign: 'left', padding: '9px 16px', background: 'white', border: 'none', cursor: 'pointer', fontSize: '0.9rem', color: '#1f2937' }}>Does my budget add up?</button>
               <button role="menuitem" data-testid="open-widget" onClick={() => { setBudgetMenuOpen(false); setWidgetOpen(true); }} style={{ display: 'block', width: '100%', textAlign: 'left', padding: '9px 16px', background: 'white', border: 'none', cursor: 'pointer', fontSize: '0.9rem', color: '#1f2937' }}>Home-screen widget</button>
               <button role="menuitem" data-testid="change-password" onClick={() => { setBudgetMenuOpen(false); setPwOpen(true); }} style={{ display: 'block', width: '100%', textAlign: 'left', padding: '9px 16px', background: 'white', border: 'none', cursor: 'pointer', fontSize: '0.9rem', color: '#1f2937' }}>Change password</button>
               <button role="menuitem" onClick={() => supabase.auth.signOut()} style={{ display: 'block', width: '100%', textAlign: 'left', padding: '9px 16px', background: 'white', border: 'none', cursor: 'pointer', fontSize: '0.9rem', color: '#b42318' }}>Sign out</button>
@@ -6031,7 +6105,8 @@ export default function BudgetApp() {
                   {allMode && <div style={cell({ fontSize: '0.85rem', color: '#374151', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', display: 'block', lineHeight: '36px' })}>{acc?.name}</div>}
                   <div style={cell({ fontSize: '0.9rem' })}>{formatDate(tx.date, 'us')}</div>
                   <div style={cell({ fontSize: '0.9rem', justifyContent: 'space-between', gap: '6px' })}>
-                    <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', minWidth: 0 }}>{tx.payee}</span>
+                    <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', minWidth: 0 }} title={txSource(tx) ? `${tx.payee} · ${txSource(tx)}` : tx.payee}>{tx.payee}</span>
+                    {txSource(tx) && !tx.isTransfer && <span data-testid="tx-source" title={`Source: ${txSource(tx)}`} style={{ flexShrink: 0, width: '15px', height: '15px', lineHeight: '15px', textAlign: 'center', fontSize: '0.6rem', fontWeight: 800, color: '#6b7280', backgroundColor: '#f1f2f6', borderRadius: '4px' }}>{({ 'Bank sync': 'B', 'File import': 'F', Manual: 'M', Copied: 'C' })[txSource(tx)] || ''}</span>}
                     {tx.isTransfer && (
                       <span style={{ display: 'inline-flex', alignItems: 'center', gap: '6px', flexShrink: 0 }}>
                         <span data-testid="transfer-badge" title={`Transfer ${tx.type === 'expense' ? 'out' : 'in'}`} style={{ color: '#4b5563', fontSize: '0.95rem' }}>⇄</span>
@@ -6050,9 +6125,9 @@ export default function BudgetApp() {
                       : tx.type === 'expense' ? (<>
                         {catBtn(tx, env ? envFullName(env) : <span data-testid="needs-category" style={{ display: 'inline-block', backgroundColor: '#fbe38a', color: '#4a3b00', borderRadius: '999px', padding: '3px 12px', fontSize: '0.85rem' }}>This needs a category</span>, env ? '#1f2937' : '#4a3b00')}
                         <button type="button" onClick={() => (splitTxId === tx.id ? closeSplit() : openSplit(tx))} disabled={locked} style={linkBtn({ opacity: locked ? 0.4 : 1, marginLeft: 'auto' })}>{splitTxId === tx.id ? 'Close split' : 'Split'}</button>
-                      </>) : (
-                        <span style={{ color: '#1f2937' }}>Inflow: Ready to Assign{countsTowardRTA(tx) ? <>{' '}<button type="button" onClick={() => (splitTxId === tx.id ? closeSplit() : openSplit(tx))} disabled={locked} style={linkBtn({ opacity: locked ? 0.4 : 1 })}>{splitTxId === tx.id ? 'Close' : incomeAllocs(tx).length ? 'Edit envelopes' : 'Send to envelopes'}</button></> : null}</span>
-                      )}
+                      </>) : ( <>
+                        <span style={{ color: '#1f2937' }}>Inflow: Ready to Assign{countsTowardRTA(tx) ? <>{' '}<button type="button" onClick={() => (splitTxId === tx.id ? closeSplit() : openSplit(tx))} disabled={locked} style={linkBtn({ opacity: locked ? 0.4 : 1 })}>{splitTxId === tx.id ? 'Close' : incomeAllocs(tx).length ? 'Edit envelopes' : 'Send to envelopes'}</button></> : null}{refundHints.get(tx.id) && !locked && <button type="button" data-testid="refund-hint" onClick={() => sendRefund(tx, refundHints.get(tx.id).envelopeId)} title={`Earlier purchase from this store: ${formatMoney(refundHints.get(tx.id).amount)} from ${refundHints.get(tx.id).envName}`} style={linkBtn({ color: '#9a3412', fontSize: '0.72rem', display: 'block', marginTop: '2px' })}>↩ Refund? Send to {refundHints.get(tx.id).envName}</button>}</span>
+                      </>)}
                   </div>
                   <div style={cell({ fontSize: '0.85rem', color: '#6b7280', display: 'block', lineHeight: '36px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' })} title={tx.notes || ''}>{tx.notes || ''}</div>
                   {amt(v < 0, plainMoney(Math.abs(v)))}
@@ -7547,6 +7622,9 @@ export default function BudgetApp() {
             </select>))}
           {rowBox('▦', 'Date', <input type="date" aria-label="Date" value={tx.date || ''} disabled={locked} onChange={e => { if (e.target.value) patchTx(tx.id, { date: e.target.value }); }} style={{ ...field, colorScheme: 'dark' }} />, null, true)}
         </div>
+        {refundHints.get(tx.id) && !locked && (
+          <button data-testid="refund-hint-m" onClick={() => { sendRefund(tx, refundHints.get(tx.id).envelopeId); close(); }} style={{ width: '100%', backgroundColor: '#3a2a10', color: '#ffcf70', border: 'none', borderRadius: '16px', padding: '12px 14px', fontWeight: 700, fontSize: '0.95rem', cursor: 'pointer', marginBottom: '10px', textAlign: 'left' }}>↩ Looks like a refund. Send {formatMoney(Number(tx.amount) || 0)} back to {refundHints.get(tx.id).envName}</button>
+        )}
         {(split || tx.isTransfer || incomeAllocs(tx).length > 0 || !tx.isTransfer) && (
           <button onClick={() => thenEdit(() => (tx.isTransfer ? startEditTx(tx, true) : openSplit(tx, true)))} style={{ width: '100%', backgroundColor: '#1d1d38', color: MD.accent, border: 'none', borderRadius: '999px', padding: '14px', fontWeight: 700, fontSize: '1rem', cursor: 'pointer', marginBottom: '14px' }}>{tx.isTransfer ? 'Edit transfer' : split ? 'Edit split' : income ? (incomeAllocs(tx).length ? 'Edit envelopes' : 'Send to envelopes…') : 'Split across categories…'}</button>
         )}
@@ -7564,6 +7642,7 @@ export default function BudgetApp() {
               <button onClick={() => setFlag([tx.id], null)} aria-label="No flag" style={{ background: !tx.flag ? '#23235a' : 'none', color: MD.text, border: '1px solid ' + MD.line, borderRadius: '999px', padding: '4px 12px', cursor: 'pointer', fontSize: '0.9rem' }}>None</button>
               {FLAG_COLORS.map(c => (<button key={c} aria-label={`Flag ${c}`} onClick={() => setFlag([tx.id], c)} style={{ width: '26px', height: '26px', borderRadius: '50%', backgroundColor: c, border: tx.flag === c ? '3px solid #fff' : 'none', cursor: 'pointer' }} />))}
             </div>)}
+            {txSource(tx) && <div data-testid="m-tx-source" style={{ display: 'flex', alignItems: 'center', gap: '16px', padding: '14px 18px', borderBottom: '1px solid ' + MD.line }}><span style={{ flex: 1, fontSize: '1.05rem' }}>Source</span><span style={{ color: MD.muted }}>{txSource(tx)}</span></div>}
             <div style={{ display: 'flex', alignItems: 'center', gap: '16px', padding: '14px 18px' }}>
               <span style={{ width: '24px', height: '24px', borderRadius: '50%', backgroundColor: cleared ? '#7cc427' : 'transparent', border: '2px solid ' + (cleared ? '#7cc427' : '#55556f'), color: cleared ? '#0d1a00' : '#8a8aa5', fontSize: '0.7rem', fontWeight: 800, display: 'inline-flex', alignItems: 'center', justifyContent: 'center' }}>C</span>
               <span style={{ flex: 1, fontSize: '1.05rem' }}>Cleared</span>
@@ -8030,6 +8109,42 @@ export default function BudgetApp() {
       {!isMobile && (sidebarOpen ? deskSidebar : deskRail)}
       {!isMobile && renderCtxMenu()}
       {renderDeskPops()}
+      {checkOpen && (() => {
+        const c = budgetCheck();
+        const ok = Math.abs(c.diff) < 0.015;
+        const row = (l, v, strong, tone) => <div style={{ display: 'flex', justifyContent: 'space-between', gap: '12px', padding: '6px 0', fontWeight: strong ? 800 : 500, color: tone || 'inherit', borderTop: strong ? '1px solid #e5e7eb' : 'none' }}><span>{l}</span><span style={{ fontVariantNumeric: 'tabular-nums' }}>{formatMoney(v)}</span></div>;
+        return (
+          <div onClick={() => setCheckOpen(false)} style={{ position: 'fixed', inset: 0, zIndex: 120, backgroundColor: 'rgba(17,24,39,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '16px' }}>
+            <div data-testid="budget-check" role="dialog" aria-label="Does my budget add up?" onClick={e => e.stopPropagation()} style={{ width: '100%', maxWidth: '460px', maxHeight: '90vh', overflowY: 'auto', backgroundColor: 'white', color: '#1f2937', borderRadius: '12px', padding: '18px', boxSizing: 'border-box', display: 'flex', flexDirection: 'column', gap: '10px' }}>
+              <div style={{ fontWeight: 800, fontSize: '1.15rem' }}>Does my budget add up?</div>
+              <div style={{ fontSize: '0.85rem', color: '#4b5563' }}>Your money in accounts, minus what you owe on cards, minus everything in envelopes, should equal Ready to Assign.</div>
+              {c.otherMonth && <div style={{ fontSize: '0.8rem', color: '#92400e', backgroundColor: '#fef3c7', padding: '6px 10px', borderRadius: '8px' }}>You are looking at {monthLabel(budgetMonth)}. This check is most useful on the current month.</div>}
+              <div style={{ fontSize: '0.92rem' }}>
+                {row('Cash in accounts', c.cash)}
+                {row('Credit cards (owed is negative)', c.cards)}
+                {row('Minus: total of all envelopes', c.env)}
+                {row('Should be Ready to Assign', c.expected, true)}
+                {row('Ready to Assign now', rtaShown, true)}
+              </div>
+              <div data-testid="check-result" style={{ padding: '10px 12px', borderRadius: '10px', fontWeight: 700, backgroundColor: ok ? '#dcfce7' : '#fee2e2', color: ok ? '#166534' : '#991b1b' }}>
+                {ok ? '✓ It adds up.' : `Off by ${formatMoney(Math.abs(c.diff))}. Ready to Assign is ${c.diff > 0 ? 'higher' : 'lower'} than your accounts support.`}
+              </div>
+              {!ok && (c.causes.length ? (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                  <div style={{ fontWeight: 700, fontSize: '0.9rem' }}>Things that can cause a gap</div>
+                  {c.causes.map(x => (
+                    <div key={x.label} style={{ border: '1px solid #e5e7eb', borderRadius: '8px', padding: '8px 10px' }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', gap: '10px', fontWeight: 600, fontSize: '0.88rem' }}><span>{x.label} ({x.n})</span><span>{formatMoney(x.amt)}</span></div>
+                      <div style={{ fontSize: '0.78rem', color: '#6b7280', marginTop: '2px' }}>{x.note}</div>
+                    </div>
+                  ))}
+                </div>
+              ) : <div style={{ fontSize: '0.85rem', color: '#4b5563' }}>Nothing obvious. Compare each account balance with your bank, then look for a transaction entered twice or missing.</div>)}
+              <button onClick={() => setCheckOpen(false)} style={{ padding: '10px', borderRadius: '8px', border: 'none', fontWeight: 700, cursor: 'pointer', backgroundColor: '#5b3fd6', color: 'white' }}>Close</button>
+            </div>
+          </div>
+        );
+      })()}
       {widgetOpen && userId && <WidgetDialog userId={userId} token={widgetTok} onToken={setWidgetTok} workerUrl={sfCfg.workerUrl || sfWorker} getSummary={widgetSummary} onClose={() => setWidgetOpen(false)} />}
       {pwOpen && session && session.user && <PasswordDialog email={session.user.email} recovery={pwOpen === 'recovery'} onClose={() => setPwOpen(false)} />}
       {isMobile && <aside
@@ -8100,6 +8215,13 @@ export default function BudgetApp() {
           <div data-testid="signed-in-as" style={{ fontSize: '0.72rem', color: '#8fa0c0', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', marginBottom: '8px' }}>
             Signed in as {session && session.user ? session.user.email : ''}
           </div>
+          <button
+            data-testid="open-check-m"
+            onClick={() => setCheckOpen(true)}
+            style={{ width: '100%', backgroundColor: 'transparent', color: '#cfe0f7', border: '1px solid rgba(255,255,255,0.28)', padding: '6px 8px', borderRadius: '6px', fontSize: '0.75rem', cursor: 'pointer', marginBottom: '6px' }}
+          >
+            Does my budget add up?
+          </button>
           <button
             data-testid="open-widget-m"
             onClick={() => setWidgetOpen(true)}
@@ -8550,6 +8672,11 @@ export default function BudgetApp() {
                               {(env.goalType === 'target_by_date' || env.goalType === 'savings_balance' || isYearlyGoal(env)) && getNeeded(env, row) > 0.004 && (
                                 <div data-testid="needed-note" style={{ fontSize: '0.72rem', color: '#8a4b00', marginTop: '3px' }}>
                                   Needs {formatMoney(getNeeded(env, row))} more {env.goalType === 'savings_balance' ? 'to reach your goal' : 'this month to stay on track'}
+                                </div>
+                              )}
+                              {!SHOW_CC_GROUP && row.creditOver > 0.004 && (
+                                <div data-testid="card-over-note" style={{ fontSize: '0.72rem', color: '#9a3412', marginTop: '3px' }}>
+                                  💳 {formatMoney(row.creditOver)} overspent on a credit card. It comes out of next month's Ready to Assign.
                                 </div>
                               )}
                               {row.income > 0 && (
