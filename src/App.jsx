@@ -1984,6 +1984,8 @@ export default function BudgetApp() {
   const [sfMsg, setSfMsg] = useState('');
   const [sfDays, setSfDays] = useState('30');
   const [sfData, setSfData] = useState(null); // last fetched SimpleFIN accounts
+  const [sfAuto, setSfAuto] = useState(false); // an automatic fetch just landed and should be imported quietly
+  const [sfLast, setSfLast] = useState(() => { try { return Number(localStorage.getItem('budget-sf-last')) || 0; } catch (e) { return 0; } });
   const [epMenu, setEpMenu] = useState(false); // phone Edit Plan: top ⋮ menu
   const [reorderOpen, setReorderOpen] = useState(false); // phone: Reorder Categories screen
   const [grpSheet, setGrpSheet] = useState(null); // phone Edit Plan: { name, draft } group ⋮ sheet
@@ -4318,23 +4320,51 @@ export default function BudgetApp() {
     });
     return { added, per, linked, links };
   };
-  const sfImport = () => {
+  const sfImport = (quiet) => {
     const plan = sfPlan();
     if (!plan) return;
-    if (!plan.linked) { setSfMsg('Link at least one bank account to a budget account first.'); return; }
+    if (!plan.linked) { if (quiet) setSfData(null); else setSfMsg('Link at least one bank account to a budget account first.'); return; }
     const links = plan.links;
     if (!plan.added.length) {
       if (links.size) setTransactions(prev => prev.map(t => (links.has(t.id) ? { ...t, sfId: links.get(t.id) } : t)));
+      if (quiet) { setSfData(null); setSfMsg('Synced automatically. Nothing new.'); return; }
       setSfMsg('Nothing new. Everything the bank sent is already in your budget.'); return;
     }
     const added = plan.added;
     setTransactions(prev => [...added, ...prev.map(t => (links.has(t.id) ? { ...t, sfId: links.get(t.id) } : t))]);
     const last = added[0].accountId;
     setSfData(null);
+    if (quiet) { setSfMsg(`Synced automatically: ${added.length} new.`); showNotification(`Bank sync: ${added.length} new transaction${added.length === 1 ? '' : 's'} to approve.`); return; }
     setSelectedTxIds([]); setTxFilterAccount(last); setTxFilterStatus('attention'); setTxAccountId(last);
     openTab('transactions');
     showNotification(`Imported ${added.length} bank transaction${added.length === 1 ? '' : 's'}. Approve or categorize them below.`);
   };
+  // Automatic bank sync: when the app opens, when you come back to it, and every so often while it stays open (at most every 3 hours).
+  const sfAutoRun = async () => {
+    if (!sfCfg.accessUrl || sfCfg.off || sfCfg.noAuto || sfBusy || !loadedRef.current) return;
+    if (typeof navigator !== 'undefined' && navigator.onLine === false) return;
+    let prev = 0;
+    try { prev = Number(localStorage.getItem('budget-sf-last')) || 0; } catch (e) { /* storage unavailable */ }
+    if (Date.now() - prev < 3 * 3600 * 1000) return;
+    const mark = (v) => { try { localStorage.setItem('budget-sf-last', String(v)); } catch (e) { /* storage unavailable */ } setSfLast(v); };
+    mark(Date.now());
+    try {
+      const days = prev ? Math.min(90, Math.max(14, Math.ceil((Date.now() - prev) / 86400000) + 3)) : 30;
+      const out = await sfCall('/accounts', { accessUrl: sfCfg.accessUrl, startDate: Math.floor(Date.now() / 1000) - days * 86400 });
+      setSfData(out); setSfAuto(true);
+    } catch (e) { mark(prev); }
+  };
+  const sfAutoRef = useRef(null);
+  sfAutoRef.current = sfAutoRun;
+  useEffect(() => {
+    if (!sfCfg.accessUrl || sfCfg.off || sfCfg.noAuto) return undefined;
+    const t = setTimeout(() => sfAutoRef.current && sfAutoRef.current(), 4000);
+    const iv = setInterval(() => sfAutoRef.current && sfAutoRef.current(), 10 * 60 * 1000);
+    const vis = () => { if (document.visibilityState === 'visible') sfAutoRef.current && sfAutoRef.current(); };
+    document.addEventListener('visibilitychange', vis);
+    return () => { clearTimeout(t); clearInterval(iv); document.removeEventListener('visibilitychange', vis); };
+  }, [sfCfg.accessUrl, sfCfg.off, sfCfg.noAuto]);
+  useEffect(() => { if (sfAuto && sfData) { setSfAuto(false); sfImport(true); } }, [sfAuto, sfData]);
   // Take back bank-imported transactions you haven't approved yet
   const sfUndoUnapproved = () => {
     const n = transactions.filter(t => t.sfId && t.unapproved && !t.isDeleted).length;
@@ -7795,7 +7825,7 @@ export default function BudgetApp() {
         <button onClick={() => handleAddTransaction({ preventDefault() {} })} data-testid="add-save" style={{ position: 'fixed', right: '16px', bottom: 'calc(20px + env(safe-area-inset-bottom))', zIndex: 63, backgroundColor: MD.btn, color: 'white', border: 'none', borderRadius: '16px', padding: '16px 26px', fontWeight: 700, fontSize: '1.05rem', boxShadow: '0 8px 22px rgba(0,0,0,0.5)', cursor: 'pointer' }}>✔ Save</button>
         {addPick === 'payee' && (<>
           <div onClick={() => setAddPick(null)} style={{ position: 'fixed', inset: 0, backgroundColor: 'rgba(0,0,0,0.6)', zIndex: 70 }} />
-          <div data-testid="add-payee-sheet" role="dialog" aria-label="Choose payee" style={{ position: 'fixed', left: 0, right: 0, bottom: 0, maxHeight: '80vh', overflowY: 'auto', zIndex: 71, backgroundColor: MD.card, borderRadius: '18px 18px 0 0', padding: '14px 0 calc(16px + env(safe-area-inset-bottom))' }}>
+          <div data-testid="add-payee-sheet" role="dialog" aria-label="Choose payee" style={{ position: 'fixed', left: 0, right: 0, bottom: kbInset.bottom, maxHeight: kbInset.bottom > 0 ? Math.max(180, kbInset.height - 24) : '80vh', overflowY: 'auto', zIndex: 71, backgroundColor: MD.card, borderRadius: '18px 18px 0 0', padding: '14px 0 calc(16px + env(safe-area-inset-bottom))' }}>
             <div style={{ padding: '0 18px 10px' }}><input autoFocus aria-label="Payee" value={addPayeeQ} onChange={e => setAddPayeeQ(e.target.value)} placeholder="Search or enter a payee" style={{ width: '100%', boxSizing: 'border-box', padding: '12px', borderRadius: '10px', border: '2px solid ' + MD.btn, backgroundColor: MD.bg, color: MD.text }} /></div>
             {addPayeeQ.trim() && !payeeMemory.some(pm => pm.name.toLowerCase() === q) && <button onClick={() => { handlePayeeChange(addPayeeQ.trim()); setAddPick(null); }} style={{ display: 'block', width: '100%', textAlign: 'left', background: 'none', border: 'none', color: MD.accent, fontWeight: 700, padding: '12px 18px', fontSize: '1rem', cursor: 'pointer' }}>Use “{addPayeeQ.trim()}”</button>}
             {names.map(pm => (<button key={pm.name} onClick={() => { handlePayeeChange(pm.name); setAddPick(null); }} style={{ display: 'block', width: '100%', textAlign: 'left', background: 'none', border: 'none', color: MD.text, padding: '12px 18px', fontSize: '1rem', cursor: 'pointer' }}>{pm.name}</button>))}
@@ -7803,7 +7833,7 @@ export default function BudgetApp() {
         </>)}
         {addPick === 'cat' && (<>
           <div onClick={() => setAddPick(null)} style={{ position: 'fixed', inset: 0, backgroundColor: 'rgba(0,0,0,0.6)', zIndex: 70 }} />
-          <div data-testid="add-cat-sheet" role="dialog" aria-label="Choose category" style={{ position: 'fixed', left: 0, right: 0, bottom: 0, maxHeight: '75vh', overflowY: 'auto', zIndex: 71, backgroundColor: MD.card, borderRadius: '18px 18px 0 0', padding: '14px 0 calc(16px + env(safe-area-inset-bottom))' }}>
+          <div data-testid="add-cat-sheet" role="dialog" aria-label="Choose category" style={{ position: 'fixed', left: 0, right: 0, bottom: kbInset.bottom, maxHeight: kbInset.bottom > 0 ? Math.max(180, kbInset.height - 24) : '75vh', overflowY: 'auto', zIndex: 71, backgroundColor: MD.card, borderRadius: '18px 18px 0 0', padding: '14px 0 calc(16px + env(safe-area-inset-bottom))' }}>
             <div style={{ fontWeight: 800, padding: '4px 18px 10px', fontSize: '1.05rem' }}>Category</div>
             {txEnvelopeId && <button onClick={() => { setTxEnvelopeId(''); setAddPick(null); }} style={{ display: 'block', width: '100%', textAlign: 'left', background: 'none', border: 'none', color: '#ffcf70', padding: '12px 18px', fontSize: '1rem', cursor: 'pointer' }}>Uncategorized</button>}
             {envelopeChoices.map(c => (
@@ -10806,6 +10836,11 @@ export default function BudgetApp() {
               </div>
             ) : (
               <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+                <label data-testid="sf-auto" style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '0.85rem', color: '#374151' }}>
+                  <input type="checkbox" checked={!sfCfg.noAuto} onChange={e => sfSave({ ...sfCfg, noAuto: !e.target.checked })} />
+                  Sync automatically (when the app opens, and every few hours while it is open)
+                  <span style={{ color: '#6b7280' }}>{sfLast ? `· last auto sync ${new Date(sfLast).toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })}` : '· not synced yet'}</span>
+                </label>
                 <div style={{ display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap' }}>
                   <label style={{ fontSize: '0.85rem' }}>Last <input aria-label="Days to fetch" inputMode="numeric" value={sfDays} onChange={e => setSfDays(e.target.value.replace(/\D/g, ''))} style={{ width: '52px', padding: '6px', borderRadius: '6px', border: '1px solid #d1d5db' }} /> days</label>
                   <button onClick={() => sfFetch(sfDays)} disabled={sfBusy} data-testid="sf-fetch" style={{ backgroundColor: '#2563eb', color: 'white', border: 'none', padding: '8px 14px', borderRadius: '6px', fontWeight: 'bold', cursor: sfBusy ? 'wait' : 'pointer' }}>{sfBusy ? 'Working…' : 'Fetch accounts'}</button>
@@ -10828,7 +10863,7 @@ export default function BudgetApp() {
                         </div>
                       );
                     })}
-                    <div><button onClick={sfImport} data-testid="sf-import" style={{ backgroundColor: '#16a34a', color: 'white', border: 'none', padding: '9px 16px', borderRadius: '6px', fontWeight: 'bold', cursor: 'pointer' }}>Import new transactions</button></div>
+                    <div><button onClick={() => sfImport()} data-testid="sf-import" style={{ backgroundColor: '#16a34a', color: 'white', border: 'none', padding: '9px 16px', borderRadius: '6px', fontWeight: 'bold', cursor: 'pointer' }}>Import new transactions</button></div>
                   </div>
                 )}
               </div>
