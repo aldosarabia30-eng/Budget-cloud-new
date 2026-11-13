@@ -5453,7 +5453,6 @@ export default function BudgetApp() {
     </button>
   );
   const sideClosed = activeAccounts.filter(a => a.isHidden);
-  const deskMenuItems = ['scheduled', 'payees', 'debts', 'investments', 'accounts', 'import', 'trash', 'new'];
   const deskSidebar = (
     <aside data-testid="desk-sidebar" style={{ width: '256px', flexShrink: 0, boxSizing: 'border-box', backgroundColor: SB.bg, color: 'white', padding: '12px', display: sidebarOpen ? 'flex' : 'none', flexDirection: 'column', height: '100vh', overflowY: 'auto', position: 'sticky', top: 0, zIndex: 50 }}>
       <div style={{ position: 'relative', marginBottom: '10px' }}>
@@ -5470,22 +5469,28 @@ export default function BudgetApp() {
           <>
             <div onClick={() => setBudgetMenuOpen(false)} style={{ position: 'fixed', inset: 0, zIndex: 60 }} />
             <div role="menu" data-testid="budget-menu" style={{ position: 'absolute', left: 0, right: 0, top: '100%', marginTop: '6px', backgroundColor: 'white', color: '#1f2937', borderRadius: '10px', boxShadow: '0 12px 30px rgba(0,0,0,0.3)', zIndex: 61, overflow: 'hidden', padding: '6px 0' }}>
-              {deskMenuItems.map(tab => (
-                <button key={tab} role="menuitem" onClick={() => { setBudgetMenuOpen(false); if (tab === 'accounts') setManageAccounts(true); openTab(tab); }} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', width: '100%', textAlign: 'left', padding: '9px 16px', background: 'white', border: 'none', cursor: 'pointer', fontSize: '0.9rem' }}>
-                  <span>{tab === 'accounts' ? 'Manage accounts' : tab === 'new' ? '+ New envelope or group' : NAV_LABELS[tab]}</span>
-                  {tab === 'scheduled' && dueSchedules.length > 0 && <span style={{ fontSize: '0.7rem', backgroundColor: '#d97706', color: 'white', borderRadius: '10px', padding: '1px 7px' }}>{dueSchedules.length} due</span>}
-                  {tab === 'trash' && totalTrashCount > 0 && <span style={{ fontSize: '0.7rem', backgroundColor: '#e5e7eb', borderRadius: '10px', padding: '1px 7px' }}>{totalTrashCount}</span>}
-                </button>
+              {[['BUDGET', ['scheduled', 'payees', 'debts', 'investments', 'trash']], ['SETUP', ['accounts', 'import', 'new']]].map(([label, ids]) => (
+                <div key={label}>
+                  <div style={{ padding: '8px 16px 3px', fontSize: '0.66rem', fontWeight: 800, letterSpacing: '0.08em', color: '#9ca3af' }}>{label}</div>
+              {ids.map(tab => (
+                    <button key={tab} role="menuitem" onClick={() => { setBudgetMenuOpen(false); if (tab === 'accounts') setManageAccounts(true); openTab(tab); }} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', width: '100%', textAlign: 'left', padding: '9px 16px', background: 'white', border: 'none', cursor: 'pointer', fontSize: '0.9rem' }}>
+                      <span>{tab === 'accounts' ? 'Manage accounts' : tab === 'new' ? '+ New envelope or group' : NAV_LABELS[tab]}</span>
+                      {tab === 'scheduled' && dueSchedules.length > 0 && <span style={{ fontSize: '0.7rem', backgroundColor: '#d97706', color: 'white', borderRadius: '10px', padding: '1px 7px' }}>{dueSchedules.length} due</span>}
+                      {tab === 'trash' && totalTrashCount > 0 && <span style={{ fontSize: '0.7rem', backgroundColor: '#e5e7eb', borderRadius: '10px', padding: '1px 7px' }}>{totalTrashCount}</span>}
+                    </button>
+                  ))}
+                </div>
               ))}
+              <div style={{ padding: '8px 16px 3px', fontSize: '0.66rem', fontWeight: 800, letterSpacing: '0.08em', color: '#9ca3af' }}>TOOLS</div>
+              <button role="menuitem" data-testid="open-check" onClick={() => { setBudgetMenuOpen(false); setCheckOpen(true); }} style={{ display: 'block', width: '100%', textAlign: 'left', padding: '9px 16px', background: 'white', border: 'none', cursor: 'pointer', fontSize: '0.9rem', color: '#1f2937' }}>Does my budget add up?</button>
+              <button role="menuitem" data-testid="open-widget" onClick={() => { setBudgetMenuOpen(false); setWidgetOpen(true); }} style={{ display: 'block', width: '100%', textAlign: 'left', padding: '9px 16px', background: 'white', border: 'none', cursor: 'pointer', fontSize: '0.9rem', color: '#1f2937' }}>Home-screen widget</button>
+              <div style={{ padding: '8px 16px 3px', fontSize: '0.66rem', fontWeight: 800, letterSpacing: '0.08em', color: '#9ca3af' }}>ACCOUNT</div>
               {(() => {
                 const standalone = (window.matchMedia && window.matchMedia('(display-mode: standalone)').matches) || window.navigator.standalone;
                 const ios = /iphone|ipad|ipod/i.test(window.navigator.userAgent || '');
                 if (standalone || (!installEvt && !ios)) return null;
                 return <button role="menuitem" onClick={async () => { setBudgetMenuOpen(false); if (installEvt) { try { installEvt.prompt(); await installEvt.userChoice; } catch (err) { /* ignore */ } setInstallEvt(null); } else showNotification('On iPhone: tap the Share button, then "Add to Home Screen".'); }} style={{ display: 'block', width: '100%', textAlign: 'left', padding: '9px 16px', background: 'white', border: 'none', cursor: 'pointer', fontSize: '0.9rem' }}>Install app</button>;
               })()}
-              <div style={{ height: '1px', backgroundColor: '#eef0f3', margin: '6px 0' }} />
-              <button role="menuitem" data-testid="open-check" onClick={() => { setBudgetMenuOpen(false); setCheckOpen(true); }} style={{ display: 'block', width: '100%', textAlign: 'left', padding: '9px 16px', background: 'white', border: 'none', cursor: 'pointer', fontSize: '0.9rem', color: '#1f2937' }}>Does my budget add up?</button>
-              <button role="menuitem" data-testid="open-widget" onClick={() => { setBudgetMenuOpen(false); setWidgetOpen(true); }} style={{ display: 'block', width: '100%', textAlign: 'left', padding: '9px 16px', background: 'white', border: 'none', cursor: 'pointer', fontSize: '0.9rem', color: '#1f2937' }}>Home-screen widget</button>
               <button role="menuitem" data-testid="change-password" onClick={() => { setBudgetMenuOpen(false); setPwOpen(true); }} style={{ display: 'block', width: '100%', textAlign: 'left', padding: '9px 16px', background: 'white', border: 'none', cursor: 'pointer', fontSize: '0.9rem', color: '#1f2937' }}>Change password</button>
               <button role="menuitem" onClick={() => supabase.auth.signOut()} style={{ display: 'block', width: '100%', textAlign: 'left', padding: '9px 16px', background: 'white', border: 'none', cursor: 'pointer', fontSize: '0.9rem', color: '#b42318' }}>Sign out</button>
             </div>
