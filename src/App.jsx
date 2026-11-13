@@ -8227,60 +8227,46 @@ export default function BudgetApp() {
         {activeInvestments.length > 0 && sideHeading('TRACKING', invTotals.value)}
         {activeInvestments.length > 0 && sideItem('investments', activeTab === 'investments', () => openTab('investments'), 'Investments', sideBalance(invTotals.value), { small: true })}
 
-        <div style={{ height: '1px', backgroundColor: 'rgba(255,255,255,0.12)', margin: '14px 0 6px' }} />
-        <nav style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
-          <button onClick={() => setSideMoreOpen(o => !o)} aria-expanded={sideMoreOpen || moreTabs.includes(activeTab)} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', width: '100%', textAlign: 'left', padding: isMobile ? '12px' : '8px 10px', background: 'none', border: 'none', borderRadius: '6px', cursor: 'pointer', color: '#cfe0f7', fontSize: '0.85rem', fontWeight: 600 }}><span>{(sideMoreOpen || moreTabs.includes(activeTab)) ? '▾' : '▸'} More</span>{!(sideMoreOpen || moreTabs.includes(activeTab)) && dueSchedules.length > 0 && <span style={{ fontSize: '0.7rem', backgroundColor: '#d97706', color: 'white', borderRadius: '10px', padding: '1px 7px' }}>{dueSchedules.length} due</span>}</button>
-          {(sideMoreOpen || moreTabs.includes(activeTab)) && ['scheduled', 'payees', 'debts', 'investments', 'accounts', 'import', 'trash', 'new'].filter(tab => tab !== 'investments' || activeInvestments.length === 0).map(tab =>
-            sideItem(tab, activeTab === tab, () => { if (tab === 'accounts') setManageAccounts(true); openTab(tab); }, tab === 'accounts' ? 'Manage accounts' : tab === 'new' ? '+ New envelope or group' : NAV_LABELS[tab],
-              tab === 'scheduled' && dueSchedules.length > 0
-                ? <span style={{ fontSize: '0.7rem', backgroundColor: '#d97706', color: 'white', borderRadius: '10px', padding: '1px 7px' }}>{dueSchedules.length} due</span>
-                : tab === 'trash' && totalTrashCount > 0
-                ? <span style={{ fontSize: '0.7rem', backgroundColor: 'rgba(255,255,255,0.18)', color: 'white', borderRadius: '10px', padding: '1px 7px' }}>{totalTrashCount}</span>
-                : null,
-              { small: true })
-          )}
-          {(sideMoreOpen || moreTabs.includes(activeTab)) && (() => {
-            const standalone = (window.matchMedia && window.matchMedia('(display-mode: standalone)').matches) || window.navigator.standalone;
+        <div style={{ height: '1px', backgroundColor: 'rgba(255,255,255,0.12)', margin: '14px 0 2px' }} />
+        {(() => {
+          const head = (t) => <div style={{ padding: '10px 10px 3px', fontSize: '0.66rem', fontWeight: 800, letterSpacing: '0.08em', color: '#8fa0c0' }}>{t}</div>;
+          const item = (tab) => sideItem(tab, activeTab === tab, () => { if (tab === 'accounts') setManageAccounts(true); openTab(tab); }, tab === 'accounts' ? 'Manage accounts' : tab === 'new' ? '+ New envelope or group' : NAV_LABELS[tab],
+            tab === 'scheduled' && dueSchedules.length > 0
+              ? <span style={{ fontSize: '0.7rem', backgroundColor: '#d97706', color: 'white', borderRadius: '10px', padding: '1px 7px' }}>{dueSchedules.length} due</span>
+              : tab === 'trash' && totalTrashCount > 0
+              ? <span style={{ fontSize: '0.7rem', backgroundColor: 'rgba(255,255,255,0.18)', color: 'white', borderRadius: '10px', padding: '1px 7px' }}>{totalTrashCount}</span>
+              : null,
+            { small: true });
+          const act = (id, label, fn) => sideItem(id, false, () => { setSidebarOpen(false); fn(); }, label, null, { small: true });
+          return (
+            <nav style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
+              {head('BUDGET')}
+              {['scheduled', 'payees', 'debts'].concat(activeInvestments.length === 0 ? ['investments'] : []).concat(['trash']).map(item)}
+              {head('SETUP')}
+              {['accounts', 'import', 'new'].map(item)}
+              {head('TOOLS')}
+              <span data-testid="open-check-m" style={{ display: 'contents' }}>{act('check', 'Does my budget add up?', () => setCheckOpen(true))}</span>
+              <span data-testid="open-widget-m" style={{ display: 'contents' }}>{act('widget', 'Home-screen widget', () => setWidgetOpen(true))}</span>
+              {head('ACCOUNT')}
+              {(() => {
+                const standalone = (window.matchMedia && window.matchMedia('(display-mode: standalone)').matches) || window.navigator.standalone;
             const ios = /iphone|ipad|ipod/i.test(window.navigator.userAgent || '');
             if (standalone || (!installEvt && !ios)) return null;
             return sideItem('install', false, async () => {
               if (installEvt) { try { installEvt.prompt(); await installEvt.userChoice; } catch (err) { /* ignore */ } setInstallEvt(null); }
               else showNotification('On iPhone: tap the Share button, then "Add to Home Screen".');
             }, 'Install app', null, { small: true });
-          })()}
-        </nav>
+              })()}
+              {act('pw', 'Change password', () => setPwOpen(true))}
+              {sideItem('signout', false, () => supabase.auth.signOut(), 'Sign out', null, { small: true })}
+            </nav>
+          );
+        })()}
 
         <div style={{ marginTop: 'auto', padding: '16px 10px 0 10px', borderTop: '1px solid rgba(255,255,255,0.18)' }}>
-          <button onClick={() => { setManageAccounts(true); openTab('accounts'); }} style={{ width: '100%', backgroundColor: 'rgba(255,255,255,0.14)', color: 'white', border: 'none', padding: '8px', borderRadius: '8px', fontSize: '0.82rem', cursor: 'pointer', fontWeight: 600, marginBottom: '12px' }}>⊕ Add Account</button>
-          <div data-testid="signed-in-as" style={{ fontSize: '0.72rem', color: '#8fa0c0', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', marginBottom: '8px' }}>
+          <div data-testid="signed-in-as" style={{ fontSize: '0.72rem', color: '#8fa0c0', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
             Signed in as {session && session.user ? session.user.email : ''}
           </div>
-          <button
-            data-testid="open-check-m"
-            onClick={() => setCheckOpen(true)}
-            style={{ width: '100%', backgroundColor: 'transparent', color: '#cfe0f7', border: '1px solid rgba(255,255,255,0.28)', padding: '6px 8px', borderRadius: '6px', fontSize: '0.75rem', cursor: 'pointer', marginBottom: '6px' }}
-          >
-            Does my budget add up?
-          </button>
-          <button
-            data-testid="open-widget-m"
-            onClick={() => setWidgetOpen(true)}
-            style={{ width: '100%', backgroundColor: 'transparent', color: '#cfe0f7', border: '1px solid rgba(255,255,255,0.28)', padding: '6px 8px', borderRadius: '6px', fontSize: '0.75rem', cursor: 'pointer', marginBottom: '6px' }}
-          >
-            Home-screen widget
-          </button>
-          <button
-            onClick={() => setPwOpen(true)}
-            style={{ width: '100%', backgroundColor: 'transparent', color: '#cfe0f7', border: '1px solid rgba(255,255,255,0.28)', padding: '6px 8px', borderRadius: '6px', fontSize: '0.75rem', cursor: 'pointer', marginBottom: '6px' }}
-          >
-            Change password
-          </button>
-          <button
-            onClick={() => supabase.auth.signOut()}
-            style={{ width: '100%', backgroundColor: 'transparent', color: '#cfe0f7', border: '1px solid rgba(255,255,255,0.28)', padding: '6px 8px', borderRadius: '6px', fontSize: '0.75rem', cursor: 'pointer', fontWeight: 600 }}
-          >
-            Sign out
-          </button>
         </div>
       </aside>}
 
